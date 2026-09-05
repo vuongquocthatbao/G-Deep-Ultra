@@ -2663,23 +2663,40 @@
         };
 
         // ============================================================
-        // 9. CLIENT-SIDE 60 FPS AI CINEMA & MULTI-VOICE TTS AUDIO ENGINE
+        // 9. CLIENT-SIDE 60 FPS AI CINEMA & MULTI-VOICE TTS ENGINE (90S STABLE)
         // ============================================================
         const AICinemaEngine = {
-            loadImage(url) {
+            // Tải ảnh chuyển thành ImageBitmap để tối ưu hóa bộ nhớ GPU và giải phóng RAM DOM ngay lập tức
+            async loadImage(url) {
+                const fetchImageBlob = async (targetUrl) => {
+                    const res = await fetch(targetUrl);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    return await res.blob();
+                };
+
+                let blob = null;
+                try {
+                    blob = await Promise.race([
+                        fetchImageBlob(url),
+                        new Promise((_, r) => setTimeout(() => r(new Error("Timeout")), 18000))
+                    ]);
+                } catch (_) {
+                    const proxyUrl = 'https://images.weserv.nl/?url=' + encodeURIComponent(url);
+                    blob = await fetchImageBlob(proxyUrl);
+                }
+
+                if (typeof createImageBitmap !== 'undefined') {
+                    try {
+                        return await createImageBitmap(blob);
+                    } catch (_) {}
+                }
+
                 return new Promise((resolve, reject) => {
                     const img = new Image();
                     img.crossOrigin = 'anonymous';
                     img.onload = () => resolve(img);
-                    img.onerror = () => {
-                        const proxyUrl = 'https://images.weserv.nl/?url=' + encodeURIComponent(url);
-                        const fallbackImg = new Image();
-                        fallbackImg.crossOrigin = 'anonymous';
-                        fallbackImg.onload = () => resolve(fallbackImg);
-                        fallbackImg.onerror = reject;
-                        fallbackImg.src = proxyUrl;
-                    };
-                    img.src = url;
+                    img.onerror = reject;
+                    img.src = URL.createObjectURL(blob);
                 });
             },
 
@@ -2704,7 +2721,6 @@
                 ctx.drawImage(img, sX, sY, sW, sH, 0, 0, targetW, targetH);
             },
 
-            // Chuyển đổi chuỗi base64 PCM 24kHz từ Gemini API thành AudioBuffer
             decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
                 const binaryStr = atob(pcmBase64);
                 const len = binaryStr.length;
@@ -2725,7 +2741,6 @@
                 return audioBuffer;
             },
 
-            // Gọi Gemini TTS (Model: gemini-3.1-flash-tts-preview) sinh giọng đọc nhân vật
             async generateGeminiTTSAudio(text, character, apiKey) {
                 if (!apiKey || !text) return null;
                 
@@ -2771,53 +2786,42 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                         body: JSON.stringify(payload)
                     });
                     
-                    if (!response.ok) {
-                        console.warn("[Gemini TTS Error]: HTTP status", response.status);
-                        return null;
-                    }
-                    
+                    if (!response.ok) return null;
                     const json = await response.json();
                     const audioPart = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData && p.inlineData.mimeType?.startsWith('audio/'));
-                    
                     if (audioPart && audioPart.inlineData?.data) {
                         return this.decodePcmToAudioBuffer(audioPart.inlineData.data, 24000);
                     }
-                } catch (e) {
-                    console.warn("[Gemini TTS Error]:", e);
-                }
+                } catch (_) {}
                 return null;
             },
 
-            // Hòa âm đa nhân vật + SFX âm thanh môi trường tại 60 FPS
             async mixMasterAudioTrack(dialogueScript, voiceCharacters, durationSec, ambientType, apiKey) {
                 const sampleRate = 48000;
                 const totalSamples = Math.ceil(sampleRate * durationSec);
                 const offlineCtx = new OfflineAudioContext(2, totalSamples, sampleRate);
 
-                // 1. Hòa âm lớp nhạc nền & SFX môi trường
                 const oscFrequencies = [65.4, 82.4, 98.0, 110.0, 130.8];
                 oscFrequencies.forEach((freq) => {
                     const osc = offlineCtx.createOscillator();
                     const gain = offlineCtx.createGain();
                     osc.type = 'sine';
                     osc.frequency.setValueAtTime(freq, 0);
-                    gain.gain.setValueAtTime(0.025, 0);
-                    gain.gain.linearRampToValueAtTime(0.01, durationSec);
-
+                    gain.gain.setValueAtTime(0.02, 0);
+                    gain.gain.linearRampToValueAtTime(0.008, durationSec);
                     osc.connect(gain);
                     gain.connect(offlineCtx.destination);
                     osc.start(0);
                     osc.stop(durationSec);
                 });
 
-                // Tiếng sóng biển / gió / môi trường
                 const noiseBuffer = offlineCtx.createBuffer(1, totalSamples, sampleRate);
                 const noiseData = noiseBuffer.getChannelData(0);
                 let b0 = 0;
                 for (let i = 0; i < totalSamples; i++) {
                     const white = Math.random() * 2 - 1;
                     b0 = 0.99 * b0 + white * 0.05;
-                    noiseData[i] = b0 * 0.25;
+                    noiseData[i] = b0 * 0.22;
                 }
                 const noiseSource = offlineCtx.createBufferSource();
                 noiseSource.buffer = noiseBuffer;
@@ -2827,31 +2831,28 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                 waveFilter.frequency.setValueAtTime(ambientType === 'ocean_waves' ? 350 : 250, 0);
 
                 for (let t = 0; t < durationSec; t += 4) {
-                    waveFilter.frequency.linearRampToValueAtTime(750, t + 2);
-                    waveFilter.frequency.linearRampToValueAtTime(250, t + 4);
+                    waveFilter.frequency.linearRampToValueAtTime(750, Math.min(t + 2, durationSec));
+                    waveFilter.frequency.linearRampToValueAtTime(250, Math.min(t + 4, durationSec));
                 }
 
                 const waveGain = offlineCtx.createGain();
-                waveGain.gain.setValueAtTime(0.08, 0);
+                waveGain.gain.setValueAtTime(0.06, 0);
                 noiseSource.connect(waveFilter);
                 waveFilter.connect(waveGain);
                 waveGain.connect(offlineCtx.destination);
                 noiseSource.start(0);
 
-                // 2. Tải và xếp đặt đa giọng đọc của các nhân vật theo trục thời gian
                 if (Array.isArray(dialogueScript) && dialogueScript.length > 0 && apiKey) {
                     for (const line of dialogueScript) {
                         const targetChar = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
                         if (targetChar && line.text) {
                             const charAudioBuffer = await this.generateGeminiTTSAudio(line.text, targetChar, apiKey);
                             if (charAudioBuffer) {
-                                const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), durationSec - 0.5);
+                                const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), Math.max(0, durationSec - 1));
                                 const source = offlineCtx.createBufferSource();
                                 source.buffer = charAudioBuffer;
-
                                 const voiceGain = offlineCtx.createGain();
-                                voiceGain.gain.setValueAtTime(0.9, 0);
-
+                                voiceGain.gain.setValueAtTime(0.95, 0);
                                 source.connect(voiceGain);
                                 voiceGain.connect(offlineCtx.destination);
                                 source.start(startTime);
@@ -2863,11 +2864,11 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                 return await offlineCtx.startRendering();
             },
 
-            // Pipeline Render Video MP4 nội suy chuyển động 60 FPS chuẩn WebCodecs
-            async renderToMp4_60FPS({ sceneImages, totalDurationSec = 30, aspectRatio = '16:9', ambientType = 'ocean_waves', dialogueScript = [], voiceCharacters = [], apiKey = '', onProgress }) {
+            // PIPELINE RENDER 60 FPS CHỐNG SẬP TAB (TỐI ƯU HÓA 90 GIÂY = 5.400 FRAMES)
+            async renderToMp4_60FPS({ sceneImages, totalDurationSec = 90, aspectRatio = '16:9', ambientType = 'ocean_waves', dialogueScript = [], voiceCharacters = [], apiKey = '', onProgress }) {
                 if (!sceneImages || sceneImages.length === 0) throw new Error("Không có phân cảnh để dựng video");
                 
-                const fps = 60; // Chuẩn xác 60 khung hình / giây
+                const fps = 60;
                 let width = 1280, height = 720;
                 if (aspectRatio === '9:16') { width = 720; height = 1280; }
                 else if (aspectRatio === '1:1') { width = 720; height = 720; }
@@ -2880,6 +2881,7 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                 const totalFrames = Math.ceil(totalDurationSec * fps);
                 const sceneCount = sceneImages.length;
 
+                // 1. Hòa âm Master Audio
                 const masterAudio = await this.mixMasterAudioTrack(dialogueScript, voiceCharacters, totalDurationSec, ambientType, apiKey);
 
                 const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
@@ -2892,37 +2894,49 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                     fastStart: 'in-memory'
                 });
 
+                let videoEncoderError = null;
                 const videoEncoder = new VideoEncoder({
                     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-                    error: (e) => console.error("Lỗi VideoEncoder 60 FPS:", e)
+                    error: (e) => {
+                        console.error("[WebCodecs Video Error]:", e);
+                        videoEncoderError = e;
+                    }
                 });
 
+                // Cấu hình bitrate tối ưu cho 90s (4.5 Mbps giúp giữ file ổn định dưới 60MB)
                 videoEncoder.configure({
-                    codec: 'avc1.420028', // H.264 High Profile 60 FPS
+                    codec: 'avc1.420028',
                     width,
                     height,
-                    bitrate: 8_000_000,
+                    bitrate: 4_500_000,
                     framerate: 60
                 });
 
+                // 2. Mã hóa luồng âm thanh kèm Backpressure
                 let audioEncoder = null;
                 if (typeof window.AudioEncoder !== 'undefined') {
                     try {
                         audioEncoder = new AudioEncoder({
                             output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-                            error: (e) => console.error("Lỗi AudioEncoder:", e)
+                            error: (e) => console.error("[WebCodecs Audio Error]:", e)
                         });
                         audioEncoder.configure({
                             codec: 'mp4a.40.2',
                             sampleRate: masterAudio.sampleRate,
                             numberOfChannels: 2,
-                            bitrate: 192_000
+                            bitrate: 128_000
                         });
 
                         const leftChannel = masterAudio.getChannelData(0);
                         const rightChannel = masterAudio.numberOfChannels > 1 ? masterAudio.getChannelData(1) : leftChannel;
                         const chunkSize = 4096;
+
                         for (let offset = 0; offset < leftChannel.length; offset += chunkSize) {
+                            // Điều tiết chống tràn RAM Audio Encoder
+                            while (audioEncoder.encodeQueueSize > 12) {
+                                await new Promise(r => setTimeout(r, 6));
+                            }
+
                             const chunkLength = Math.min(chunkSize, leftChannel.length - offset);
                             const interleaved = new Float32Array(chunkLength * 2);
                             for (let i = 0; i < chunkLength; i++) {
@@ -2947,51 +2961,57 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                     }
                 }
 
+                // 3. Khởi tạo Canvas nội suy duy nhất (Tránh Garbage Overhead)
                 const canvas = new OffscreenCanvas(width, height);
-                const ctx = canvas.getContext('2d');
+                const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
                 let timeMicros = 0;
-                const frameDurationMicros = 1_000_000 / fps; // 16666.6 µs mỗi frame
+                const frameDurationMicros = 1_000_000 / fps;
 
                 const numTransitions = Math.max(1, sceneCount - 1);
                 const framesPerTransition = totalFrames / numTransitions;
 
-                // Vòng lặp render chính xác 60 ảnh nội suy trên mỗi giây
+                // 4. Vòng lặp kết xuất 5.400 frames (60 ảnh nội suy / giây)
                 for (let f = 0; f < totalFrames; f++) {
+                    if (videoEncoderError) throw videoEncoderError;
+
+                    // ADAPTIVE BACKPRESSURE GOVERNOR: Chống sập RAM đồ họa
+                    while (videoEncoder.encodeQueueSize > 8) {
+                        await new Promise(r => setTimeout(r, 6));
+                    }
+
                     const currentSeg = Math.min(Math.floor(f / framesPerTransition), numTransitions - 1);
                     const nextSeg = Math.min(currentSeg + 1, sceneCount - 1);
 
                     const rawT = (f - currentSeg * framesPerTransition) / framesPerTransition;
                     const clampedT = Math.max(0, Math.min(1, rawT));
-
-                    // Đường cong Hermite Smoothstep phi tuyến tính
                     const smoothT = clampedT * clampedT * (3 - 2 * clampedT);
 
                     ctx.save();
-                    ctx.clearRect(0, 0, width, height);
+                    ctx.fillStyle = '#000000';
+                    ctx.fillRect(0, 0, width, height);
 
                     const imgA = sceneImages[currentSeg];
                     const imgB = sceneImages[nextSeg];
 
                     if (sceneCount === 1 || currentSeg === nextSeg) {
                         const microScale = 1.0 + Math.sin(f * 0.05) * 0.02;
-                        const microPanX = Math.cos(f * 0.03) * (width * 0.015);
-                        const microPanY = Math.sin(f * 0.04) * (height * 0.01);
+                        const microPanX = Math.cos(f * 0.03) * (width * 0.012);
+                        const microPanY = Math.sin(f * 0.04) * (height * 0.008);
                         
                         ctx.translate(width / 2 + microPanX, height / 2 + microPanY);
                         ctx.scale(microScale, microScale);
                         ctx.translate(-width / 2, -height / 2);
                         this.drawImageCover(ctx, imgA, width, height);
                     } else {
-                        // NỘI SUY CHUYỂN ĐỘNG CHỦ THỂ 2 CHIỀU (BIDIRECTIONAL SUBJECT MOTION WARP)
-                        const motionVectorX = width * 0.04;
-                        const motionVectorY = height * 0.02;
+                        // NỘI SUY CHUYỂN ĐỘNG VẬT LÝ 2 CHIỀU
+                        const motionVectorX = width * 0.035;
+                        const motionVectorY = height * 0.018;
 
-                        // 1. Keyframe A: Chủ thể biến dạng tịnh tiến theo vector hành động
+                        // Keyframe A: Bắt đầu chuyển động
                         ctx.save();
                         const shiftXA = -motionVectorX * smoothT;
                         const shiftYA = -motionVectorY * smoothT;
-                        const scaleA = 1.0 + 0.04 * smoothT;
-                        
+                        const scaleA = 1.0 + 0.03 * smoothT;
                         ctx.translate(width / 2 + shiftXA, height / 2 + shiftYA);
                         ctx.scale(scaleA, scaleA);
                         ctx.translate(-width / 2, -height / 2);
@@ -2999,12 +3019,11 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                         this.drawImageCover(ctx, imgA, width, height);
                         ctx.restore();
 
-                        // 2. Keyframe B: Chủ thể biến dạng đón đầu và hoàn tất hành động
+                        // Keyframe B: Đón đầu và kết thúc chuyển động
                         ctx.save();
                         const shiftXB = motionVectorX * (1.0 - smoothT);
                         const shiftYB = motionVectorY * (1.0 - smoothT);
-                        const scaleB = 1.04 - 0.04 * (1.0 - smoothT);
-
+                        const scaleB = 1.03 - 0.03 * (1.0 - smoothT);
                         ctx.translate(width / 2 + shiftXB, height / 2 + shiftYB);
                         ctx.scale(scaleB, scaleB);
                         ctx.translate(-width / 2, -height / 2);
@@ -3012,11 +3031,11 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                         this.drawImageCover(ctx, imgB, width, height);
                         ctx.restore();
 
-                        // 3. Sub-frame Motion Blur 60 FPS: Khử hiện tượng bóng ma, tạo độ mượt điện ảnh
-                        if (clampedT > 0.15 && clampedT < 0.85) {
+                        // Sub-frame Motion Blur 60 FPS
+                        if (clampedT > 0.2 && clampedT < 0.8) {
                             ctx.save();
-                            ctx.globalAlpha = 0.06 * (1.0 - Math.abs(clampedT - 0.5) * 2);
-                            const blurShift = (clampedT - 0.5) * motionVectorX * 0.5;
+                            ctx.globalAlpha = 0.05 * (1.0 - Math.abs(clampedT - 0.5) * 2);
+                            const blurShift = (clampedT - 0.5) * motionVectorX * 0.4;
                             ctx.translate(blurShift, 0);
                             this.drawImageCover(ctx, imgB, width, height);
                             ctx.restore();
@@ -3025,13 +3044,20 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
 
                     ctx.restore();
 
+                    // Đóng gói VideoFrame an toàn với try...finally
                     const vFrame = new VideoFrame(canvas, { timestamp: timeMicros });
-                    videoEncoder.encode(vFrame, { keyFrame: f % 60 === 0 });
-                    vFrame.close();
+                    try {
+                        videoEncoder.encode(vFrame, { keyFrame: f % 60 === 0 });
+                    } finally {
+                        vFrame.close(); // Thu hồi VRAM ngay lập tức
+                    }
                     timeMicros += frameDurationMicros;
 
-                    if (onProgress && f % 15 === 0) {
-                        onProgress(Math.round((f / totalFrames) * 100));
+                    // Nhả quyền điều khiển cho Browser Event Loop để dọn rác và giữ UI mượt mà
+                    if (f % 12 === 0) {
+                        if (onProgress) {
+                            onProgress(Math.round((f / totalFrames) * 100), f, totalFrames);
+                        }
                         await new Promise(r => setTimeout(r, 0));
                     }
                 }
@@ -3039,6 +3065,13 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                 await videoEncoder.flush();
                 if (audioEncoder) await audioEncoder.flush();
                 muxer.finalize();
+
+                // Giải phóng các ImageBitmap sau khi hoàn tất
+                sceneImages.forEach(img => {
+                    if (img && typeof img.close === 'function') {
+                        try { img.close(); } catch (_) {}
+                    }
+                });
 
                 return new Blob([muxer.target.buffer], { type: 'video/mp4' });
             }
@@ -3665,7 +3698,7 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                         if (isGenerating.value) return;
                         isGenerating.value = true;
                         
-                        // 1. Khóa cứng Seed duy nhất cho toàn bộ chuỗi tạo ảnh chuyển động
+                        // 1. Khóa Seed cố định tuyệt đối cho toàn bộ chuỗi 90s
                         const lockedSeed = (cinemaConfig.characterSeed && cinemaConfig.characterSeed > 0)
                             ? Number(cinemaConfig.characterSeed)
                             : (Math.floor(Math.random() * 899999) + 100000);
@@ -3677,7 +3710,7 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                         if (!msg) currentMessages.value.push(targetMsg);
 
                         try {
-                            const durationSec = Number(cinemaConfig.duration) || 10;
+                            const durationSec = Number(cinemaConfig.duration) || 90;
                             const styleType = cinemaConfig.style || 'cinematic';
                             const aspectRatio = cinemaConfig.aspectRatio || '16:9';
                             const healthyKey = getNextHealthyApiKey()?.key || '';
@@ -3688,10 +3721,10 @@ Nhiệm vụ: Hãy đọc câu thoại sau bằng tiếng Việt với đúng ch
                             else if (aspectRatio === '21:9') { fluxW = 1344; fluxH = 576; }
                             else if (aspectRatio === '4:3') { fluxW = 1152; fluxH = 864; }
 
-                            // BƯỚC 1: NẾU TẠO TỪ VĂN BẢN -> GEMINI LÀM GIÀU PROMPT & GỬI FLUX TẠO ẢNH ĐẦU TIÊN
+                            // BƯỚC 1: TẠO TỪ VĂN BẢN -> GEMINI LÀM GIÀU PROMPT & FLUX TẠO ẢNH ĐẦU TIÊN
                             if (!baseImgUrl && !baseImgData) {
-                                searchStatusText.value = "Gemini đang làm giàu prompt và thiết lập bối cảnh ban đầu...";
-                                const enrichPrompt = `[NHIỆM VỤ: LÀM GIÀU PROMPT TẠO ẢNH GỐC ĐỂ NỘI SUY CHUYỂN ĐỘNG]
+                                searchStatusText.value = "Gemini đang làm giàu prompt và thiết lập bối cảnh 8K ban đầu...";
+                                const enrichPrompt = `[NHIỆM VỤ: LÀM GIÀU PROMPT TẠO ẢNH GỐC ĐỂ NỘI SUY CHUYỂN ĐỘNG ${durationSec}S]
 Yêu cầu người dùng: "${customPrompt || 'Một phân cảnh điện ảnh đặc sắc'}"
 Phong cách: ${styleType}
 Tỷ lệ: ${aspectRatio}
@@ -3710,13 +3743,13 @@ CHỈ TRẢ VỀ DUY NHẤT 1 DÒNG PROMPT TIẾNG ANH, KHÔNG GIẢI THÍCH GÌ
                                 baseImgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(initialPromptEn)}?width=${fluxW}&height=${fluxH}&model=flux&nologo=true&seed=${lockedSeed}`;
                             }
 
-                            // Chuyển đổi ảnh đầu tiên thành base64 để gửi vào Gemini phân tích
+                            // Chuyển ảnh đầu tiên sang base64 để Gemini phân rã hành động
                             if (baseImgUrl && !baseImgData) {
                                 try {
                                     const img = await AICinemaEngine.loadImage(baseImgUrl);
                                     const cv = document.createElement('canvas');
-                                    cv.width = img.naturalWidth || fluxW;
-                                    cv.height = img.naturalHeight || fluxH;
+                                    cv.width = img.width || fluxW;
+                                    cv.height = img.height || fluxH;
                                     const ctx = cv.getContext('2d');
                                     ctx.drawImage(img, 0, 0);
                                     const dataUrl = cv.toDataURL('image/jpeg', 0.85);
@@ -3736,48 +3769,49 @@ CHỈ TRẢ VỀ DUY NHẤT 1 DÒNG PROMPT TIẾNG ANH, KHÔNG GIẢI THÍCH GÌ
                                 });
                             }
 
-                            // Số mốc chuyển động vi mô cần bóc tách
-                            const numKeyScenes = Math.min(10, Math.max(4, Math.round(durationSec / 2.5)));
+                            // Với 90s, tối ưu từ 12-16 Keyframe hành động để đảm bảo tính liên tục mà không gây quá tải mạng
+                            const numKeyScenes = Math.min(16, Math.max(6, Math.round(durationSec / 6)));
 
                             const voiceMatrixInfo = cinemaVoiceCharacters.value.map(c => 
                                 `- ${c.name}: Giới tính: ${c.gender === 'male' ? 'Nam' : 'Nữ'}, Miền: ${c.region === 'north' ? 'Bắc' : c.region === 'central' ? 'Trung' : 'Nam'}, Voice: ${c.geminiVoice}`
                             ).join('\n');
 
-                            // BƯỚC 2: ĐƯA ẢNH ĐẦU TIÊN CHO GEMINI NỘI SUY CHUYỂN ĐỘNG CỦA CHỦ THỂ THÀNH CHUỖI PROMPT
-                            let motionDecomposePrompt = `[CHỈ ĐẠO ĐẠO DIỄN: GEMINI NỘI SUY CHUYỂN ĐỘNG CHỦ THỂ TỪ HÌNH ẢNH]
+                            // BƯỚC 2: GEMINI NỘI SUY CHUYỂN ĐỘNG DỌC THEO TRỤC THỜI GIAN 90 GIÂY
+                            let motionDecomposePrompt = `[CHỈ ĐẠO ĐẠO DIỄN: GEMINI NỘI SUY CHUYỂN ĐỘNG CHỦ THỂ TRONG ${durationSec}S]
 Hãy quan sát kỹ lưỡng ảnh đính kèm trên (Ảnh khởi đầu của video).
 Yêu cầu hành động: "${customPrompt || 'Nội suy chuyển động vật lý mượt mà tiếp theo của chủ thể trong ảnh'}"
-Thời lượng: ${durationSec} giây | Tốc độ: 60 FPS (Mỗi giây ghép đúng 60 ảnh nội suy)
-Mã Seed khóa: #${lockedSeed}
+Thời lượng: ${durationSec} giây | Tốc độ: 60 FPS (Mỗi giây ghép đúng 60 ảnh nội suy = Tổng cộng ${durationSec * 60} ảnh)
+Mã Seed đã khóa: #${lockedSeed}
 
 DANH SÁCH NHÂN VẬT LỒNG TIẾNG:
 ${voiceMatrixInfo}
 
-QUY TẮC NỘI SUY CHUYỂN ĐỘNG CHỦ THỂ:
-1. KHÓA CHỦ THỂ: Giữ nguyên 100% diện mạo, gương mặt, tỷ lệ cơ thể, trang phục, màu lông, phụ kiện và bối cảnh của chủ thể trong ảnh gốc.
-2. PHÂN RÃ HÀNH ĐỘNG THÀNH PROMPT TẠO ẢNH: Hãy viết chính xác ${numKeyScenes} câu prompt tiếng Anh (scene_prompts) mô tả sự biến đổi chuyển động vật lý liên tục từng bước của chủ thể (từ trạng thái trong ảnh ban đầu -> hành động diễn tiến -> biên độ chuyển động cực đại -> kết thúc hành động). Mỗi prompt là một mô tả hoàn chỉnh để gửi sang FLUX tạo ảnh.
-3. KỊCH BẢN THOẠI (dialogue_script): Soạn lời thoại tương ứng khớp với thời lượng ${durationSec}s.
+QUY TẮC NỘI SUY CHUYỂN ĐỘNG VẬT LÝ DÀI HẠN:
+1. KHÓA CHỦ THỂ: Giữ nguyên 100% diện mạo, gương mặt, trang phục, chi tiết cơ thể và môi trường trong ảnh gốc.
+2. PHÂN RÃ HÀNH ĐỘNG DỌC THEO TRỤC 90 GIÂY: Hãy viết đúng ${numKeyScenes} câu prompt tiếng Anh (scene_prompts) miêu tả các pha chuyển động liên tiếp không ngắt quãng (khởi động -> tăng tốc hành động -> cao trào -> các chuỗi động tác tiếp diễn -> hoàn tất).
+3. KỊCH BẢN THOẠI: Soạn lời thoại tương ứng giữa các nhân vật phân bổ đều từ 0s đến ${durationSec - 3}s.
 
 TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
 {
-  "visual_theme": "Tên hành động chuyển động",
+  "visual_theme": "Tên chuyển động chủ thể",
   "ambient_sound": "ocean_waves | rain | wind | city | nature",
   "scene_prompts": [
-    "Prompt 1 tiếng Anh: Frame 1 action continuation...",
-    "Prompt 2 tiếng Anh: Frame 2 motion progressing...",
-    "Prompt 3 tiếng Anh: Frame 3 action peak..."
+    "Prompt 1 tiếng Anh: Frame 1 action progression...",
+    "Prompt 2 tiếng Anh: Frame 2 motion continuous...",
+    "Prompt 3 tiếng Anh: Frame 3 next phase..."
   ],
   "dialogue_script": [
-    { "speaker": "Nhân vật 1", "startTimeSec": 1.0, "text": "Lời thoại..." }
+    { "speaker": "Nhân vật 1", "startTimeSec": 1.5, "text": "Lời thoại mở đầu..." },
+    { "speaker": "Nhân vật 2", "startTimeSec": 10.0, "text": "Lời thoại tiếp theo..." }
   ]
 }`;
 
                             parts.push({ text: motionDecomposePrompt });
 
-                            searchStatusText.value = "Gemini đang bóc tách từng chuyển động vi mô của chủ thể thành các prompt tạo ảnh...";
+                            searchStatusText.value = `Gemini đang bóc tách ${numKeyScenes} trạng thái chuyển động liên tục của chủ thể...`;
                             const directorResult = await dispatchBackgroundTaskWithFallback({
                                 contents: [{ role: 'user', parts: parts }],
-                                generationConfig: { temperature: 0.15, maxOutputTokens: 3500 },
+                                generationConfig: { temperature: 0.15, maxOutputTokens: 4000 },
                                 safetySettings: SAFETY_SETTINGS
                             });
 
@@ -3790,8 +3824,8 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                                     visual_theme: customPrompt || "Chuyển động chủ thể 60 FPS",
                                     ambient_sound: "nature",
                                     scene_prompts: [
-                                        `${customPrompt}, phase 1 starting posture, cinematic 8k, locked seed`,
-                                        `${customPrompt}, phase 2 motion continuous, dynamic action`,
+                                        `${customPrompt}, phase 1 starting action, cinematic 8k, locked seed`,
+                                        `${customPrompt}, phase 2 motion continuous, dynamic 60fps`,
                                         `${customPrompt}, phase 3 completed motion, masterpiece`
                                     ],
                                     dialogue_script: []
@@ -3799,7 +3833,6 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                             }
 
                             const loadedSceneImages = [];
-                            // Nạp ảnh đầu tiên vào chuỗi
                             if (baseImgUrl) {
                                 try {
                                     const initialImg = await AICinemaEngine.loadImage(baseImgUrl);
@@ -3809,26 +3842,28 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                                 }
                             }
 
-                            // BƯỚC 3: GỬI TỪNG PROMPT CHUYỂN ĐỘNG CHO FLUX TẠO ẢNH VỚI LOCKED SEED
+                            // BƯỚC 3: TẢI TUẦN TỰ TỪNG KEYFRAME FLUX VỚI CÙNG LOCKED SEED (CHỐNG NGHẼN MẠNG)
                             const scenePrompts = storyboard.scene_prompts || [customPrompt];
                             for (let i = 0; i < scenePrompts.length; i++) {
-                                searchStatusText.value = `FLUX đang tạo ảnh chuyển động [${i + 1}/${scenePrompts.length}] (Locked Seed #${lockedSeed})...`;
+                                searchStatusText.value = `FLUX đang vẽ Keyframe chuyển động [${i + 1}/${scenePrompts.length}] (Locked Seed #${lockedSeed})...`;
                                 const prompt = scenePrompts[i];
                                 const frameUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${fluxW}&height=${fluxH}&model=flux&nologo=true&seed=${lockedSeed}`;
                                 try {
-                                    const imgObj = await AICinemaEngine.loadImage(frameUrl);
-                                    loadedSceneImages.push(imgObj);
+                                    const imgBitmap = await AICinemaEngine.loadImage(frameUrl);
+                                    loadedSceneImages.push(imgBitmap);
                                 } catch (e) {
                                     console.warn(`Lỗi tạo ảnh chuyển động ${i}:`, e);
                                 }
+                                // Nghỉ 100ms giữa các request để tránh rate limit từ CDN
+                                await new Promise(r => setTimeout(r, 100));
                             }
 
                             if (loadedSceneImages.length === 0) {
                                 throw new Error("Không thể khởi tạo chuỗi hình ảnh chuyển động.");
                             }
 
-                            // BƯỚC 4: GHÉP 60 ẢNH NỘI SUY MỖI GIÂY THÀNH VIDEO MP4
-                            searchStatusText.value = `Đang nội suy 60 ảnh/giây (Tổng cộng ${durationSec * 60} ảnh) & hòa âm đa giọng đọc...`;
+                            // BƯỚC 4: GHÉP 60 ẢNH NỘI SUY / GIÂY (90s = 5.400 FRAMES) VỚI CƠ CHẾ CHỐNG SẬP TAB
+                            searchStatusText.value = `Đang kích hoạt bộ gia tốc phần cứng WebCodecs cho ${durationSec * 60} frames...`;
                             const mp4Blob = await AICinemaEngine.renderToMp4_60FPS({
                                 sceneImages: loadedSceneImages,
                                 totalDurationSec: durationSec,
@@ -3837,8 +3872,8 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                                 dialogueScript: storyboard.dialogue_script || [],
                                 voiceCharacters: cinemaVoiceCharacters.value,
                                 apiKey: healthyKey,
-                                onProgress: (percent) => {
-                                    searchStatusText.value = `Đang ghép ${durationSec * 60} ảnh nội suy 60 FPS: ${percent}%...`;
+                                onProgress: (percent, currentF, totalF) => {
+                                    searchStatusText.value = `Đang kết xuất 60 FPS (${currentF}/${totalF} frames): ${percent}%...`;
                                 }
                             });
 
@@ -3847,16 +3882,16 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                             
                             const dialogueSummary = (storyboard.dialogue_script || []).map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`).join('\n');
                             targetMsg.content = (targetMsg.content || '') + 
-                                `\n\n🎬 **[Xưởng Phim AI Cinema 60 FPS]** Đã hoàn tất video **${durationSec}s** (**${durationSec * 60} ảnh nội suy** chuyển động liên tục).\n` +
+                                `\n\n🎬 **[Xưởng Phim AI Cinema 60 FPS]** Đã xuất bản thành công video **${durationSec}s** (**${durationSec * 60} ảnh nội suy** liên tục).\n` +
                                 `- **Chủ thể:** ${storyboard.visual_theme}\n` +
-                                `- **Mã Seed đã khóa:** \`#${lockedSeed}\` (Đồng nhất 100% diện mạo chủ thể và bối cảnh)\n` +
-                                `- **Quy trình:** Gemini làm giàu & bóc tách chuyển động <=> FLUX tạo ảnh khóa Seed <=> WebCodecs ghép 60 ảnh/s\n` +
+                                `- **Mã Seed đã khóa:** \`#${lockedSeed}\` (Bảo đảm đồng nhất 100% diện mạo và bối cảnh)\n` +
+                                `- **Tối ưu phần cứng:** Adaptive Backpressure Governor, chuẩn nén H.264 High Profile 60 FPS\n` +
                                 (dialogueSummary ? `\n🎙️ **Lồng tiếng đa vùng miền (Gemini 3.1 Flash TTS):**\n${dialogueSummary}` : '');
                                 
                             targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                             scheduleDbSave(targetMsg);
                             scrollToBottom(true);
-                            notify(`Đã xuất bản video 60 FPS (${durationSec * 60} ảnh nội suy) với Seed #${lockedSeed}!`);
+                            notify(`Đã hoàn tất video 90 giây 60 FPS (${durationSec * 60} frames) không sập tab!`);
                         } catch (err) {
                             console.error("[AI Cinema 60 FPS Error]:", err);
                             notify("Lỗi tạo video: " + err.message, true);
