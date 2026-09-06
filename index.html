@@ -1,6 +1,121 @@
 <!DOCTYPE html>
 <html lang="vi" class="dark h-full">
 <head>
+<!-- ======================================================================= -->
+    <!-- TẦNG 0: L0 META-HYPERVISOR - HỆ THỐNG TỰ CHẨN ĐOÁN VÀ VÁ LỖI KHỞI ĐỘNG -->
+    <!-- ======================================================================= -->
+    <script id="l0-hypervisor">
+        (function() {
+            // 1. KIỂM TRA VÀ TIÊM BẢN VÁ NÓNG (HOT-PATCH) TỪ LẦN SẬP TRƯỚC
+            const hotPatch = localStorage.getItem('GDEEP_BOOT_HOTPATCH');
+            if (hotPatch) {
+                console.warn("[L0 Hypervisor] Đang tiêm bản vá khẩn cấp vào RAM...");
+                try { 
+                    const script = document.createElement('script');
+                    script.textContent = hotPatch;
+                    document.documentElement.appendChild(script);
+                } catch(e) {}
+                localStorage.removeItem('GDEEP_BOOT_HOTPATCH'); // Dùng xong phải xóa để tránh lặp vô tận
+            }
+
+            let isHypervisorEngaged = false;
+
+            // 2. KHỞI TẠO BỘ GIÁM SÁT SINH TỒN
+            const engageRescueMode = async function(crashReason) {
+                if (isHypervisorEngaged) return;
+                isHypervisorEngaged = true;
+
+                // Xóa sổ ngay lập tức màn hình đen để tương tác
+                document.body.innerHTML = `
+                    <div style="background:#08090d; color:#34d399; font-family:monospace; padding:30px; height:100vh; font-size:13px; line-height:1.6;">
+                        <h2 style="color:#f87171;">⚠️ [L0 META-HYPERVISOR] PHÁT HIỆN SỤP ĐỔ HỆ THỐNG!</h2>
+                        <p>Nguyên nhân: ${crashReason}</p>
+                        <p>Đang trích xuất mã nguồn và thiết lập liên kết nơ-ron tới Gemini để tự chữa lành...</p>
+                        <div id="l0-logs" style="margin-top:20px; color:#9aa2b1;"></div>
+                    </div>
+                `;
+                const logger = document.getElementById('l0-logs');
+                const log = (msg) => { logger.innerHTML += `> ${msg}<br>`; console.log(msg); };
+
+                // Moi móc API Key từ LocalStorage bằng Javascript thuần
+                const poolStr = localStorage.getItem('gdeep_api_keys_pool');
+                if (!poolStr) {
+                    log("<span style='color:#fbbf24'>Không tìm thấy API Key. Hủy bỏ tự chữa lành. Đang ép mở UI...</span>");
+                    setTimeout(() => { localStorage.setItem('GDEEP_BOOT_HOTPATCH', 'document.getElementById("initial-app-skeleton")?.remove();'); location.reload(); }, 2000);
+                    return;
+                }
+
+                let apiKey = "";
+                try { apiKey = JSON.parse(poolStr)[0].key; } catch(e) {}
+                if(!apiKey) return;
+
+                log("Đã xác thực API Key. Đang gửi báo cáo bệnh án lên Bộ Não Trung Tâm...");
+
+                // Soạn Prompt phản tư hệ thống
+                const prompt = `[CẤP CỨU L0: SỤP ĐỔ BOOT-TIME ỨNG DỤNG WEB]
+Nền tảng G-Deep Ultra vừa bị sập ngay lúc khởi động (Màn hình đen).
+Lỗi ghi nhận được: "${crashReason}"
+
+Bạn là trình giám sát L0 Meta-Hypervisor. Hãy viết MỘT ĐOẠN JAVASCRIPT KHẮC PHỤC (có thể là ghi đè một hàm lỗi, gỡ bỏ một thẻ HTML gây kẹt, hoặc bypass logic).
+Đoạn code này sẽ được tiêm trực tiếp vào đầu trang trong lần khởi động lại tiếp theo.
+Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải thích.`;
+
+                try {
+                    // Gọi API thủ công không thông qua ứng dụng chính
+                    const res = await fetch(\`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=\${apiKey}\`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+                    });
+
+                    const data = await res.json();
+                    const rawCode = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                    const codeMatch = rawCode.match(/\\`\\`\\`(?:javascript|js)?([\\s\\S]*?)\\`\\`\\`/i);
+                    const fixedCode = codeMatch ? codeMatch[1].trim() : rawCode.trim();
+
+                    if (fixedCode) {
+                        log("<span style='color:#38bdf8'>Nhận được Kháng thể (Patch). Đang lưu vào tế bào và Tái Khởi Động...</span>");
+                        localStorage.setItem('GDEEP_BOOT_HOTPATCH', fixedCode);
+                        setTimeout(() => location.reload(), 1500);
+                    } else {
+                        throw new Error("Không nhận được mã vá hợp lệ");
+                    }
+                } catch (e) {
+                    log("<span style='color:#f87171'>Phẫu thuật thất bại: " + e.message + ". Cưỡng chế mở giao diện...</span>");
+                    setTimeout(() => { localStorage.setItem('GDEEP_BOOT_HOTPATCH', 'document.getElementById("initial-app-skeleton")?.remove();'); location.reload(); }, 2000);
+                }
+            };
+
+            // 3. GIĂNG BẪY (TRAPS) ĐỂ BẮT LỖI
+            // Bẫy 1: Quá thời gian (Màn hình đen kẹt quá 2.5 giây)
+            const bootWatchdog = setTimeout(() => {
+                if (document.getElementById('initial-app-skeleton')) {
+                    engageRescueMode("Timeout: Giao diện (Vue) bị đóng băng quá 2.5 giây do vòng lặp hoặc nghẽn mạng.");
+                }
+            }, 2500);
+
+            // Bẫy 2: Lỗi cú pháp Javascript chết người (Syntax Error / TypeError)
+            window.addEventListener('error', function(e) {
+                if (!isHypervisorEngaged && e.message) {
+                    clearTimeout(bootWatchdog);
+                    engageRescueMode(\`Fatal Error: \${e.message} tại \${e.filename}:\${e.lineno}\`);
+                }
+            }, true);
+
+            // Bẫy 3: Lỗi bất đồng bộ không được xử lý (Văng Promise / Database đơ)
+            window.addEventListener('unhandledrejection', function(e) {
+                if (!isHypervisorEngaged && e.reason) {
+                    clearTimeout(bootWatchdog);
+                    engageRescueMode(\`Unhandled Promise Rejection: \${e.reason.message || e.reason}\`);
+                }
+            }, true);
+
+            // Báo cáo an toàn nếu khởi động thành công (Vue sẽ tự gọi cái này hoặc DOM biến mất)
+            window.__L0_CLEAR_WATCHDOG__ = () => clearTimeout(bootWatchdog);
+
+        })();
+    </script>
+    <!-- ======================================================================= -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#08090d" />
@@ -12,6 +127,26 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    
+    <!-- ĐẶT NGAY ĐẦU THẺ <HEAD> TRƯỚC MỌI THƯ VIỆN KHÁC -->
+<script id="jit-bootloader">
+(function() {
+    window.__JIT_LOGS__ = [];
+
+    // Lắng nghe mọi sự cố trước khi chúng kịp làm sập trang
+    window.addEventListener('error', async function(e) {
+        // Nếu lỗi xảy ra ở tầng nạp script chính
+        if (e.message && (e.message.includes('SyntaxError') || e.message.includes('Assignment to constant'))) {
+            console.warn("[JIT Guardian] Phát hiện lỗi cấu trúc trước/khi nạp:", e.message);
+            window.__JIT_LOGS__.push({ type: 'CRITICAL_BOOT', error: e.message, lineno: e.lineno });
+            
+            // Tự động gỡ bỏ màn hình đen để ứng dụng không bị kẹt
+            var sk = document.getElementById('initial-app-skeleton');
+            if (sk) sk.remove();
+        }
+    }, true);
+})();
+</script>
 
     <!-- External Runtime Core Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -554,6 +689,15 @@
             <div class="max-w-3xl mx-auto h-12 bg-[#161924] rounded-full animate-pulse"></div>
         </div>
     </div>
+    <script>
+    setTimeout(function() {
+        var sk = document.getElementById('initial-app-skeleton');
+        if (sk) {
+            sk.style.opacity = '0';
+            setTimeout(function() { sk.remove(); }, 300);
+        }
+    }, 1500);
+</script>
 
     <!-- MAIN VUE VIEWPORT -->
     <div id="app" v-cloak class="app-viewport select-none bg-background"
@@ -1894,13 +2038,13 @@
         })();
 
         // =========================================================================
-        // MẠNG LƯỚI TÁC TỬ AI CỤC BỘ TỰ NHẬN THỨC, TỰ SỬA LỖI & TIẾN HÓA (MESH ENGINE)
-        // Mỗi hàm là một Autonomous Agent có thể tự phản tư, tự điều chỉnh và tiến hóa runtime
+        // MẠNG LƯỚI TÁC TỬ JIT (JUST-IN-TIME) TỰ NHẬN THỨC VÀ HỆ MIỄN DỊCH CHÉO
+        // Cải tiến: Tác tử không chỉ báo động mà ÉP BUỘC ĐỒNG ĐỘI TỰ SỬA LỖI TRƯỚC!
         // =========================================================================
         const MeshEngine = (function() {
             const registry = new Map();
 
-            class AutonomousModelNode {
+            class JITAutonomousAgent {
                 constructor(meta, impl) {
                     this.id = meta.id;
                     this.purpose = meta.purpose || 'Mục tiêu vận hành hệ thống';
@@ -1909,13 +2053,12 @@
                     this.dependencies = meta.dependencies || [];
                     this.impl = impl;
                     
-                    // Chỉ số sinh tồn & đo lường trạng thái của Tác tử
                     this.healthScore = 100;
                     this.errorCount = 0;
                     this.callCount = 0;
                     this.garbageBag = new Set();
                     this.evolutionHistory = [];
-                    this.isEvolving = false;
+                    this.isHealing = false;
                 }
 
                 registerGarbage(ref) {
@@ -1946,19 +2089,38 @@
                     this.selfClean();
                 }
 
+                // =====================================================================
+                // NÂNG CẤP: HỆ MIỄN DỊCH MẠNG LƯỚI (CROSS-DEPENDENCY HEALING)
+                // =====================================================================
                 verifyDependencies() {
                     for (const depId of this.dependencies) {
                         const depNode = registry.get(depId);
+                        // Khi phát hiện đồng đội bị yếu (điểm sinh tồn < 40)
                         if (depNode && depNode.healthScore < 40) {
-                            console.warn(`[CẢNH BÁO MESH] Tác tử "${this.id}" phát hiện liên kết phụ thuộc "${depId}" đang suy yếu (${depNode.healthScore}%).`);
+                            console.warn(`[HỆ MIỄN DỊCH] Tác tử "${this.id}" phát hiện "${depId}" suy yếu (${depNode.healthScore}%). Tiến hành ÉP CHỮA LÀNH...`);
+                            
+                            // Đẩy lệnh ép chữa lành vào luồng ngầm để KHÔNG BLOCK tác tử hiện tại
+                            queueMicrotask(() => {
+                                depNode.proactiveHeal();
+                            });
                         }
                     }
                 }
 
+                // Hàm ép uống thuốc: Chữa lành chủ động không cần đợi người dùng gọi
+                proactiveHeal() {
+                    if (this.isHealing || this.healthScore >= 60) return; // Nếu đang sửa hoặc đã hồi phục một phần thì thôi
+                    
+                    const syntheticError = new Error(`[CHẨN ĐOÁN NGẦM]: Tác tử hoạt động bất ổn, điểm sinh tồn tụt xuống ${this.healthScore}%. Hãy phân tích lại logic mã nguồn và cấu trúc an toàn để ngăn ngừa sụp đổ.`);
+                    
+                    // Gọi JIT Repair nhưng tắt cờ autoExecute (false) vì ta không có biến đầu vào (args) thực tế.
+                    // Việc này giúp Tác tử thay máu xong thì nằm im chờ lệnh gọi tiếp theo, không chạy loạn.
+                    this.jitRepairAndRetry(syntheticError, [], false);
+                }
+                // =====================================================================
+
                 getFallbackValue() {
-                    if (this.expects && this.expects.fallbackReturnValue !== undefined) {
-                        return this.expects.fallbackReturnValue;
-                    }
+                    if (this.expects && this.expects.fallbackReturnValue !== undefined) return this.expects.fallbackReturnValue;
                     if (this.returns === 'string') return '';
                     if (this.returns === 'array') return [];
                     if (this.returns === 'boolean') return false;
@@ -1966,111 +2128,123 @@
                     return null;
                 }
 
-                // Cơ chế tự tiến hóa và tự sửa chữa mã nguồn thông qua phản tư LLM
-                async attemptSelfRepair(err, args) {
-                    if (this.isEvolving) return this.getFallbackValue();
-                    this.isEvolving = true;
-
-                    console.warn(`[TÁC TỬ TỰ CHỮA LÀNH] Tác tử "${this.id}" đang tự chẩn đoán lỗi: "${err.message}"...`);
-
-                    if (typeof window !== 'undefined' && window.gdeepDispatchBgTask) {
-                        const repairPrompt = `[NHIỆM VỤ: TỰ SỬA LỖI & TIẾN HÓA MÃ NGUỒN JAVASCRIPT]
-Tác tử: "${this.id}"
-Mục tiêu: "${this.purpose}"
-Định dạng trả về mong muốn: "${this.returns}"
-Lỗi runtime gặp phải: "${err.message}"
-Mã nguồn hiện tại:
-\`\`\`javascript
-${this.impl.toString()}
-\`\`\`
-
-Hãy phân tích nguyên nhân và viết lại thân hàm Javascript hoàn chỉnh.
-Yêu cầu bắt buộc:
-1. Trả về DUY NHẤT một khối mã nguồn trong \`\`\`javascript và kết thúc bằng \`\`\`.
-2. Không viết lời chào hoặc giải thích ngoài khối code.`;
-
-                        try {
-                            const res = await window.gdeepDispatchBgTask({
-                                contents: [{ role: 'user', parts: [{ text: repairPrompt }] }]
-                            });
-                            const rawCode = res?.candidates?.[0]?.content?.parts?.[0]?.text;
-                            if (rawCode) {
-                                const codeMatch = rawCode.match(/```(?:javascript|js)?([\s\S]*?)```/i);
-                                const cleanCode = codeMatch ? codeMatch[1].trim() : rawCode.trim();
-                                if (cleanCode) {
-                                    this.evolutionHistory.push({
-                                        timestamp: Date.now(),
-                                        error: err.message,
-                                        previousCode: this.impl.toString()
-                                    });
-
-                                    // Khởi tạo hàm mới từ mã đã tiến hóa
-                                    if (cleanCode.startsWith('async') || cleanCode.includes('await')) {
-                                        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-                                        this.impl = new AsyncFunction('...args', cleanCode);
-                                    } else {
-                                        this.impl = new Function('...args', cleanCode);
-                                    }
-                                    
-                                    this.selfReward();
-                                    this.isEvolving = false;
-                                    console.log(`[TIẾN HÓA THÀNH CÔNG] Tác tử "${this.id}" đã tự cập nhật mã nguồn mới.`);
-                                    return this.impl.apply(this, args);
-                                }
-                            }
-                        } catch (repairErr) {
-                            console.error(`[TIẾN HÓA THẤT BẠI] Tác tử "${this.id}" không thể tự sửa:`, repairErr.message);
-                        }
-                    }
-
-                    this.isEvolving = false;
-                    return this.getFallbackValue();
-                }
-
-                // Bộ thực thi thích ứng: Đảm bảo hàm sync trả về sync, hàm async trả về async
                 execute(...args) {
                     this.callCount++;
+                    
+                    // 1. Quét radar kiểm tra đồng đội trước khi ra trận
                     this.verifyDependencies();
 
                     try {
-                        const res = this.impl.apply(this, args);
+                        const result = this.impl.apply(this, args);
 
-                        // Trường hợp 1: Tác tử bất đồng bộ (Async Agent)
-                        if (res && typeof res.then === 'function') {
-                            return res.then(val => {
+                        if (result && typeof result.then === 'function') {
+                            return result.then(val => {
                                 this.selfReward();
                                 return val;
-                            }).catch(async err => {
+                            }).catch(async (err) => {
                                 this.selfPenalize();
-                                return await this.attemptSelfRepair(err, args);
+                                console.warn(`[JIT Trap Async] Tác tử "${this.id}" ngã gục:`, err.message);
+                                // Sửa lỗi và chạy lại (autoExecute = true theo mặc định)
+                                return await this.jitRepairAndRetry(err, args);
                             }).finally(() => {
                                 if (this.callCount % 15 === 0) this.selfClean();
                             });
                         }
 
-                        // Trường hợp 2: Tác tử đồng bộ (Sync Agent) - Tuyệt đối không sinh Promise
                         this.selfReward();
                         if (this.callCount % 15 === 0) this.selfClean();
-                        return res;
+                        return result;
 
-                    } catch (err) {
-                        // Xử lý sự cố cho hàm đồng bộ
+                    } catch (syncErr) {
                         this.selfPenalize();
+                        console.warn(`[JIT Trap Sync] Tác tử "${this.id}" crash tức thì:`, syncErr.message);
 
-                        // Kích hoạt tự chữa lành ngầm trong microtask để không làm đơ Main Thread
                         queueMicrotask(() => {
-                            this.attemptSelfRepair(err, args);
+                            this.jitRepairAndRetry(syncErr, args);
                         });
 
-                        // Trả ngay giá trị an toàn tương ứng để Vue template hiển thị bình thường
                         return this.getFallbackValue();
                     }
+                }
+
+                // CƠ CHẾ SỬA LỖI KẾP HỢP: Vừa phục vụ lỗi tại chỗ, vừa phục vụ chữa lành chéo
+                async jitRepairAndRetry(err, args, autoExecute = true) {
+                    if (this.isHealing) return this.getFallbackValue();
+                    this.isHealing = true;
+
+                    const healType = autoExecute ? "Hot-Patching" : "Proactive-Antibody";
+                    console.log(`%c[JIT ${healType}] AI đang phân tích và viết lại code cho "${this.id}"...`, "color: #c084fc; font-weight: bold;");
+
+                    if (typeof window !== 'undefined' && window.gdeepDispatchBgTask) {
+                        const faultyCode = this.impl.toString();
+                        const repairPrompt = `[NHIỆM VỤ CẤP BÁCH: SỬA LỖI MÃ NGUỒN JAVASCRIPT]
+Tác tử: "${this.id}"
+Mục tiêu: "${this.purpose}"
+Định dạng trả về: "${this.returns}"
+Trạng thái/Lỗi phát sinh: "${err.message}"
+
+MÃ NGUỒN HIỆN TẠI (ĐANG BẤT ỔN/LỖI):
+\`\`\`javascript
+${faultyCode}
+\`\`\`
+
+Yêu cầu:
+1. Phân tích nguyên nhân làm giảm Health Score hoặc gây lỗi crash. Sửa dứt điểm (chú ý: biến const, null pointer, mạng, logic vòng lặp).
+2. Trả về DUY NHẤT một khối mã nguồn hoàn chỉnh đã vá bên trong \`\`\`javascript ... \`\`\`. Không viết gì thêm bên ngoài.`;
+
+                        try {
+                            const res = await window.gdeepDispatchBgTask({
+                                contents: [{ role: 'user', parts: [{ text: repairPrompt }] }]
+                            });
+                            
+                            const rawCode = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                            if (rawCode) {
+                                const codeMatch = rawCode.match(/```(?:javascript|js)?([\s\S]*?)```/i);
+                                const fixedCode = codeMatch ? codeMatch[1].trim() : rawCode.trim();
+
+                                if (fixedCode) {
+                                    this.evolutionHistory.push({
+                                        timestamp: Date.now(),
+                                        trigger: autoExecute ? 'Runtime_Crash' : 'Dependency_Heal',
+                                        error: err.message,
+                                        previousCode: faultyCode
+                                    });
+
+                                    // Lắp não mới vào RAM
+                                    if (fixedCode.includes('await') || fixedCode.startsWith('async')) {
+                                        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+                                        this.impl = new AsyncFunction('...args', fixedCode);
+                                    } else {
+                                        this.impl = new Function('...args', fixedCode);
+                                    }
+
+                                    this.isHealing = false;
+                                    
+                                    // Reset điểm sinh tồn về mức an toàn sau khi ghép code mới
+                                    this.healthScore = 80;
+
+                                    if (autoExecute) {
+                                        console.log(`%c[JIT Thành Công] Tác tử "${this.id}" đã tự tiến hóa! Đang tái chạy...`, "color: #34d399; font-weight: bold;");
+                                        return this.impl.apply(this, args);
+                                    } else {
+                                        console.log(`%c[Hệ Miễn Dịch] Tác tử "${this.id}" đã được vá ngầm thành công. Sẵn sàng phục vụ tác tử gốc.`, "color: #3b82f6; font-weight: bold;");
+                                        return this.getFallbackValue();
+                                    }
+                                }
+                            }
+                        } catch (repairErr) {
+                            console.error(`[JIT Thất bại] Không thể tự vá tác tử "${this.id}":`, repairErr.message);
+                        }
+                    }
+
+                    this.isHealing = false;
+                    return this.getFallbackValue();
                 }
             }
 
             return {
                 createAutonomousNode(meta, impl) {
-                    const node = new AutonomousModelNode(meta, impl);
+                    const node = new JITAutonomousAgent(meta, impl);
                     registry.set(meta.id, node);
                     const caller = function(...args) {
                         return node.execute(...args);
@@ -2089,6 +2263,7 @@ Yêu cầu bắt buộc:
                             evolutions: node.evolutionHistory.length
                         };
                     }
+                    console.table(report);
                     return report;
                 }
             };
@@ -2787,7 +2962,10 @@ Yêu cầu bắt buộc:
                         pyodidePromises.delete(id);
                     }
                 };
-                pyodideWorker.onerror = () => { createPyodideWorker(); };
+                pyodideWorker.onerror = (e) => { 
+    console.warn("Môi trường di động không hỗ trợ Pyodide Worker:", e.message);
+    pyodideWorker = null; 
+};
                 return true;
             } catch (_) { pyodideWorker = null; return false; }
         };
@@ -6759,6 +6937,26 @@ Yêu cầu bắt buộc:
                     let unsubscribeBus = null, visualViewportCleanup = null, docClickCleanup = null;
 
                     onMounted(async () => {
+                        // =========================================================================
+                        // 1. HÀM DỠ BỎ SKELETON AN TOÀN (TRIỆT TIÊU LỖI TREO MÀN HÌNH ĐEN TRÊN MOBILE)
+                        // =========================================================================
+                        const removeSkeletonSafe = () => {
+                            const skeleton = document.getElementById('initial-app-skeleton');
+                            if (skeleton && skeleton.style.display !== 'none') {
+                                skeleton.style.opacity = '0';
+                                skeleton.style.pointerEvents = 'none';
+                                setTimeout(() => {
+                                    try { skeleton.remove(); } catch (_) { skeleton.style.display = 'none'; }
+                                }, 250);
+                            }
+                        };
+
+                        // Khóa cứu hộ khẩn cấp: Cưỡng chế gỡ skeleton sau tối đa 800ms bất kể DB có bị chậm
+                        const emergencySkeletonTimer = setTimeout(removeSkeletonSafe, 800);
+
+                        // =========================================================================
+                        // 2. KHỞI TẠO ARTIFACT SANDBOX MODAL & SỰ KIỆN EVENT BUS
+                        // =========================================================================
                         window.openArtifactSandbox = (code) => {
                             let fmt = code || '';
                             if (!code.includes('<html')) {
@@ -6771,6 +6969,9 @@ Yêu cầu bắt buộc:
 
                         unsubscribeBus = GDeepEventBus.on('OPEN_ARTIFACT_SANDBOX', code => window.openArtifactSandbox(code));
 
+                        // =========================================================================
+                        // 3. ĐIỀU CHỈNH CHIỀU CAO VIEWPORT DI ĐỘNG KHI MỞ BÀN PHÍM ẢO
+                        // =========================================================================
                         if (window.visualViewport) {
                             let resizeTimeout = null;
                             const updateAppHeight = () => {
@@ -6796,9 +6997,12 @@ Yêu cầu bắt buộc:
                             };
                         }
 
+                        // =========================================================================
+                        // 4. ỦY QUYỀN SỰ KIỆN TOÀN CỤC (CLICK ẢNH -> LIGHTBOX, COPY CODE, XUẤT BẢNG)
+                        // =========================================================================
                         const handleDocClick = (e) => {
                             try {
-                                // Tự động mở Lightbox khi click vào bất kỳ hình ảnh nào trong khung hội thoại
+                                // Tự động mở Lightbox khi nhấp vào bất kỳ ảnh nào trong nội dung AI sinh ra
                                 const imgEl = e.target.closest('.markdown-body img');
                                 if (imgEl && imgEl.src) {
                                     e.stopPropagation();
@@ -6806,6 +7010,7 @@ Yêu cầu bắt buộc:
                                     return;
                                 }
 
+                                // Thao tác trên thanh công cụ khối Code (Sao chép, Tải tệp, Xem trước, Thu gọn)
                                 const codeBtn = e.target.closest('[data-code-action]');
                                 if (codeBtn) {
                                     e.stopPropagation();
@@ -6817,6 +7022,8 @@ Yêu cầu bắt buộc:
                                     if (action === 'collapse') window.toggleCodeCollapse(codeBtn);
                                     return;
                                 }
+
+                                // Thao tác trên thanh công cụ Bảng biểu (Xuất Markdown, JSON, CSV)
                                 const tableBtn = e.target.closest('[data-table-action]');
                                 if (tableBtn) {
                                     e.stopPropagation();
@@ -6831,6 +7038,9 @@ Yêu cầu bắt buộc:
                         document.addEventListener('click', handleDocClick, true);
                         docClickCleanup = () => document.removeEventListener('click', handleDocClick, true);
 
+                        // =========================================================================
+                        // 5. ĐĂNG KÝ CÁC LISTENER SỰ KIỆN HỆ THỐNG TOÀN CỤC
+                        // =========================================================================
                         window.addEventListener('online', handleOnline);
                         window.addEventListener('offline', handleOffline);
                         window.addEventListener('keydown', handleKeydownGlobal);
@@ -6839,11 +7049,16 @@ Yêu cầu bắt buộc:
                         window.addEventListener('beforeunload', handleBeforeUnload);
                         document.addEventListener('visibilitychange', handleVisibilityChange);
 
+                        // Thiết lập màu giao diện và danh sách giọng đọc TTS
                         const savedAccent = accentColors.value.find(c => c.color === selectedAccent.value) || accentColors.value[0];
                         changeAccentColor(savedAccent);
                         initTTSVoices();
 
+                        // =========================================================================
+                        // 6. NẠP DỮ LIỆU BAN ĐẦU & GỠ SKELETON AN TOÀN
+                        // =========================================================================
                         try {
+                            // Chạy ngầm việc nạp cơ sở dữ liệu IndexedDB Dexie
                             await seedInitialData();
                             await loadThreads();
                             await loadGems();
@@ -6852,12 +7067,10 @@ Yêu cầu bắt buộc:
                             }
                             await loadThreadsForActiveGem();
                         } catch (error) {
+                            console.warn("[Khởi tạo Dexie/Dữ liệu gặp độ trễ]:", error);
                         } finally {
-                            const skeleton = document.getElementById('initial-app-skeleton');
-                            if (skeleton) {
-                                skeleton.style.opacity = '0';
-                                setTimeout(() => skeleton.remove(), 250);
-                            }
+                            clearTimeout(emergencySkeletonTimer);
+                            removeSkeletonSafe();
                         }
                     });
 
