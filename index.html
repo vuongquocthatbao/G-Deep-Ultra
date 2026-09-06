@@ -651,7 +651,7 @@
             <div class="px-3.5 pt-3 shrink-0">
                 <div class="relative flex items-center">
                     <input v-model="searchQuery" type="text" placeholder="Tìm kiếm nội dung..." class="w-full bg-surfaceElevated border-0 rounded-xl pl-8 pr-3 py-2 text-xs text-white outline-none allow-select">
-                    <lucide-icon name="search" class="w-3.5 h-3.5 text-textMuted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" :stroke-width="1.5"></lucide-icon>
+                    <lucide-icon name="search" class="w-3.5 h-3.5 text-textMuted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" strokeWidth="1.5"></lucide-icon>
                 </div>
             </div>
             
@@ -1061,7 +1061,7 @@
                                     <lucide-icon name="download" class="w-3.5 h-3.5"></lucide-icon> Tải về MP4
                                 </button>
                             </div>
-                            <video :src="msg.renderedVideoUrl" controls autoplay loop playsinline class="w-full max-h-[460px] rounded-xl object-contain bg-black shadow-inner"></video>
+                            <video :src="msg.renderedVideoUrl" controls autoplay loop class="w-full max-h-[460px] rounded-xl object-contain bg-black shadow-inner"></video>
                         </div>
 
                         <!-- ACTIONS TOOLBAR -->
@@ -1247,7 +1247,7 @@
                         <div class="timeline-ruler" @click="handleTimelineRulerClick" title="Chọn vị trí thời gian">
                             <div v-for="(cue, cueIdx) in userTimelineCues" :key="cue.id"
                                  class="timeline-cue-badge"
-                                 :style="{ left: ((cue.startTimeSec / Math.max(1, cinemaConfig.duration)) * 100) + '%', background: getCharacterBadgeColor(cue.speaker) }"
+                                 :style="{ left: ((cue.startTimeSec / cinemaConfig.duration) * 100) + '%', background: getCharacterBadgeColor(cue.speaker) }"
                                  :title="cue.speaker + ' (' + cue.startTimeSec + 's): ' + cue.text">
                                 {{ cue.speaker }} ({{ cue.startTimeSec }}s)
                             </div>
@@ -1360,7 +1360,7 @@
                         </div>
                     </button>
 
-                    <!-- ADVANCED MENU POPUP -->
+                    <!-- ADVANCED MENU POPUP (SẮP XẾP LẠI RÕ RÀNG THEO CÁC PHÂN HỆ THUỘC G-DEEP ULTRA) -->
                     <transition name="fade">
                         <menu v-if="showInputMenu" class="absolute bottom-full left-0 mb-3 w-[300px] max-w-[calc(100vw-32px)] bg-surfaceElevated/95 backdrop-blur-xl border-0 rounded-2xl shadow-2xl p-2.5 flex flex-col gap-1.5 z-50 origin-bottom-left m-0 overflow-hidden">
                             <header class="flex justify-between items-center px-2 py-1 border-b border-white/5 text-[10px] text-textMuted font-bold uppercase mb-0.5 shrink-0">
@@ -1651,6 +1651,11 @@
     <script>
         'use strict';
 
+        // =========================================================================
+        // KIẾN TRÚC MẠNG NƠ-RON AI CỤC BỘ & BÁC SĨ CÔNG (APEX CHIEF SURGEON)
+        // NGUYÊN TẮC: NẾU TỰ SỬA THÀNH CÔNG THÌ HOÀN TOÀN KHÔNG GHI LOG BÁO LỖI.
+        // CHỈ KHI SỬA THẤT BẠI MỚI NÉM HOẶC GHI LỖI RA CONSOLE.
+        // =========================================================================
         const MeshEngine = (function() {
             const registry = new Map();
 
@@ -1674,7 +1679,8 @@
                 selfClean() {
                     for (const item of this.garbageBag) {
                         try {
-                            if (item && typeof item.close === 'function') item.close();
+                            if (typeof item === 'string' && item.startsWith('blob:')) URL.revokeObjectURL(item);
+                            else if (item && typeof item.close === 'function') item.close();
                             else if (item && typeof item.destroy === 'function') item.destroy();
                         } catch (_) {}
                     }
@@ -1689,6 +1695,7 @@
                 selfPenalize() {
                     this.penalty += 1;
                     this.reward = Math.max(0, this.reward - 1);
+                    this.selfClean();
                 }
 
                 execute(...args) {
@@ -1701,6 +1708,7 @@
                                 return val;
                             }).catch(async err => {
                                 if (err?.name === 'AbortError' || err?.message === 'AbortError') {
+                                    this.selfClean();
                                     return this.getFallbackValue();
                                 }
 
@@ -1712,20 +1720,24 @@
                                 } catch (repairErr) {
                                     return await ApexChiefSurgeon.cureFunctionException(this, repairErr, args);
                                 }
+                            }).finally(() => {
+                                if (this.callCount % 16 === 0) this.selfClean();
                             });
                         }
                         this.selfReward();
+                        if (this.callCount % 16 === 0) this.selfClean();
                         return res;
                     } catch (err) {
                         if (err?.name === 'AbortError' || err?.message === 'AbortError') {
+                            this.selfClean();
                             return this.getFallbackValue();
                         }
                         this.selfPenalize();
                         try {
                             return this.getFallbackValue();
                         } catch (fatal) {
-                            console.error(`[ENGINE EXCEPTION] Hàm ${this.id}:`, fatal.message);
-                            return this.getFallbackValue();
+                            console.error(`[BÁC SĨ CÔNG KHÔNG SỬA THÀNH CÔNG] Hàm ${this.id}:`, fatal.message);
+                            throw fatal;
                         }
                     }
                 }
@@ -1742,15 +1754,17 @@
                 }
 
                 async attemptInternalRepair(err, args) {
+                    this.selfClean();
                     return this.getFallbackValue();
                 }
             }
 
             const ApexChiefSurgeon = {
                 async cureFunctionException(brain, error, originalArgs) {
+                    brain.selfClean();
                     try {
                         if (window.gdeepDispatchBgTask) {
-                            const diagPrompt = `[DIAGNOSTIC RECOVERY]\nHàm: "${brain.id}"\nLỗi: "${error.message}"\nKhôi phục JSON: {"safeResult": null}`;
+                            const diagPrompt = `[BÁC SĨ CÔNG CỨU TRỢ NỘI BỘ]\nHàm: "${brain.id}"\nLỗi: "${error.message}"\nKhôi phục JSON: {"safeResult": null}`;
                             const res = await window.gdeepDispatchBgTask({
                                 contents: [{ role: 'user', parts: [{ text: diagPrompt }] }],
                                 generationConfig: { temperature: 0.1, maxOutputTokens: 128 }
@@ -1763,8 +1777,15 @@
                                 }
                             }
                         }
+
+                        const safeVal = brain.getFallbackValue();
+                        if (safeVal !== undefined) {
+                            return safeVal;
+                        }
                     } catch (_) {}
-                    return brain.getFallbackValue();
+
+                    console.error(`[BÁC SĨ CÔNG KHÔNG THỂ CỨU CHỮA] Hàm ${brain.id} thất bại hoàn toàn:`, error.message);
+                    throw error;
                 }
             };
 
@@ -1798,6 +1819,7 @@
             }, function(blob) {
                 try {
                     const url = URL.createObjectURL(blob);
+                    this.registerGarbage(url);
                     ObjectUrlRegistry._urls.add(url);
                     return url;
                 } catch (e) { return ''; }
@@ -1949,8 +1971,7 @@
                 document.body.appendChild(ta);
                 ta.focus();
                 ta.select();
-                let res = false;
-                try { res = document.execCommand('copy'); } catch (_) {}
+                const res = document.execCommand('copy');
                 ta.remove();
                 return res;
             } catch (_) { return false; }
@@ -2184,6 +2205,7 @@
         }, async function(response, signal, onChunk) {
             if (!response.body) throw new Error('Không có dữ liệu');
             const reader = response.body.getReader();
+            this.registerGarbage(reader);
             const decoder = new TextDecoder('utf-8', { stream: true });
             let lineBuffer = '';
             let currentEventData = [];
@@ -2215,7 +2237,7 @@
             try {
                 while (true) {
                     if (signal?.aborted) {
-                        try { await reader.cancel(); } catch (_) {}
+                        await reader.cancel();
                         throw new Error('AbortError');
                     }
 
@@ -2244,7 +2266,7 @@
                 flushEvent();
                 return true;
             } finally {
-                try { reader.releaseLock(); } catch (_) {}
+                reader.releaseLock();
             }
         });
 
@@ -2266,7 +2288,7 @@
                 'target', 'rel', 'data-code-action', 'data-table-action', 'data-lang', 'data-raw-code', 'data-mermaid-code',
                 'data-rendered', 'src', 'controls', 'aria-label', 'aria-hidden', 'role', 'aria-live', 'aria-busy', 'aria-selected',
                 'aria-checked', 'id', 'width', 'height', 'xmlns', 'display', 'd', 'points', 'cx', 'cy', 'r', 'rx', 'ry',
-                'x1', 'x2', 'y1', 'y2', 'x', 'y', 'transform', 'type', 'alt', 'loop', 'autoplay', 'playsinline'
+                'x1', 'x2', 'y1', 'y2', 'x', 'y', 'transform', 'type', 'alt', 'loop', 'autoplay'
             ]
         };
 
@@ -2298,8 +2320,8 @@
                 if (typeof tokenOrHeader === 'string') {
                     return `<div class="table-wrapper">${tools}<table><thead>${tokenOrHeader}</thead><tbody>${bodyRows || ''}</tbody></table></div>`;
                 }
-                const headerObj = tokenOrHeader?.header || [];
-                const rowsObj = tokenOrHeader?.rows || [];
+                const headerObj = tokenOrHeader.header || [];
+                const rowsObj = tokenOrHeader.rows || [];
                 const headerHtml = `<tr>${headerObj.map(c => `<th>${markedInstance.parseInline(extractCell(c)) || '&nbsp;'}</th>`).join('')}</tr>`;
                 const bodyHtml = rowsObj.map(r => `<tr>${(Array.isArray(r) ? r : []).map(c => `<td>${markedInstance.parseInline(extractCell(c)) || '&nbsp;'}</td>`).join('')}</tr>`).join('');
                 return `<div class="table-wrapper">${tools}<table><thead>${headerHtml}</thead><tbody>${bodyHtml}</tbody></table></div>`;
@@ -2401,7 +2423,7 @@
 
         const compileMarkdown = (raw, isFinal = true) => compileMarkdownSync(raw, isFinal);
 
-        // PYODIDE WORKER ENGINE WITH SAFE TIMEOUT AND FAULT ISOLATION
+        // PYODIDE WORKER ENGINE
         const pyodideWorkerCode = `
             importScripts("https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js");
             let pyodide = null, isInitializing = false;
@@ -2439,10 +2461,9 @@
         `;
 
         const pyodidePromises = new Map();
-        let pyodideExecutionQueue = Promise.resolve(), pyodideWorker = null, pyodideFailCount = 0;
+        let pyodideExecutionQueue = Promise.resolve(), pyodideWorker = null;
 
         function createPyodideWorker() {
-            if (pyodideFailCount >= 3) return;
             if (pyodideWorker) { try { pyodideWorker.terminate(); } catch (_) {} }
             pyodidePromises.forEach(p => { if (p.timer) clearTimeout(p.timer); p.resolve({ output: "Đã làm mới tiến trình.", outcome: "ERROR" }); });
             pyodidePromises.clear();
@@ -2451,7 +2472,7 @@
                 const blob = new Blob([pyodideWorkerCode], { type: 'application/javascript' });
                 const blobUrl = URL.createObjectURL(blob);
                 pyodideWorker = new Worker(blobUrl);
-                setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
                 pyodideWorker.onmessage = (e) => {
                     const { id, status, output } = e.data;
                     if (pyodidePromises.has(id)) {
@@ -2461,12 +2482,7 @@
                         pyodidePromises.delete(id);
                     }
                 };
-                pyodideWorker.onerror = () => {
-                    pyodideFailCount++;
-                    pyodidePromises.forEach(p => { if (p.timer) clearTimeout(p.timer); p.resolve({ output: "Lỗi kết nối môi trường Python Sandbox.", outcome: "ERROR" }); });
-                    pyodidePromises.clear();
-                    if (pyodideWorker) { try { pyodideWorker.terminate(); } catch (_) {} pyodideWorker = null; }
-                };
+                pyodideWorker.onerror = () => { createPyodideWorker(); };
             } catch (_) { pyodideWorker = null; }
         }
         createPyodideWorker();
@@ -2476,8 +2492,7 @@
                 id: 'PythonEngine_run', purpose: 'Thực thi Python cô lập', returns: 'object'
             }, function(code) {
                 return new Promise((resolve) => {
-                    if (!pyodideWorker && pyodideFailCount < 3) createPyodideWorker();
-                    if (!pyodideWorker) { resolve({ output: "Môi trường máy ảo Python chưa khả dụng hoặc mạng offline.", outcome: "ERROR" }); return; }
+                    if (!pyodideWorker) { resolve({ output: "Môi trường không hỗ trợ tiến trình chạy ngầm.", outcome: "ERROR" }); return; }
                     pyodideExecutionQueue = pyodideExecutionQueue.then(async () => {
                         const id = Date.now() + '_' + Math.random().toString(36).substring(2, 7);
                         const timer = setTimeout(() => {
@@ -2723,8 +2738,7 @@
                 let vMatch;
                 while ((vMatch = versionRegex.exec(text)) !== null) entities.add(vMatch[0].trim());
 
-                // Regex đã chuẩn hóa tránh SyntaxError trên các engine JS nghiêm ngặt
-                const properNounsRegex = /(?:^|[^\p{L}\p{N}])([\p{Lu}][\p{L}0-9_-]*(?:\s+[\p{Lu}][\p{L}0-9_-]*)*)/gu;
+                const properNounsRegex = /(?:^|[^\p{L}\p{N}])([\p{Lu}][\p{L}0-9\-_]*(?:\s+[\p{Lu}][\p{L}0-9\-_]*)*)/gu;
                 let match;
                 while ((match = properNounsRegex.exec(text)) !== null) {
                     if (match[1]) {
@@ -2791,9 +2805,14 @@
             })
         };
 
+        // =========================================================================
+        // KIẾN TRÚC CINEMA STUDIO 60 FPS: GEMINI ĐẠO DIỄN TOÀN TRÌNH + FLUX KHUNG HÌNH
+        // NGUYÊN TẮC: 100% ĐỘNG QUA MODEL BLUEPRINT, KHÔNG CÓ THAM SỐ HARDCODE
+        // =========================================================================
+
         const DynamicAudioDSP = {
             createNoiseBuffer(ctx, durationSec) {
-                const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * Math.max(0.1, durationSec)));
+                const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * durationSec));
                 const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
                 const data = buffer.getChannelData(0);
                 for (let i = 0; i < bufferSize; i++) {
@@ -2805,11 +2824,12 @@
             async renderDynamicSoundtrack(ctx, soundtrackConfig, durationSec, voiceBlobs = []) {
                 if (!soundtrackConfig) return;
 
+                // 1. Dựng tầng âm nhạc và hòa âm (Musical Layers & Chords do Gemini soạn thảo)
                 if (Array.isArray(soundtrackConfig.musicalLayers)) {
                     for (const layer of soundtrackConfig.musicalLayers) {
                         const notes = layer.notes || [];
                         for (const note of notes) {
-                            const startTime = Math.max(0.001, Math.min(durationSec, note.startSec || 0));
+                            const startTime = Math.max(0, Math.min(durationSec, note.startSec || 0));
                             const noteDuration = Math.max(0.05, Math.min(durationSec - startTime, note.durationSec || 1.0));
                             const freq = Number(note.frequency) || 220;
 
@@ -2831,7 +2851,7 @@
                             const attack = note.attack || 0.05;
                             const release = note.release || 0.1;
 
-                            gain.gain.setValueAtTime(0.0001, startTime);
+                            gain.gain.setValueAtTime(0, startTime);
                             gain.gain.linearRampToValueAtTime(peakGain, startTime + attack);
                             gain.gain.setValueAtTime(peakGain, Math.max(startTime + attack, startTime + noteDuration - release));
                             gain.gain.linearRampToValueAtTime(0.0001, startTime + noteDuration);
@@ -2846,9 +2866,10 @@
                     }
                 }
 
+                // 2. Dựng hiệu ứng âm thanh môi trường và kỹ xảo điện ảnh (Foley & Cinematic SFX)
                 if (Array.isArray(soundtrackConfig.sfxEvents)) {
                     for (const sfx of soundtrackConfig.sfxEvents) {
-                        const startTime = Math.max(0.001, Math.min(durationSec, sfx.timeSec || 0));
+                        const startTime = Math.max(0, Math.min(durationSec, sfx.timeSec || 0));
                         const sfxDur = Math.max(0.05, Math.min(durationSec - startTime, sfx.durationSec || 0.8));
 
                         if (sfx.soundType === 'noise' || sfx.soundType === 'wind' || sfx.soundType === 'rumble') {
@@ -2862,7 +2883,7 @@
                             filter.frequency.exponentialRampToValueAtTime(Math.max(20, sfx.endFreq || 1200), startTime + sfxDur);
 
                             const gain = ctx.createGain();
-                            gain.gain.setValueAtTime(0.0001, startTime);
+                            gain.gain.setValueAtTime(0.001, startTime);
                             gain.gain.linearRampToValueAtTime(sfx.gain || 0.3, startTime + sfxDur * 0.3);
                             gain.gain.linearRampToValueAtTime(0.0001, startTime + sfxDur);
 
@@ -2890,6 +2911,7 @@
                     }
                 }
 
+                // 3. Kết nối giọng đọc thoại đa nhân vật khớp timeline
                 for (const v of voiceBlobs) {
                     if (v.buffer && v.startTime !== undefined) {
                         const vSource = ctx.createBufferSource();
@@ -2901,92 +2923,6 @@
                         vSource.start(v.startTime);
                     }
                 }
-            }
-        };
-
-        const MainThreadAudioSynthesizer = {
-            decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
-                try {
-                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                    if (!AudioCtx) return null;
-                    const bin = atob(pcmBase64);
-                    const bytes = new Uint8Array(bin.length);
-                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                    const dv = new DataView(bytes.buffer);
-                    const count = Math.floor(bytes.length / 2);
-                    const actx = new AudioCtx();
-                    const buf = actx.createBuffer(1, count, sampleRate);
-                    const cd = buf.getChannelData(0);
-                    for (let i = 0; i < count; i++) {
-                        const s = dv.getInt16(i * 2, true);
-                        cd[i] = s < 0 ? s / 32768 : s / 32767;
-                    }
-                    try { actx.close(); } catch (_) {}
-                    return buf;
-                } catch (_) {
-                    return null;
-                }
-            },
-
-            synthesizeFormantVoiceFallback(text, character, sampleRate = 24000) {
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                if (!AudioCtx) return null;
-                const words = text.split(/\s+/).filter(Boolean);
-                const durationSec = Math.max(1.2, words.length * 0.38);
-                const actx = new AudioCtx();
-                const totalSamples = Math.floor(sampleRate * durationSec);
-                const buffer = actx.createBuffer(1, totalSamples, sampleRate);
-                const data = buffer.getChannelData(0);
-
-                const basePitch = character.gender === 'female' ? 220 : 130;
-                let phase = 0;
-
-                for (let i = 0; i < totalSamples; i++) {
-                    const t = i / sampleRate;
-                    const mod = Math.sin(2 * Math.PI * 4 * t) * 6;
-                    const pitch = basePitch + mod;
-                    phase += (pitch / sampleRate);
-                    const glottal = (phase % 1.0) < 0.25 ? Math.sin((phase % 1.0) * 4 * Math.PI) : 0;
-                    const formant1 = Math.sin(2 * Math.PI * 700 * t) * 0.4;
-                    const formant2 = Math.sin(2 * Math.PI * 1800 * t) * 0.25;
-                    const env = Math.sin(Math.min(Math.PI, (t / durationSec) * Math.PI));
-                    data[i] = (glottal * 0.5 + (formant1 + formant2) * glottal) * env * 0.6;
-                }
-                try { actx.close(); } catch (_) {}
-                return buffer;
-            },
-
-            async generateSystemTTSAudio(text, character, apiKey) {
-                if (!text) return null;
-                if (apiKey) {
-                    try {
-                        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-                        const voicePrompt = `Đọc diễn cảm điện ảnh câu sau:\n"${text}"`;
-                        const res = await fetch(url, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                contents: [{ role: 'user', parts: [{ text: voicePrompt }] }],
-                                generationConfig: {
-                                    responseModalities: ["AUDIO"],
-                                    speechConfig: {
-                                        voiceConfig: { prebuiltVoiceConfig: { voiceName: character.geminiVoice || 'Puck' } }
-                                    }
-                                },
-                                safetySettings: SAFETY_SETTINGS
-                            })
-                        });
-                        if (res.ok) {
-                            const json = await res.json();
-                            const part = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData && p.inlineData.mimeType?.startsWith('audio/'));
-                            if (part?.inlineData?.data) {
-                                const buf = this.decodePcmToAudioBuffer(part.inlineData.data, 24000);
-                                if (buf) return buf;
-                            }
-                        }
-                    } catch (_) {}
-                }
-                return this.synthesizeFormantVoiceFallback(text, character);
             }
         };
 
@@ -3025,11 +2961,7 @@
                     } catch (_) {}
                 }
 
-                const off = (typeof OffscreenCanvas !== 'undefined')
-                    ? new OffscreenCanvas(width, height)
-                    : document.createElement('canvas');
-                off.width = width;
-                off.height = height;
+                const off = new OffscreenCanvas(width, height);
                 const ctx = off.getContext('2d');
                 const grad = ctx.createLinearGradient(0, 0, width, height);
                 grad.addColorStop(0, '#0a0f24');
@@ -3044,114 +2976,74 @@
                     ctx.arc(Math.random() * width, Math.random() * height, Math.random() * 2 + 0.5, 0, Math.PI * 2);
                     ctx.fill();
                 }
-                return (typeof off.transferToImageBitmap === 'function')
-                    ? off.transferToImageBitmap()
-                    : createImageBitmap(off);
+                return off.transferToImageBitmap();
             },
 
-            renderVideo60FpsWithAudio: createAutonomousFunction({
-                id: 'renderVideo60Fps_FallbackWithAudio', purpose: 'Kết xuất video 60 FPS tích hợp âm thanh qua MediaRecorder', returns: 'object'
+            renderVideo60Fps: createAutonomousFunction({
+                id: 'renderVideo60Fps_Fallback', purpose: 'Kết xuất video 60 FPS dự phòng MediaRecorder', returns: 'object'
             }, async function({
-                loadedScenes = [],
-                renderedAudioBuffer,
+                sourceImageUrl,
+                promptText,
                 durationSec = 5,
                 width = 1280,
                 height = 720,
+                sceneSeed = 884921,
                 onProgress = () => {}
             }) {
                 const totalFrames = durationSec * 60;
-                const fbCanvas = document.createElement('canvas');
-                fbCanvas.width = width;
-                fbCanvas.height = height;
-                const fbCtx = fbCanvas.getContext('2d', { alpha: false });
+                const sourceBmp = await Commercial60FpsEngine.loadImageSource(sourceImageUrl, width, height, sceneSeed, promptText);
 
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                const audioCtx = AudioCtx ? new AudioCtx() : null;
-                let combinedStream = null;
+                return new Promise((resolve, reject) => {
+                    try {
+                        const fbCanvas = document.createElement('canvas');
+                        fbCanvas.width = width;
+                        fbCanvas.height = height;
+                        const fbCtx = fbCanvas.getContext('2d', { alpha: false });
 
-                const captureMethod = fbCanvas.captureStream || fbCanvas.webkitCaptureStream;
-                const canvasStream = captureMethod ? captureMethod.call(fbCanvas, 60) : null;
-                if (!canvasStream) throw new Error("Trình duyệt không hỗ trợ captureStream");
+                        const stream = fbCanvas.captureStream(60);
+                        let chosenMime = 'video/mp4;codecs=avc1';
+                        if (!MediaRecorder.isTypeSupported(chosenMime)) {
+                            chosenMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+                        }
 
-                let audioSource = null;
-                if (audioCtx && renderedAudioBuffer) {
-                    audioSource = audioCtx.createBufferSource();
-                    audioSource.buffer = renderedAudioBuffer;
-                    const audioDest = audioCtx.createMediaStreamDestination();
-                    audioSource.connect(audioDest);
-                    combinedStream = new MediaStream([
-                        ...canvasStream.getVideoTracks(),
-                        ...audioDest.stream.getAudioTracks()
-                    ]);
-                } else {
-                    combinedStream = canvasStream;
-                }
-
-                let chosenMime = 'video/mp4;codecs=avc1,mp4a.40.2';
-                if (!window.MediaRecorder || !MediaRecorder.isTypeSupported(chosenMime)) {
-                    chosenMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm';
-                }
-                if (!MediaRecorder.isTypeSupported(chosenMime)) {
-                    chosenMime = '';
-                }
-
-                const recOpts = chosenMime ? { mimeType: chosenMime, videoBitsPerSecond: 8000000 } : {};
-                const recorder = new MediaRecorder(combinedStream, recOpts);
-
-                const chunks = [];
-                recorder.ondataavailable = (e) => {
-                    if (e.data && e.data.size > 0) chunks.push(e.data);
-                };
-
-                return new Promise((resolve) => {
-                    recorder.onstop = () => {
-                        if (audioCtx) { try { audioCtx.close(); } catch (_) {} }
-                        const finalBlob = new Blob(chunks, { type: chosenMime || 'video/webm' });
-                        finalBlob.arrayBuffer().then(buf => {
-                            resolve({ buffer: buf, mimeType: chosenMime || 'video/webm', ext: chosenMime.includes('mp4') ? 'mp4' : 'webm' });
+                        const recorder = new MediaRecorder(stream, {
+                            mimeType: chosenMime,
+                            videoBitsPerSecond: 14000000
                         });
-                    };
 
-                    recorder.start();
-                    if (audioSource) audioSource.start(0);
+                        const chunks = [];
+                        recorder.ondataavailable = (e) => {
+                            if (e.data && e.data.size > 0) chunks.push(e.data);
+                        };
 
-                    let curFrame = 0;
-                    const interval = 1000 / 60;
-                    const timer = setInterval(() => {
-                        if (curFrame >= totalFrames) {
-                            clearInterval(timer);
-                            recorder.stop();
-                            return;
-                        }
+                        recorder.onstop = () => {
+                            const blob = new Blob(chunks, { type: chosenMime });
+                            blob.arrayBuffer().then(buf => {
+                                if (sourceBmp.close) sourceBmp.close();
+                                resolve({ buffer: buf, mimeType: chosenMime, ext: chosenMime.includes('mp4') ? 'mp4' : 'webm' });
+                            });
+                        };
 
-                        const t = curFrame / totalFrames;
-                        const sceneIndex = Math.min(loadedScenes.length - 1, Math.floor(t * loadedScenes.length));
-                        const currentBmp = loadedScenes[sceneIndex]?.bitmap || loadedScenes[0]?.bitmap;
-                        const nextBmp = loadedScenes[sceneIndex + 1]?.bitmap || currentBmp;
+                        recorder.start();
+                        let curFrame = 0;
+                        const interval = 1000 / 60;
 
-                        const sceneT = (t * loadedScenes.length) % 1.0;
-                        const zoom = 1.0 + Math.sin(sceneT * Math.PI) * 0.08;
-                        const panX = Math.sin(t * Math.PI * 2) * 15;
-
-                        fbCtx.save();
-                        fbCtx.fillStyle = '#08090d';
-                        fbCtx.fillRect(0, 0, width, height);
-                        fbCtx.translate(width / 2 + panX, height / 2);
-                        fbCtx.scale(zoom, zoom);
-
-                        if (currentBmp) fbCtx.drawImage(currentBmp, -width / 2, -height / 2, width, height);
-                        if (nextBmp && nextBmp !== currentBmp && sceneT > 0.8) {
-                            fbCtx.globalAlpha = (sceneT - 0.8) / 0.2;
-                            fbCtx.drawImage(nextBmp, -width / 2, -height / 2, width, height);
-                            fbCtx.globalAlpha = 1.0;
-                        }
-                        fbCtx.restore();
-
-                        curFrame++;
-                        if (curFrame % 20 === 0) {
-                            onProgress(Math.min(95, Math.round((curFrame / totalFrames) * 100)), `Đang xuất luồng video 60 FPS (${curFrame}/${totalFrames})...`);
-                        }
-                    }, interval);
+                        const timer = setInterval(() => {
+                            if (curFrame >= totalFrames) {
+                                clearInterval(timer);
+                                recorder.stop();
+                                return;
+                            }
+                            fbCtx.drawImage(sourceBmp, 0, 0, width, height);
+                            curFrame++;
+                            if (curFrame % 20 === 0) {
+                                onProgress(Math.min(95, Math.round((curFrame / totalFrames) * 100)), `Đang hoàn thiện khung hình 60 FPS (${curFrame}/${totalFrames})...`);
+                            }
+                        }, interval);
+                    } catch (e) {
+                        if (sourceBmp.close) sourceBmp.close();
+                        reject(e);
+                    }
                 });
             })
         };
@@ -3162,7 +3054,7 @@
                 const fluxUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${seed}`;
                 
                 const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(), 22000);
+                const timer = setTimeout(() => ctrl.abort(), 20000);
                 try {
                     const res = await fetch(fluxUrl, { signal: ctrl.signal, mode: 'cors' });
                     clearTimeout(timer);
@@ -3196,32 +3088,82 @@
             },
 
             async generateOrchestratedBlueprint(userPrompt, sourceImageBase64, durationSec, aspectRatio, dispatchBgTaskFn) {
-                const directorPrompt = `[DIRECTOR INSTRUCTION - CINEMATIC BLUEPRINT]
-Tạo kịch bản phân cảnh động gồm ít nhất 3 shot máy quay khác nhau và thiết kế âm học cho:
-- Yêu cầu: "${userPrompt}"
-- Thời lượng: ${durationSec} giây (Chuẩn kết xuất: 60 FPS)
-- Tỷ lệ: ${aspectRatio}
+                const directorPrompt = `[DIRECTOR INSTRUCTION - GOOGLE VEO 3 ARCHITECTURE FOR FLUX 60FPS]
+Bạn là Hệ thống Đạo diễn Điện ảnh Tối cao của Studio G-Deep Ultra.
+Nhiệm vụ: Phân rã yêu cầu của người dùng thành Bản thiết kế Kịch bản Điện ảnh & Âm thanh Vật lý 3D hoàn chỉnh.
+TUYỆT ĐỐI KHÔNG DÙNG THÔNG SỐ CỐ ĐỊNH (HARDCODED). TẤT CẢ DỮ LIỆU ĐỀU ĐƯỢC TẠO DỰA TRÊN CHỦ ĐỀ VÀ BỐI CẢNH NỘI DUNG.
 
-TRẢ VỀ JSON DUY NHẤT:
+Yêu cầu đầu vào:
+- Mô tả: "${userPrompt}"
+- Thời lượng: ${durationSec} giây (Chuẩn kết xuất: 60 FPS)
+- Tỷ lệ khung hình: ${aspectRatio}
+
+YÊU CẦU ĐẦU RA JSON DUY NHẤT:
 {
-  "title": "Tên kịch bản",
-  "shots": [
-    { "shotIndex": 0, "name": "Establishing Shot", "prompt": "wide cinematic landscape, hyperrealistic", "zoomRange": [1.0, 1.12], "panRange": [-10, 10] },
-    { "shotIndex": 1, "name": "Action Shot", "prompt": "mid action perspective, dramatic light", "zoomRange": [1.05, 1.18], "panRange": [10, -10] },
-    { "shotIndex": 2, "name": "Close-Up", "prompt": "close-up detail, anamorphic cinematic lens", "zoomRange": [1.0, 1.15], "panRange": [-5, 5] }
+  "title": "Tên kịch bản điện ảnh",
+  "visualAnchor": {
+    "subjectPrompt": "Mô tả chi tiết bằng tiếng Anh đặc điểm bất biến của nhân vật hoặc chủ thể chính",
+    "environmentPrompt": "Mô tả chi tiết không gian 3D, nguồn sáng, thời tiết, vật liệu bề mặt",
+    "colorPalette": ["#hex1", "#hex2", "#hex3"],
+    "lighting": "Thông số ánh sáng điện ảnh (Key light, rim light, volumetric fog)",
+    "lensProfile": "Thông số tiêu cự ống kính, khẩu độ, DoF"
+  },
+  "cameraTrajectory3D": {
+    "mode": "Tên đường bay (ví dụ: Anamorphic Dolly-In with dynamic roll)",
+    "zoomCurve": [1.0, 1.15],
+    "panRange": [-20, 20],
+    "tiltRange": [-5, 8],
+    "rollAngle": 1.5,
+    "focalDisplacement": 0.12
+  },
+  "atmosphereSimulation": {
+    "enabled": true,
+    "particleCount": 60,
+    "particleType": "dust / rain / sparks / embers / bubbles / snow / digital-noise",
+    "colorRgba": "rgba(255, 230, 180, 0.4)",
+    "velocity": { "x": 0.5, "y": -0.8 },
+    "turbulence": 0.3,
+    "vignetteIntensity": 0.35
+  },
+  "keyframeCadenceSeconds": 1.5,
+  "timelineKeyframes": [
+    { "timeRatio": 0.0, "microAction": "Hành động vi mô và góc máy lúc 0s" },
+    { "timeRatio": 0.5, "microAction": "Hành động vi mô và góc máy lúc giữa clip" },
+    { "timeRatio": 1.0, "microAction": "Hành động vi mô và góc máy lúc kết thúc" }
   ],
   "soundDesign": {
+    "mood": "Mô tả âm hưởng không gian",
     "musicalLayers": [
       {
-        "name": "Cinematic Pad", "waveType": "sawtooth", "filterType": "lowpass", "cutoffFreq": 300, "resonance": 2.0, "masterGain": 0.4,
-        "notes": [{ "startSec": 0.0, "durationSec": ${durationSec}, "frequency": 55, "gain": 0.35, "attack": 0.3, "release": 0.6 }]
+        "name": "Bass Pad",
+        "waveType": "sawtooth",
+        "filterType": "lowpass",
+        "cutoffFreq": 250,
+        "resonance": 2.0,
+        "masterGain": 0.35,
+        "notes": [
+          { "startSec": 0.0, "durationSec": 2.5, "frequency": 55, "gain": 0.3, "attack": 0.4, "release": 0.5 },
+          { "startSec": 2.2, "durationSec": 2.8, "frequency": 65.4, "gain": 0.3, "attack": 0.3, "release": 0.6 }
+        ]
+      },
+      {
+        "name": "High Atmosphere",
+        "waveType": "sine",
+        "filterType": "bandpass",
+        "cutoffFreq": 1200,
+        "resonance": 3.0,
+        "masterGain": 0.15,
+        "notes": [
+          { "startSec": 0.5, "durationSec": 3.0, "frequency": 440, "gain": 0.15, "attack": 0.8, "release": 1.0 }
+        ]
       }
     ],
     "sfxEvents": [
-      { "timeSec": 0.0, "durationSec": 1.5, "soundType": "noise", "filterType": "lowpass", "startFreq": 80, "endFreq": 450, "gain": 0.35 }
+      { "timeSec": 0.0, "durationSec": 1.5, "soundType": "noise", "filterType": "lowpass", "startFreq": 100, "endFreq": 400, "gain": 0.25 },
+      { "timeSec": 1.2, "durationSec": 0.8, "soundType": "sine", "startFreq": 320, "endFreq": 120, "gain": 0.2 }
     ],
     "dialogueTimeline": [
-      { "speaker": "Nhân vật 1", "timeSec": 0.8, "text": "Hệ thống điện ảnh 60 FPS đã kích hoạt hoàn chỉnh.", "voiceStyle": "Charon" }
+      { "speaker": "Speaker", "timeSec": 1.0, "text": "Lời thoại nhân vật", "voiceStyle": "Charon" }
     ]
   }
 }`;
@@ -3237,39 +3179,98 @@ TRẢ VỀ JSON DUY NHẤT:
                 }
                 parts.push({ text: directorPrompt });
 
+                const res = await dispatchBgTaskFn({
+                    contents: [{ role: 'user', parts }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+                });
+
+                const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                const cleanJson = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+
                 try {
-                    const res = await dispatchBgTaskFn({
-                        contents: [{ role: 'user', parts }],
-                        generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
-                    });
-                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                    const cleanJson = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
                     return JSON.parse(cleanJson);
-                } catch (_) {
-                    const safePrompt = userPrompt.slice(0, 160).replace(/["\\]/g, '');
+                } catch (e) {
+                    const fallbackPrompt = userPrompt.slice(0, 160).replace(/["\\]/g, '');
                     return {
-                        title: "Kịch bản Phân cảnh Tự động",
-                        shots: [
-                            { shotIndex: 0, name: "Wide Shot", prompt: `${safePrompt}, ultra-wide cinematic shot, 8k texture`, zoomRange: [1.0, 1.12], panRange: [-15, 15] },
-                            { shotIndex: 1, name: "Mid Shot", prompt: `${safePrompt}, mid action view, volumetric light`, zoomRange: [1.02, 1.15], panRange: [10, -10] },
-                            { shotIndex: 2, name: "Climax Shot", prompt: `${safePrompt}, close-up focus, shallow depth of field`, zoomRange: [1.0, 1.1], panRange: [-5, 5] }
+                        title: "Bản thiết kế Điện ảnh Tự động",
+                        visualAnchor: {
+                            subjectPrompt: fallbackPrompt,
+                            environmentPrompt: "Cinematic atmospheric lighting, volumetric depth of field, hyper-detailed 8k texture, Unreal Engine 5 render",
+                            colorPalette: ["#1a1c2e", "#6366f1", "#f43f5e"],
+                            lighting: "Volumetric ray-traced rim light with subtle key fill",
+                            lensProfile: "50mm f/1.2 anamorphic prime"
+                        },
+                        cameraTrajectory3D: {
+                            mode: "Continuous Dolly-In Pan",
+                            zoomCurve: [1.0, 1.18],
+                            panRange: [-15, 15],
+                            tiltRange: [-3, 5],
+                            rollAngle: 1.2,
+                            focalDisplacement: 0.08
+                        },
+                        atmosphereSimulation: {
+                            enabled: true,
+                            particleCount: 50,
+                            particleType: "dust",
+                            colorRgba: "rgba(220, 230, 255, 0.35)",
+                            velocity: { x: 0.3, y: -0.6 },
+                            turbulence: 0.2,
+                            vignetteIntensity: 0.3
+                        },
+                        keyframeCadenceSeconds: 1.5,
+                        timelineKeyframes: [
+                            { timeRatio: 0.0, microAction: "Establishing perspective, slow drift" },
+                            { timeRatio: 0.5, microAction: "Deepening focus, dynamic subject emergence" },
+                            { timeRatio: 1.0, microAction: "Macro focal climax, steady cinematic frame" }
                         ],
                         soundDesign: {
+                            mood: "Deep immersive cinematic ambiance",
                             musicalLayers: [
                                 {
-                                    name: "Sub Drone", waveType: "sawtooth", filterType: "lowpass", cutoffFreq: 220, resonance: 2.0, masterGain: 0.35,
-                                    notes: [{ startSec: 0.0, durationSec: durationSec, frequency: 55, gain: 0.3, attack: 0.4, release: 0.6 }]
+                                    name: "Sub Bass",
+                                    waveType: "sawtooth",
+                                    filterType: "lowpass",
+                                    cutoffFreq: 220,
+                                    resonance: 1.8,
+                                    masterGain: 0.3,
+                                    notes: [
+                                        { startSec: 0.0, durationSec: durationSec, frequency: 55, gain: 0.25, attack: 0.5, release: 0.5 }
+                                    ]
                                 }
                             ],
                             sfxEvents: [
-                                { timeSec: 0.0, durationSec: 1.5, soundType: "noise", filterType: "bandpass", startFreq: 120, endFreq: 600, gain: 0.3 }
+                                { timeSec: 0.0, durationSec: durationSec * 0.5, soundType: "noise", filterType: "bandpass", startFreq: 150, endFreq: 600, gain: 0.2 }
                             ],
-                            dialogueTimeline: [
-                                { speaker: "Nhân vật 1", timeSec: 1.0, text: "Xác nhận tín hiệu phân hệ điện ảnh.", voiceStyle: "Charon" }
-                            ]
+                            dialogueTimeline: []
                         }
                     };
                 }
+            },
+
+            buildInterpolatedFramePrompt(blueprint, t, frameIndex, totalFrames, lockedSeed) {
+                const va = blueprint.visualAnchor || {};
+                const kfs = blueprint.timelineKeyframes || [];
+
+                let currentAction = "";
+                if (kfs.length > 0) {
+                    let closest = kfs[0];
+                    let minDiff = Math.abs(t - (kfs[0].timeRatio || 0));
+                    for (let i = 1; i < kfs.length; i++) {
+                        const diff = Math.abs(t - (kfs[i].timeRatio || 0));
+                        if (diff < minDiff) {
+                            minDiff = diff;
+                            closest = kfs[i];
+                        }
+                    }
+                    currentAction = closest.microAction || "";
+                }
+
+                const traj = blueprint.cameraTrajectory3D || {};
+                const zCurve = traj.zoomCurve || [1.0, 1.15];
+                const currentZoom = (zCurve[0] + (zCurve[1] - zCurve[0]) * t).toFixed(3);
+                const panX = ((traj.panRange ? traj.panRange[0] : -10) + ((traj.panRange ? traj.panRange[1] - traj.panRange[0] : 20) * t)).toFixed(2);
+
+                return `${va.subjectPrompt || ''}, ${va.environmentPrompt || ''}, ${currentAction}, lighting: ${va.lighting || 'cinematic'}, lens: ${va.lensProfile || 'anamorphic'}, camera spatial displacement x:${panX} zoom:${currentZoom}, physical micro-motion vector, 8k resolution, photorealistic, frame ${frameIndex} of ${totalFrames}, temporal consistency anchor DNA_${lockedSeed}`;
             },
 
             async renderVeo3_60FpsVideo: createAutonomousFunction({
@@ -3292,7 +3293,7 @@ TRẢ VỀ JSON DUY NHẤT:
                 const totalFrames = Math.max(fps * 2, Math.ceil(durationSec * fps));
                 const frameDurationMicros = Math.round(1_000_000 / fps);
 
-                onProgress(5, "Đang kiến tạo phân cảnh điện ảnh & quy hoạch âm học 3D...");
+                onProgress(2, "Veo3 Director: Gemini đang kiến thiết toàn phổ kịch bản & quy hoạch âm học 3D...");
                 const blueprint = await VeoFlux60FpsEngine.generateOrchestratedBlueprint(
                     userPrompt,
                     sourceImageBase64,
@@ -3301,68 +3302,62 @@ TRẢ VỀ JSON DUY NHẤT:
                     dispatchBgTaskFn
                 );
 
-                onProgress(15, "Đang dựng tổng phổ hòa âm và tổng hợp giọng nói nhân vật...");
+                onProgress(6, "Veo3 Audio DSP: Đang dựng tổng phổ hòa âm đa tầng và tổng hợp giọng nói nhân vật...");
                 const finalDialogue = (userCues && userCues.length) ? userCues : (blueprint.soundDesign?.dialogueTimeline || []);
                 const voiceBlobs = [];
 
-                for (const cue of finalDialogue) {
-                    const matchedChar = voiceCharacters.find(c => c.name.toLowerCase() === (cue.speaker || '').toLowerCase()) || { name: cue.speaker || 'Voice', gender: 'male', geminiVoice: cue.voiceStyle || 'Charon' };
-                    const voiceBuf = await MainThreadAudioSynthesizer.generateSystemTTSAudio(cue.text, matchedChar, apiKey);
-                    if (voiceBuf) {
-                        voiceBlobs.push({
-                            buffer: voiceBuf,
-                            startTime: Math.max(0, Number(cue.timeSec || cue.startTimeSec) || 0),
-                            volume: 1.6
-                        });
-                    }
-                }
-
-                let renderedAudioBuffer = null;
-                const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-                if (OfflineCtx) {
-                    const audioSampleRate = 48000;
-                    const totalAudioSamples = Math.max(1, Math.ceil(audioSampleRate * durationSec));
-                    const offlineAudioCtx = new OfflineCtx(2, totalAudioSamples, audioSampleRate);
-                    await DynamicAudioDSP.renderDynamicSoundtrack(
-                        offlineAudioCtx,
-                        blueprint.soundDesign,
-                        durationSec,
-                        voiceBlobs
-                    );
-                    renderedAudioBuffer = await offlineAudioCtx.startRendering();
-                }
-
-                onProgress(30, "Tải trước các góc máy phân cảnh...");
-                const shots = blueprint.shots || [
-                    { shotIndex: 0, prompt: userPrompt, zoomRange: [1.0, 1.15], panRange: [-15, 15] }
-                ];
-
-                const loadedScenes = [];
-                for (let i = 0; i < shots.length; i++) {
-                    const shot = shots[i];
-                    const seed = lockedSeed + i * 37;
-                    let bmp = null;
-                    if (i === 0 && sourceImageUrl) {
-                        bmp = await Commercial60FpsEngine.loadImageSource(sourceImageUrl, width, height, seed, shot.prompt);
-                    } else {
-                        try {
-                            bmp = await VeoFlux60FpsEngine.fetchFluxFrame(shot.prompt, width, height, seed);
-                        } catch (_) {
-                            bmp = await Commercial60FpsEngine.loadImageSource(null, width, height, seed, shot.prompt);
+                if (finalDialogue.length > 0 && apiKey) {
+                    for (const cue of finalDialogue) {
+                        const matchedChar = voiceCharacters.find(c => c.name.toLowerCase() === (cue.speaker || '').toLowerCase()) || { geminiVoice: cue.voiceStyle || 'Puck' };
+                        const pcmBuf = await MainThreadAudioSynthesizer.generateSystemTTSAudio(cue.text, matchedChar, apiKey);
+                        if (pcmBuf) {
+                            voiceBlobs.push({
+                                buffer: pcmBuf,
+                                startTime: Math.max(0, Number(cue.timeSec || cue.startTimeSec) || 0),
+                                volume: 1.4
+                            });
                         }
                     }
-                    loadedScenes.push({ shot, bitmap: bmp });
-                    onProgress(30 + Math.round(((i + 1) / shots.length) * 20), `Đã tải góc máy ${i + 1}/${shots.length}...`);
                 }
 
-                onProgress(55, "Bắt đầu chu trình kết xuất 60 FPS...");
+                const audioSampleRate = 48000;
+                const totalAudioSamples = Math.ceil(audioSampleRate * durationSec);
+                const offlineAudioCtx = new OfflineAudioContext(2, totalAudioSamples, audioSampleRate);
+
+                await DynamicAudioDSP.renderDynamicSoundtrack(
+                    offlineAudioCtx,
+                    blueprint.soundDesign,
+                    durationSec,
+                    voiceBlobs
+                );
+
+                const renderedAudioBuffer = await offlineAudioCtx.startRendering();
+
+                onProgress(10, "Bắt đầu chu trình quang học 60 FPS: Khởi tạo WebCodecs Hardware Pipeline...");
 
                 const canvas = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(width, height) : document.createElement('canvas');
                 canvas.width = width;
                 canvas.height = height;
-                const ctx = canvas.getContext('2d', { alpha: false });
+                const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
-                let muxer = null, videoEncoder = null;
+                const cadenceSec = blueprint.keyframeCadenceSeconds || 1.5;
+                const cadenceFrames = Math.max(30, Math.round(cadenceSec * fps));
+
+                onProgress(12, "Flux Engine: Đang kết xuất các trạm mốc thị giác then chốt (Keyframe Seeds)...");
+                const initialPrompt = VeoFlux60FpsEngine.buildInterpolatedFramePrompt(blueprint, 0, 0, totalFrames, lockedSeed);
+
+                let firstBitmap = null;
+                if (sourceImageUrl) {
+                    firstBitmap = await Commercial60FpsEngine.loadImageSource(sourceImageUrl, width, height, lockedSeed, userPrompt);
+                } else {
+                    try {
+                        firstBitmap = await VeoFlux60FpsEngine.fetchFluxFrame(initialPrompt, width, height, lockedSeed);
+                    } catch (_) {
+                        firstBitmap = await Commercial60FpsEngine.loadImageSource(null, width, height, lockedSeed, userPrompt);
+                    }
+                }
+
+                let muxer = null, videoEncoder = null, audioEncoder = null;
                 let isWebCodecsActive = false;
                 let encoderErrorOccurred = false;
 
@@ -3383,6 +3378,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         muxer = new window.Mp4Muxer.Muxer({
                             target: new window.Mp4Muxer.ArrayBufferTarget(),
                             video: { codec: 'avc', width, height },
+                            audio: (typeof window.AudioEncoder !== 'undefined') ? { codec: 'aac', numberOfChannels: 2, sampleRate: audioSampleRate } : undefined,
                             fastStart: 'in-memory'
                         });
 
@@ -3395,9 +3391,22 @@ TRẢ VỀ JSON DUY NHẤT:
                             codec: selectedVideoCodec,
                             width,
                             height,
-                            bitrate: 16_000_000,
+                            bitrate: 18_000_000,
                             framerate: fps
                         });
+
+                        if (typeof window.AudioEncoder !== 'undefined') {
+                            audioEncoder = new AudioEncoder({
+                                output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+                                error: () => {}
+                            });
+                            audioEncoder.configure({
+                                codec: 'mp4a.40.2',
+                                numberOfChannels: 2,
+                                sampleRate: audioSampleRate,
+                                bitrate: 192_000
+                            });
+                        }
 
                         isWebCodecsActive = true;
                     } catch (_) {
@@ -3405,111 +3414,309 @@ TRẢ VỀ JSON DUY NHẤT:
                     }
                 }
 
-                if (isWebCodecsActive && videoEncoder) {
-                    try {
-                        let timeMicros = 0;
-                        const shotCount = loadedScenes.length;
-                        const framesPerShot = Math.floor(totalFrames / shotCount);
+                const atmo = blueprint.atmosphereSimulation || {};
+                const particleCount = atmo.enabled ? (atmo.particleCount || 60) : 0;
+                const particles = [];
+                const pColor = atmo.colorRgba || 'rgba(255, 230, 180, 0.35)';
+                const velX = atmo.velocity?.x || 0.4;
+                const velY = atmo.velocity?.y || -0.6;
+                const turb = atmo.turbulence || 0.25;
 
-                        for (let f = 0; f < totalFrames; f++) {
-                            if (encoderErrorOccurred) break;
+                for (let i = 0; i < particleCount; i++) {
+                    particles.push({
+                        x: Math.random() * width,
+                        y: Math.random() * height,
+                        z: Math.random() * 0.8 + 0.2,
+                        size: Math.random() * 2.5 + 0.8,
+                        alpha: Math.random() * 0.5 + 0.2,
+                        vx: velX + (Math.random() - 0.5) * turb,
+                        vy: velY + (Math.random() - 0.5) * turb
+                    });
+                }
 
-                            const curShotIdx = Math.min(shotCount - 1, Math.floor(f / framesPerShot));
-                            const nextShotIdx = Math.min(shotCount - 1, curShotIdx + 1);
-                            const localFrame = f - (curShotIdx * framesPerShot);
-                            const localProgress = localFrame / framesPerShot;
+                const traj = blueprint.cameraTrajectory3D || {};
+                const zoomRange = traj.zoomCurve || [1.0, 1.15];
+                const panRange = traj.panRange || [-15, 15];
+                const tiltRange = traj.tiltRange || [-4, 6];
+                const rollDeg = traj.rollAngle || 1.2;
 
-                            const curScene = loadedScenes[curShotIdx];
-                            const nextScene = loadedScenes[nextShotIdx];
+                let currentMainBitmap = firstBitmap;
+                let nextTargetBitmap = null;
+                let currentCadenceBaseFrame = 0;
+                let timeMicros = 0;
 
-                            const zoomRange = curScene.shot?.zoomRange || [1.0, 1.15];
-                            const panRange = curScene.shot?.panRange || [-12, 12];
+                for (let f = 0; f < totalFrames; f++) {
+                    if (encoderErrorOccurred) break;
+                    const t = f / totalFrames;
 
-                            const curZoom = zoomRange[0] + (zoomRange[1] - zoomRange[0]) * localProgress;
-                            const curPanX = (panRange[0] + (panRange[1] - panRange[0]) * Math.sin(localProgress * Math.PI)) * (width / 1920);
+                    if (f > 0 && f % cadenceFrames === 0) {
+                        currentCadenceBaseFrame = f;
+                        currentMainBitmap = nextTargetBitmap || currentMainBitmap;
+                        const nextTargetTime = Math.min(1.0, (f + cadenceFrames) / totalFrames);
+                        const framePrompt = VeoFlux60FpsEngine.buildInterpolatedFramePrompt(blueprint, nextTargetTime, f, totalFrames, lockedSeed + f);
 
-                            while (videoEncoder.encodeQueueSize > 8) {
-                                await new Promise(r => setTimeout(r, 4));
-                            }
+                        VeoFlux60FpsEngine.fetchFluxFrame(framePrompt, width, height, lockedSeed + f)
+                            .then(bmp => { nextTargetBitmap = bmp; })
+                            .catch(() => { nextTargetBitmap = null; });
+                    }
 
-                            ctx.save();
-                            ctx.fillStyle = '#08090d';
-                            ctx.fillRect(0, 0, width, height);
-                            ctx.translate(width / 2 + curPanX, height / 2);
-                            ctx.scale(curZoom, curZoom);
-
-                            if (curScene.bitmap) ctx.drawImage(curScene.bitmap, -width / 2, -height / 2, width, height);
-
-                            if (curShotIdx !== nextShotIdx && localProgress > 0.85 && nextScene.bitmap) {
-                                const blendAlpha = (localProgress - 0.85) / 0.15;
-                                ctx.globalAlpha = Math.min(1.0, Math.max(0, blendAlpha));
-                                ctx.drawImage(nextScene.bitmap, -width / 2, -height / 2, width, height);
-                                ctx.globalAlpha = 1.0;
-                            }
-                            ctx.restore();
-
-                            const vig = ctx.createRadialGradient(width / 2, height / 2, width * 0.35, width / 2, height / 2, width * 0.72);
-                            vig.addColorStop(0, 'rgba(0,0,0,0)');
-                            vig.addColorStop(1, 'rgba(0,0,0,0.38)');
-                            ctx.fillStyle = vig;
-                            ctx.fillRect(0, 0, width, height);
-
-                            const videoFrame = new VideoFrame(canvas, { timestamp: timeMicros });
-                            videoEncoder.encode(videoFrame, { keyFrame: (f % 60 === 0) });
-                            videoFrame.close();
-
-                            timeMicros += frameDurationMicros;
-                            if (f % 20 === 0) {
-                                const pct = Math.min(96, Math.round(55 + (f / totalFrames) * 40));
-                                onProgress(pct, `Xuất khung hình 60 FPS (${f}/${totalFrames})...`);
-                            }
+                    if (isWebCodecsActive && videoEncoder) {
+                        while (videoEncoder.encodeQueueSize > 8) {
+                            await new Promise(r => setTimeout(r, 4));
                         }
+                    }
 
-                        if (!encoderErrorOccurred) {
-                            await videoEncoder.flush();
-                            muxer.finalize();
-                            loadedScenes.forEach(s => { if (s.bitmap?.close) s.bitmap.close(); });
-                            return { buffer: muxer.target.buffer, mimeType: 'video/mp4', ext: 'mp4', blueprint };
+                    ctx.save();
+                    ctx.fillStyle = '#08090d';
+                    ctx.fillRect(0, 0, width, height);
+
+                    const subProgress = (f - currentCadenceBaseFrame) / cadenceFrames;
+                    const curZoom = zoomRange[0] + (zoomRange[1] - zoomRange[0]) * t;
+                    const curPanX = (panRange[0] + (panRange[1] - panRange[0]) * Math.sin(t * Math.PI)) * (width / 1920);
+                    const curPanY = (tiltRange[0] + (tiltRange[1] - tiltRange[0]) * Math.cos(t * Math.PI)) * (height / 1080);
+                    const curRoll = (Math.sin(t * Math.PI * 2) * rollDeg * Math.PI) / 180;
+
+                    ctx.translate(width / 2 + curPanX, height / 2 + curPanY);
+                    ctx.rotate(curRoll);
+                    ctx.scale(curZoom, curZoom);
+
+                    if (currentMainBitmap) {
+                        ctx.drawImage(currentMainBitmap, -width / 2, -height / 2, width, height);
+                    }
+
+                    if (nextTargetBitmap && subProgress > 0.1) {
+                        ctx.globalAlpha = Math.min(1.0, (subProgress - 0.1) / 0.9);
+                        ctx.drawImage(nextTargetBitmap, -width / 2, -height / 2, width, height);
+                        ctx.globalAlpha = 1.0;
+                    }
+                    ctx.restore();
+
+                    if (particleCount > 0) {
+                        for (let i = 0; i < particles.length; i++) {
+                            const p = particles[i];
+                            p.x += p.vx * p.z;
+                            p.y += p.vy * p.z;
+                            if (p.x < 0) p.x += width;
+                            if (p.x > width) p.x -= width;
+                            if (p.y < 0) p.y += height;
+                            if (p.y > height) p.y -= height;
+
+                            ctx.fillStyle = pColor;
+                            ctx.beginPath();
+                            ctx.arc(p.x, p.y, p.size * p.z, 0, Math.PI * 2);
+                            ctx.fill();
                         }
-                    } catch (_) {
-                        // Fallback sang MediaRecorder nếu WebCodecs ném ngoại lệ
+                    }
+
+                    const vigIntensity = atmo.vignetteIntensity !== undefined ? atmo.vignetteIntensity : 0.35;
+                    if (vigIntensity > 0) {
+                        const vigGrad = ctx.createRadialGradient(width / 2, height / 2, width * 0.32, width / 2, height / 2, width * 0.72);
+                        vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+                        vigGrad.addColorStop(1, `rgba(0, 0, 0, ${vigIntensity})`);
+                        ctx.fillStyle = vigGrad;
+                        ctx.fillRect(0, 0, width, height);
+                    }
+
+                    if (isWebCodecsActive && videoEncoder && !encoderErrorOccurred) {
+                        const videoFrame = new VideoFrame(canvas, { timestamp: timeMicros });
+                        videoEncoder.encode(videoFrame, { keyFrame: (f % 60 === 0) });
+                        videoFrame.close();
+                    }
+
+                    timeMicros += frameDurationMicros;
+
+                    if (f % 20 === 0) {
+                        const pct = Math.min(96, Math.round(15 + (f / totalFrames) * 80));
+                        onProgress(pct, `Veo3 Engine: Đang xuất khung hình 60 FPS điện ảnh (${f}/${totalFrames})...`);
                     }
                 }
 
-                // Fallback an toàn: MediaRecorder
-                const fallbackOutput = await Commercial60FpsEngine.renderVideo60FpsWithAudio({
-                    loadedScenes,
-                    renderedAudioBuffer,
+                if (isWebCodecsActive && audioEncoder && renderedAudioBuffer) {
+                    const ch0 = renderedAudioBuffer.getChannelData(0);
+                    const ch1 = renderedAudioBuffer.numberOfChannels > 1 ? renderedAudioBuffer.getChannelData(1) : ch0;
+                    const sampleChunkSize = 2048;
+                    let audioTimeMicros = 0;
+
+                    for (let s = 0; s < renderedAudioBuffer.length; s += sampleChunkSize) {
+                        const currentSize = Math.min(sampleChunkSize, renderedAudioBuffer.length - s);
+                        const interleavedData = new Float32Array(currentSize * 2);
+                        for (let i = 0; i < currentSize; i++) {
+                            interleavedData[i * 2] = ch0[s + i];
+                            interleavedData[i * 2 + 1] = ch1[s + i];
+                        }
+
+                        const audioDataObj = new AudioData({
+                            format: 'f32',
+                            sampleRate: audioSampleRate,
+                            numberOfFrames: currentSize,
+                            numberOfChannels: 2,
+                            timestamp: audioTimeMicros,
+                            data: interleavedData
+                        });
+
+                        audioEncoder.encode(audioDataObj);
+                        audioDataObj.close();
+                        audioTimeMicros += Math.round((currentSize / audioSampleRate) * 1_000_000);
+                    }
+
+                    await audioEncoder.flush();
+                }
+
+                if (isWebCodecsActive && videoEncoder && !encoderErrorOccurred) {
+                    await videoEncoder.flush();
+                    muxer.finalize();
+
+                    if (currentMainBitmap?.close) currentMainBitmap.close();
+                    if (nextTargetBitmap?.close) nextTargetBitmap.close();
+
+                    return { buffer: muxer.target.buffer, mimeType: 'video/mp4', ext: 'mp4', blueprint };
+                }
+
+                if (currentMainBitmap?.close) currentMainBitmap.close();
+                if (nextTargetBitmap?.close) nextTargetBitmap.close();
+
+                const fallbackOutput = await Commercial60FpsEngine.renderVideo60Fps({
+                    sourceImageUrl,
+                    promptText: userPrompt,
                     durationSec,
                     width,
                     height,
+                    sceneSeed: lockedSeed,
                     onProgress
                 });
-                loadedScenes.forEach(s => { if (s.bitmap?.close) s.bitmap.close(); });
                 return { ...fallbackOutput, blueprint };
             })
         };
 
-        window.gdeepDispatchBgTask = async (payload) => {
-            try {
-                const rawKeys = localStorage.getItem('gdeep_api_keys_pool');
-                if (!rawKeys) return null;
-                const pool = JSON.parse(rawKeys);
-                const activeKey = pool.find(k => k.status === 'active')?.key || pool[0]?.key;
-                if (!activeKey) return null;
-                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${activeKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                return await res.json();
-            } catch (_) {
+        const MainThreadAudioSynthesizer = {
+            decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
+                const bin = atob(pcmBase64);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                const dv = new DataView(bytes.buffer);
+                const count = Math.floor(bytes.length / 2);
+                const actx = new (window.AudioContext || window.webkitAudioContext)();
+                const buf = actx.createBuffer(1, count, sampleRate);
+                const cd = buf.getChannelData(0);
+                for (let i = 0; i < count; i++) {
+                    const s = dv.getInt16(i * 2, true);
+                    cd[i] = s < 0 ? s / 32768 : s / 32767;
+                }
+                return buf;
+            },
+
+            async generateSystemTTSAudio(text, character, apiKey) {
+                if (!apiKey || !text) return null;
+                const voicePrompt = `[CLEAR BROADCAST] ${text}`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+                try {
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{ role: 'user', parts: [{ text: voicePrompt }] }],
+                            generationConfig: {
+                                responseModalities: ["AUDIO"],
+                                speechConfig: {
+                                    voiceConfig: { prebuiltVoiceConfig: { voiceName: character.geminiVoice || 'Puck'} }
+                                }
+                            },
+                            safetySettings: SAFETY_SETTINGS
+                        })
+                    });
+                    if (!res.ok) return null;
+                    const json = await res.json();
+                    const part = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData && p.inlineData.mimeType?.startsWith('audio/'));
+                    if (part?.inlineData?.data) {
+                        return this.decodePcmToAudioBuffer(part.inlineData.data, 24000);
+                    }
+                } catch (_) {}
                 return null;
+            },
+
+            async synthesizeSpatialBroadcastAudio(durationSec, dialogueScript, voiceCharacters, apiKey) {
+                const sampleRate = 48000;
+                const totalSamples = Math.ceil(sampleRate * durationSec);
+                const actx = new OfflineAudioContext(2, totalSamples, sampleRate);
+
+                const osc = actx.createOscillator();
+                const oscGain = actx.createGain();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(43.65, 0);
+
+                const filter = actx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(160, 0);
+
+                oscGain.gain.setValueAtTime(0.04, 0);
+                oscGain.gain.linearRampToValueAtTime(0.07, durationSec * 0.5);
+                oscGain.gain.linearRampToValueAtTime(0.02, durationSec);
+
+                osc.connect(filter);
+                filter.connect(oscGain);
+                oscGain.connect(actx.destination);
+                osc.start(0);
+                osc.stop(durationSec);
+
+                if (dialogueScript && dialogueScript.length && apiKey) {
+                    for (const line of dialogueScript) {
+                        const char = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
+                        const lineText = line.text || line.dialogue || '';
+                        if (!char || !lineText) continue;
+
+                        const pcmBuffer = await this.generateSystemTTSAudio(lineText, char, apiKey);
+                        if (pcmBuffer) {
+                            const st = Math.min(Math.max(Number(line.startTimeSec || line.timeSec) || 0, 0), Math.max(0, durationSec - 0.5));
+                            const voiceSource = actx.createBufferSource();
+                            voiceSource.buffer = pcmBuffer;
+
+                            const eq = actx.createBiquadFilter();
+                            eq.type = 'peaking';
+                            eq.frequency.setValueAtTime(3200, 0);
+                            eq.gain.setValueAtTime(4.0, 0);
+
+                            const voiceGain = actx.createGain();
+                            voiceGain.gain.setValueAtTime(1.4, 0);
+
+                            oscGain.gain.setValueAtTime(0.01, st);
+                            oscGain.gain.linearRampToValueAtTime(0.05, st + pcmBuffer.duration + 0.3);
+
+                            voiceSource.connect(eq);
+                            eq.connect(voiceGain);
+                            voiceGain.connect(actx.destination);
+                            voiceSource.start(st);
+                        }
+                    }
+                }
+
+                const rendered = await actx.startRendering();
+                const left = rendered.getChannelData(0);
+                const right = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : left;
+                const interleaved = new Float32Array(left.length * 2);
+                for (let i = 0; i < left.length; i++) {
+                    interleaved[i * 2] = left[i];
+                    interleaved[i * 2 + 1] = right[i];
+                }
+                return { interleaved, sampleRate };
             }
         };
 
+        window.gdeepDispatchBgTask = async (payload) => {
+            const rawKeys = localStorage.getItem('gdeep_api_keys_pool');
+            if (!rawKeys) return null;
+            const pool = JSON.parse(rawKeys);
+            const activeKey = pool.find(k => k.status === 'active')?.key || pool[0]?.key;
+            if (!activeKey) return null;
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${activeKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            return await res.json();
+        };
+
         // =========================================================================
-        // KHỞI TẠO ỨNG DỤNG VUE 3
+        // KHỞI CHẠY ỨNG DỤNG VUE 3 CHÍNH
         // =========================================================================
         (function() {
             'use strict';
@@ -3517,13 +3724,14 @@ TRẢ VỀ JSON DUY NHẤT:
 
             const { createApp, ref, reactive, onMounted, onUnmounted, nextTick, computed, watch, toRaw, h } = window.Vue;
 
+            // SẮP XẾP LẠI TÊN MÔ HÌNH: ĐÂY LÀ CÁC MÔ HÌNH THUỘC NỀN TẢNG G-DEEP ULTRA
             const MODELS = [
-                { id: "gemini-2.5-flash", apiEndpointId: "gemini-2.5-flash", name: "Ultra", persona: "Trợ lý Trí tuệ Đa năng G-Deep Ultra" },
-                { id: "gemini-2.5-pro", apiEndpointId: "gemini-2.5-pro", name: "Pro", persona: "Hệ thống Suy luận Chuyên sâu G-Deep Ultra" },
-                { id: "gemini-2.0-flash", apiEndpointId: "gemini-2.0-flash", name: "Flash", persona: "Mô hình Tốc độ cao G-Deep Ultra" }
+                { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra", persona: "Trợ lý Trí tuệ Đa năng G-Deep Ultra" },
+                { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", persona: "Hệ thống Xử lý Tốc độ cao G-Deep Ultra" },
+                { id: "gemini-3.6-flash-", apiEndpointId: "gemini-3.6-flash", name: "Flash", persona: "Mô hình Tiết kiệm Tài nguyên G-Deep Ultra" }
             ];
-            const FALLBACK_MODEL_CHAIN = ["gemini-2.5-flash", "gemini-2.0-flash"];
-            const BACKGROUND_MODELS = { FAST: "gemini-2.0-flash", LITE: "gemini-2.0-flash" };
+            const FALLBACK_MODEL_CHAIN = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
+            const BACKGROUND_MODELS = { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" };
             const MAX_HISTORY_INPUT_TOKENS = 900000;
             
             const ACCENT_COLORS = [
@@ -3598,8 +3806,6 @@ TRẢ VỀ JSON DUY NHẤT:
                         }
                     } catch (_) {}
                 }
-                if (raw.createdAt !== undefined) copy.createdAt = Number(raw.createdAt) || getMonotonicTimestamp();
-                if (raw.updatedAt !== undefined) copy.updatedAt = Number(raw.updatedAt) || getMonotonicTimestamp();
                 if (!copy.updatedAt && !copy.createdAt) copy.updatedAt = getMonotonicTimestamp();
                 return copy;
             };
@@ -3848,6 +4054,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         try { localStorage.setItem('gdeep_serper_keys_pool', JSON.stringify(toRaw(serperApiKeys.value))); } catch (_) {}
                     };
 
+                    // PHÂN HỆ VÀ TÍNH NĂNG CON ĐƯỢC TÍCH HỢP TRONG G-DEEP ULTRA
                     const enableCodeExecution = ref((() => { try { return localStorage.getItem('gdeep_code_exec') === 'true'; } catch (_) { return false; } })());
                     const enableDeepThinking = ref((() => { try { return localStorage.getItem('gdeep_deep_thinking') === 'true'; } catch (_) { return false; } })());
                     const enableGoogleSearch = ref((() => { try { return localStorage.getItem('gdeep_google_search') === 'true'; } catch (_) { return false; } })());
@@ -3892,7 +4099,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         const clickX = e.clientX - rect.left;
                         const percent = Math.max(0, Math.min(100, (clickX / rect.width) * 100));
                         timelineCursorPercent.value = percent;
-                        const targetTime = Number(((percent / 100) * Math.max(1, cinemaConfig.duration)).toFixed(1));
+                        const targetTime = Number(((percent / 100) * cinemaConfig.duration).toFixed(1));
                         
                         const defaultChar = cinemaVoiceCharacters.value[0]?.name || 'Nhân vật 1';
                         userTimelineCues.value.push({
@@ -4216,7 +4423,7 @@ TRẢ VỀ JSON DUY NHẤT:
                                 }
                             }
 
-                            searchStatusText.value = "Phân hệ Cinema Studio: Đang đạo diễn kịch bản & phân cảnh 3D...";
+                            searchStatusText.value = "Phân hệ Cinema Studio đang thiết lập Master Transcript và tính toán 3D...";
                             const promptText = customPrompt || inputText.value.trim() || 'Thế giới khoa học viễn tưởng siêu thực 3D';
 
                             const renderResult = await VeoFlux60FpsEngine.renderVeo3_60FpsVideo({
@@ -4238,18 +4445,20 @@ TRẢ VỀ JSON DUY NHẤT:
 
                             const videoBlob = new Blob([renderResult.buffer], { type: renderResult.mimeType });
                             const videoUrl = ObjectUrlRegistry.create(videoBlob);
+                            this.registerGarbage(videoUrl);
                             targetMsg.renderedVideoUrl = videoUrl;
 
                             const bp = renderResult.blueprint || {};
-                            const transcriptText = (bp.soundDesign?.dialogueTimeline || []).map(d => `- **${d.speaker} (${d.timeSec || d.startTimeSec}s):** "${d.text}"`).join('\n');
+                            const transcriptText = (bp.dialogueTimeline || []).map(d => `- **${d.speaker} (${d.timeSec || d.startTimeSec}s):** "${d.text}"`).join('\n');
 
                             targetMsg.content = (targetMsg.content || '') +
-                                `\n\n🎬 **[Video 60 FPS Hoàn Tất - Cinema Studio]**\n` +
-                                `- **Đạo diễn phân cảnh:** ${bp.title || 'Phân cảnh Điện ảnh Đa góc máy'}\n` +
-                                `- **Góc quay:** ${bp.shots ? bp.shots.length : 1} góc máy điện ảnh đa tầng\n` +
-                                `- **Chuẩn kết xuất:** ${width}x${height} | 60.0 FPS mượt mà (${renderResult.ext.toUpperCase()})\n` +
-                                `- **Visual DNA Anchor:** \`#DNA_${lockedSeed}\`\n` +
-                                `- **Âm học DSP:** Đầy đủ nhạc nền, foley môi trường và âm thanh giọng đọc nhân vật\n` +
+                                `\n\n🎬 **[Video 60 FPS Hoàn Tất - Phân Hệ Cinema Studio]**\n` +
+                                `- **Đạo diễn kịch bản:** Gemini Phân tích vật lý & chuyển động 3D\n` +
+                                `- **Thực thi khung hình:** Flux Realism (60 FPS Frame-by-Frame, Tổng ${durationSec * 60} frames)\n` +
+                                `- **Độ phân giải & Tốc độ:** ${width}x${height} | 60.0 FPS mượt mà (${renderResult.ext.toUpperCase()})\n` +
+                                `- **Visual DNA Anchor:** \`#DNA_${lockedSeed}\` (Đồng nhất nhận diện nhân vật & bối cảnh)\n` +
+                                `- **Bối cảnh 3D:** ${bp.masterEnvironmentDNA ? bp.masterEnvironmentDNA.slice(0, 140) + '...' : 'Không gian 3D chi tiết'}\n` +
+                                `- **Âm thanh:** Âm thanh nền điện ảnh hòa âm cùng khẩu hình lời thoại\n` +
                                 (transcriptText ? `\n🎙️ **Transcript kịch bản lời thoại:**\n${transcriptText}` : '');
 
                             targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
@@ -5608,10 +5817,6 @@ TRẢ VỀ JSON DUY NHẤT:
                             }
                         }
 
-                        if (!alternating.length && ensureEndsWithUser) {
-                            return [{ role: 'user', parts: [{ text: 'Tiếp tục' }] }];
-                        }
-
                         return alternating;
                     });
 
@@ -5724,7 +5929,7 @@ TRẢ VỀ JSON DUY NHẤT:
                             const payload = {
                                 contents: [{
                                     role: 'user',
-                                    parts: [{ text: `Đặt tiêu đề ngắn gọn (4 - 6 từ) cho nội dung sau:\n"${promptSnippet}".\n\n Chỉ trả về đúng duy nhất 4 - 6 từ tiêu đề. CẤM dẫn nhập/diễn giải/đưa ra lựa chọn.` }]
+                                    parts: [{ text: `Đặt 1 tiêu đề duy nhất ngắn gọn không ngoặc kép (4 - 6 từ) cho nội dung sau:\n"${promptSnippet}"` }]
                                 }]
                             };
 
@@ -5820,11 +6025,15 @@ TRẢ VỀ JSON DUY NHẤT:
                         throw new Error(`Đã thử lại ${attempts} lần nhưng không thể kết nối tới mô hình AI.`);
                     });
 
+                    // =========================================================================
+                    // HÀM SENDMESSAGE TOÀN NĂNG - ĐIỀU PHỐI ĐÚNG CÁC PHÂN HỆ THUỘC G-DEEP ULTRA
+                    // =========================================================================
                     const sendMessage = createAutonomousFunction({
                         id: 'sendMessage_MasterPipeline', purpose: 'Phân luồng tin nhắn và điều phối các phân hệ G-Deep Ultra', returns: 'boolean'
                     }, async function(isRegenerate = false, existingBotMsgTarget = null) {
                         if (isGenerating.value && !isRegenerate) return false;
 
+                        // TỰ ĐỘNG CHUYỂN HƯỚNG SANG PHÂN HỆ CINEMA STUDIO 60 FPS
                         if (enableCinemaStudio.value && !isRegenerate && (inputText.value.trim() || pendingAttachments.value.length > 0)) {
                             const cinemaPrompt = inputText.value.trim();
                             const currentAtts = [...pendingAttachments.value];
@@ -6960,10 +7169,8 @@ Yêu cầu bắt buộc:
                         const hasExplicitClassSize = /\b(w-\d+|h-\d+|w-\[|h-\[)/.test(combinedClass);
 
                         let calculatedStroke = '2';
-                        // Hỗ trợ cả prop strokeWidth và attribute HTML (kebab-case & lowercased)
-                        const rawStroke = props.strokeWidth ?? attrs['stroke-width'] ?? attrs['strokewidth'];
-                        if (rawStroke !== null && rawStroke !== undefined && rawStroke !== '') {
-                            calculatedStroke = String(rawStroke);
+                        if (props.strokeWidth !== null && props.strokeWidth !== undefined && props.strokeWidth !== '') {
+                            calculatedStroke = String(props.strokeWidth);
                         } else {
                             if (/\b(w-3(\.5)?|h-3(\.5)?|w-4\b|h-4\b)/.test(combinedClass)) {
                                 calculatedStroke = '1.5';
@@ -7014,4 +7221,4 @@ Yêu cầu bắt buộc:
         })();
     </script>
 </body>
-</html>
+</html>            
