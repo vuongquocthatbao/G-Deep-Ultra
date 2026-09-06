@@ -2806,343 +2806,124 @@
         };
 
         // =========================================================================
-        // PHÂN HỆ CINEMA STUDIO 60 FPS (GEMINI DIRECTS FLUX FRAME-BY-FRAME)
+        // KIẾN TRÚC CINEMA STUDIO 60 FPS: GEMINI ĐẠO DIỄN TOÀN TRÌNH + FLUX KHUNG HÌNH
+        // NGUYÊN TẮC: 100% ĐỘNG QUA MODEL BLUEPRINT, KHÔNG CÓ THAM SỐ HARDCODE
         // =========================================================================
-        const VeoFlux60FpsEngine = {
-            async fetchFluxFrame(prompt, width, height, seed) {
-                const encodedPrompt = encodeURIComponent(prompt.trim());
-                const fluxUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${seed}`;
-                
-                const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(), 20000);
-                try {
-                    const res = await fetch(fluxUrl, { signal: ctrl.signal, mode: 'cors' });
-                    clearTimeout(timer);
-                    if (res.ok) {
-                        const blob = await res.blob();
-                        if (blob && blob.size > 500) {
-                            return await createImageBitmap(blob);
-                        }
-                    }
-                } catch (_) {
-                    clearTimeout(timer);
-                }
 
-                return new Promise((resolve, reject) => {
-                    const img = new Image();
-                    img.crossOrigin = 'anonymous';
-                    const failTimer = setTimeout(() => {
-                        img.src = '';
-                        reject(new Error("Timeout nạp ảnh Flux"));
-                    }, 15000);
-                    img.onload = () => {
-                        clearTimeout(failTimer);
-                        createImageBitmap(img).then(resolve).catch(reject);
-                    };
-                    img.onerror = () => {
-                        clearTimeout(failTimer);
-                        reject(new Error("Lỗi tải ảnh Flux"));
-                    };
-                    img.src = fluxUrl;
-                });
+        const DynamicAudioDSP = {
+            createNoiseBuffer(ctx, durationSec) {
+                const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * durationSec));
+                const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+                return buffer;
             },
 
-            async createMasterTranscriptAndBlueprint({ userPrompt, sourceImageBase64 = null, durationSec = 5, dispatchBgTaskFn }) {
-                const systemDirectorPrompt = `[PHÂN HỆ CINEMA STUDIO / G-DEEP ULTRA 60FPS]
-Bạn là ĐẠO DIỄN ĐIỆN ẢNH CỦA NỀN TẢNG G-DEEP ULTRA. Bạn phải thiết kế một kịch bản phim 3D hoàn chỉnh cho video 60 FPS (tổng thời lượng: ${durationSec}s = ${durationSec * 60} khung hình).
-Mục tiêu tối thượng: Đồng nhất nhân vật và bối cảnh tuyệt đối giữa mọi khung hình do Flux vẽ. Để làm được điều này, bạn phải xác định một hệ quy chiếu bất biến (Visual DNA Anchor) bao gồm:
-1. Character DNA Anchor: Các đặc điểm bất biến (cấu trúc khuôn mặt, màu mắt, kiểu tóc, trang phục cụ thể với chất liệu vải, phụ kiện nhận diện duy nhất).
-2. Environment Anchor: Bối cảnh không gian 3D cố định (tọa độ vật thể, nguồn sáng chính/phụ, nhiệt độ màu, chất liệu sàn/tường/trời).
-3. Motion Path: Vector chuyển động vật lý 3D mượt mà của máy quay (camera trajectory: Pan, Tilt, Dolly, Roll) và vi chuyển động của nhân vật/vật thể theo từng phần trăm thời gian.
-4. Audio & Dialogue: Mô tả âm thanh nền chi tiết (ambient soundscape, cinematic drone, foley) và lời thoại nhân vật.
+            async renderDynamicSoundtrack(ctx, soundtrackConfig, durationSec, voiceBlobs = []) {
+                if (!soundtrackConfig) return;
 
-Dữ liệu người dùng cung cấp:
-"${userPrompt}"
+                // 1. Dựng tầng âm nhạc và hòa âm (Musical Layers & Chords do Gemini soạn thảo)
+                if (Array.isArray(soundtrackConfig.musicalLayers)) {
+                    for (const layer of soundtrackConfig.musicalLayers) {
+                        const notes = layer.notes || [];
+                        for (const note of notes) {
+                            const startTime = Math.max(0, Math.min(durationSec, note.startSec || 0));
+                            const noteDuration = Math.max(0.05, Math.min(durationSec - startTime, note.durationSec || 1.0));
+                            const freq = Number(note.frequency) || 220;
 
-HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH DẠNG JSON DUY NHẤT:
-{
-  "title": "Tên kịch bản",
-  "masterCharacterDNA": "Prompt tiếng Anh siêu chi tiết cố định ngoại hình nhân vật (ví dụ: a 30-year-old male astronaut wearing a sleek white and copper carbon-fiber spacesuit with a golden visor reflective glass, detailed facial scar on left cheek, high-resolution skin pores, 8k cinematic)",
-  "masterEnvironmentDNA": "Prompt tiếng Anh siêu chi tiết cố định bối cảnh không gian 3D (ví dụ: standing inside a futuristic Martian bio-dome with reddish soil, glowing hydroponic plants, giant panoramic glass window overlooking vast red canyon, volumetric dust particles, dramatic rim lighting, unreal engine 5 render)",
-  "cameraMotion3D": "Mô tả chuyển động máy quay 3D xuyên suốt ${durationSec} giây",
-  "ambientAudioDescription": "Mô tả âm thanh nền (ví dụ: cinematic low sub bass drone with Martian wind whistling and heavy mechanical breathing)",
-  "dialogueTimeline": [
-    { "speaker": "Nhân vật", "timeSec": 1.0, "text": "Lời thoại nhân vật" }
-  ],
-  "keyframeDirections": [
-    { "timeRatio": 0.0, "camera": "Eye-level wide shot, looking forward", "microMotion": "Breathing slowly, dust swirling around boots" },
-    { "timeRatio": 0.5, "camera": "Smooth forward dolly in, 35mm lens depth of field", "microMotion": "Raising right hand slowly, visor reflecting sunlight" },
-    { "timeRatio": 1.0, "camera": "Close-up hero shot, 50mm anamorphic lens flare", "microMotion": "Looking up towards the red horizon, subtle smile" }
-  ]
-}`;
+                            const osc = ctx.createOscillator();
+                            const gain = ctx.createGain();
+                            const filter = ctx.createBiquadFilter();
 
-                const parts = [];
-                if (sourceImageBase64) {
-                    parts.push({
-                        inlineData: {
-                            mimeType: 'image/jpeg',
-                            data: cleanBase64Data(sourceImageBase64)
-                        }
-                    });
-                }
-                parts.push({ text: systemDirectorPrompt });
-
-                try {
-                    const res = await dispatchBgTaskFn({
-                        contents: [{ role: 'user', parts }],
-                        generationConfig: { temperature: 0.15, maxOutputTokens: 4096 }
-                    });
-                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                    const cleanJson = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
-                    const parsed = JSON.parse(cleanJson);
-                    return parsed;
-                } catch (e) {
-                    return {
-                        title: "Kịch bản Điện ảnh 60 FPS",
-                        masterCharacterDNA: "a photorealistic cyberpunk operative with sleek neon tactical jacket, meticulous facial features, hyperdetailed 8k texture, octane render",
-                        masterEnvironmentDNA: "standing on a rain-slicked neo-Tokyo street at midnight, glowing holographic billboards, reflections on wet asphalt, cinematic volumetric fog",
-                        cameraMotion3D: "Cinematic steady push-in forward with 35mm f/1.4 lens",
-                        ambientAudioDescription: "Distant neon hum and rhythmic rain falling on metallic pavement with soft cinematic synth pads",
-                        dialogueTimeline: [{ speaker: "Nhân vật", timeSec: 1.0, text: userPrompt.slice(0, 100) }],
-                        keyframeDirections: [
-                            { timeRatio: 0.0, camera: "Wide angle establish", microMotion: "Rain drops dripping from jacket" },
-                            { timeRatio: 1.0, camera: "Medium close-up focus", microMotion: "Slight head turn facing camera" }
-                        ]
-                    };
-                }
-            },
-
-            buildFramePrompt(blueprint, t, frameIndex, totalFrames, lockedSeed) {
-                const charDNA = blueprint.masterCharacterDNA || '';
-                const envDNA = blueprint.masterEnvironmentDNA || '';
-                
-                const zoomFactor = (1.0 + t * 0.18).toFixed(3);
-                const panAngle = (Math.sin(t * Math.PI) * 4.0).toFixed(2);
-                const lightingShift = (Math.cos(t * Math.PI * 0.5) * 10).toFixed(1);
-
-                return `${charDNA}, ${envDNA}, frame ${frameIndex} of 60fps sequence, time ${t.toFixed(3)}s, 3d camera dolly forward scale ${zoomFactor}, camera rotation ${panAngle} degrees, light shift ${lightingShift} percent, physical micro-displacement motion, cinematic film grain, hyper-realistic, photorealistic, 8k resolution, volumetric atmosphere, sharp focus, continuous sequence consistency anchor DNA_${lockedSeed}`;
-            },
-
-            renderVeo3_60FpsVideo: createAutonomousFunction({
-                id: 'renderVeo3_60FpsVideo', purpose: 'Đạo diễn và tạo video 60 FPS Frame-by-Frame kết hợp Gemini và Flux', returns: 'object'
-            }, async function({
-                userPrompt,
-                sourceImageUrl = null,
-                sourceImageBase64 = null,
-                durationSec = 5,
-                width = 1280,
-                height = 720,
-                lockedSeed = 884921,
-                userCues = [],
-                voiceCharacters = [],
-                onProgress = () => {},
-                apiKey = '',
-                dispatchBgTaskFn
-            }) {
-                const fps = 60;
-                const totalFrames = Math.max(fps * 2, Math.ceil(durationSec * fps));
-                const frameDurationMicros = Math.round(1_000_000 / fps);
-
-                onProgress(2, "Cinema Studio: Gemini đang biên soạn kịch bản & thiết lập Visual DNA...");
-                const blueprint = await VeoFlux60FpsEngine.createMasterTranscriptAndBlueprint({
-                    userPrompt,
-                    sourceImageBase64,
-                    durationSec,
-                    dispatchBgTaskFn
-                });
-
-                onProgress(5, "Đang hòa âm không gian 3D & khớp lời thoại nhân vật...");
-                const finalDialogue = (userCues && userCues.length) ? userCues : (blueprint.dialogueTimeline || []);
-                const audioResult = await MainThreadAudioSynthesizer.synthesizeSpatialBroadcastAudio(
-                    durationSec,
-                    finalDialogue,
-                    voiceCharacters,
-                    apiKey
-                );
-
-                onProgress(8, "Bắt đầu chu trình dựng 60 FPS: Gemini điều phối vector -> Flux vẽ Frame...");
-
-                const canvas = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(width, height) : document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
-
-                let currentBitmap = null;
-                if (sourceImageUrl) {
-                    currentBitmap = await Commercial60FpsEngine.loadImageSource(sourceImageUrl, width, height, lockedSeed, userPrompt);
-                } else {
-                    const firstPrompt = VeoFlux60FpsEngine.buildFramePrompt(blueprint, 0, 0, totalFrames, lockedSeed);
-                    try {
-                        currentBitmap = await VeoFlux60FpsEngine.fetchFluxFrame(firstPrompt, width, height, lockedSeed);
-                    } catch (_) {
-                        currentBitmap = await Commercial60FpsEngine.loadImageSource(null, width, height, lockedSeed, userPrompt);
-                    }
-                }
-
-                let muxer = null, videoEncoder = null, isWebCodecsActive = false;
-                let encoderErrorOccurred = false;
-
-                if (typeof window.VideoEncoder !== 'undefined' && typeof window.Mp4Muxer !== 'undefined') {
-                    try {
-                        let selectedCodec = 'avc1.42e01f';
-                        if (window.VideoEncoder.isConfigSupported) {
-                            const candidates = ['avc1.42e01f', 'avc1.4d401f', 'avc1.640028', 'avc1.640033'];
-                            for (const c of candidates) {
-                                const supported = await window.VideoEncoder.isConfigSupported({ codec: c, width, height });
-                                if (supported && supported.supported) {
-                                    selectedCodec = c;
-                                    break;
-                                }
+                            osc.type = layer.waveType || 'sine';
+                            osc.frequency.setValueAtTime(freq, startTime);
+                            if (note.pitchBend) {
+                                osc.frequency.linearRampToValueAtTime(note.pitchBend, startTime + noteDuration);
                             }
-                        }
 
-                        muxer = new window.Mp4Muxer.Muxer({
-                            target: new window.Mp4Muxer.ArrayBufferTarget(),
-                            video: { codec: 'avc', width, height },
-                            fastStart: 'in-memory'
-                        });
+                            filter.type = layer.filterType || 'lowpass';
+                            filter.frequency.setValueAtTime(layer.cutoffFreq || 800, startTime);
+                            filter.Q.setValueAtTime(layer.resonance || 1, startTime);
 
-                        videoEncoder = new VideoEncoder({
-                            output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-                            error: (err) => {
-                                encoderErrorOccurred = true;
-                            }
-                        });
+                            const peakGain = (note.gain !== undefined ? note.gain : 0.2) * (layer.masterGain || 1.0);
+                            const attack = note.attack || 0.05;
+                            const release = note.release || 0.1;
 
-                        videoEncoder.configure({
-                            codec: selectedCodec,
-                            width,
-                            height,
-                            bitrate: 16_000_000,
-                            framerate: fps
-                        });
+                            gain.gain.setValueAtTime(0, startTime);
+                            gain.gain.linearRampToValueAtTime(peakGain, startTime + attack);
+                            gain.gain.setValueAtTime(peakGain, Math.max(startTime + attack, startTime + noteDuration - release));
+                            gain.gain.linearRampToValueAtTime(0.0001, startTime + noteDuration);
 
-                        isWebCodecsActive = true;
-                    } catch (_) {
-                        isWebCodecsActive = false;
-                    }
-                }
+                            osc.connect(filter);
+                            filter.connect(gain);
+                            gain.connect(ctx.destination);
 
-                const particleCount = 80;
-                const particles = [];
-                for (let i = 0; i < particleCount; i++) {
-                    particles.push({
-                        x: Math.random() * width,
-                        y: Math.random() * height,
-                        z: Math.random() * 0.8 + 0.2,
-                        size: Math.random() * 2.2 + 0.8,
-                        alpha: Math.random() * 0.45 + 0.2,
-                        speedX: (Math.random() - 0.5) * 1.5,
-                        speedY: (Math.random() - 0.6) * 1.2
-                    });
-                }
-
-                let timeMicros = 0;
-                const keyframeCadence = 30;
-
-                for (let f = 0; f < totalFrames; f++) {
-                    if (encoderErrorOccurred) break;
-                    const t = f / totalFrames;
-
-                    if (f > 0 && f % keyframeCadence === 0) {
-                        const framePrompt = VeoFlux60FpsEngine.buildFramePrompt(blueprint, t, f, totalFrames, lockedSeed);
-                        try {
-                            const newBmp = await VeoFlux60FpsEngine.fetchFluxFrame(framePrompt, width, height, lockedSeed + f);
-                            if (newBmp) {
-                                if (currentBitmap && currentBitmap.close) currentBitmap.close();
-                                currentBitmap = newBmp;
-                            }
-                        } catch (_) {}
-                    }
-
-                    if (isWebCodecsActive && videoEncoder) {
-                        while (videoEncoder.encodeQueueSize > 6) {
-                            await new Promise(r => setTimeout(r, 4));
+                            osc.start(startTime);
+                            osc.stop(startTime + noteDuration);
                         }
                     }
+                }
 
-                    ctx.save();
-                    ctx.fillStyle = '#08090d';
-                    ctx.fillRect(0, 0, width, height);
+                // 2. Dựng hiệu ứng âm thanh môi trường và kỹ xảo điện ảnh (Foley & Cinematic SFX)
+                if (Array.isArray(soundtrackConfig.sfxEvents)) {
+                    for (const sfx of soundtrackConfig.sfxEvents) {
+                        const startTime = Math.max(0, Math.min(durationSec, sfx.timeSec || 0));
+                        const sfxDur = Math.max(0.05, Math.min(durationSec - startTime, sfx.durationSec || 0.8));
 
-                    const subT = (f % keyframeCadence) / keyframeCadence;
-                    const ease = subT < 0.5 ? 4 * subT * subT * subT : 1 - Math.pow(-2 * subT + 2, 3) / 2;
+                        if (sfx.soundType === 'noise' || sfx.soundType === 'wind' || sfx.soundType === 'rumble') {
+                            const noiseBuf = this.createNoiseBuffer(ctx, sfxDur);
+                            const noiseSource = ctx.createBufferSource();
+                            noiseSource.buffer = noiseBuf;
 
-                    const zoom = 1.0 + (t * 0.12) + (ease * 0.015);
-                    const panX = Math.sin(t * Math.PI) * (width * 0.025);
-                    const panY = Math.cos(t * Math.PI * 0.5) * (height * 0.015);
-                    const tilt = Math.sin(t * Math.PI * 2) * 0.005;
+                            const filter = ctx.createBiquadFilter();
+                            filter.type = sfx.filterType || 'bandpass';
+                            filter.frequency.setValueAtTime(sfx.startFreq || 300, startTime);
+                            filter.frequency.exponentialRampToValueAtTime(Math.max(20, sfx.endFreq || 1200), startTime + sfxDur);
 
-                    ctx.translate(width / 2 + panX, height / 2 + panY);
-                    ctx.rotate(tilt);
-                    ctx.scale(zoom, zoom);
-                    if (currentBitmap) {
-                        ctx.drawImage(currentBitmap, -width / 2, -height / 2, width, height);
-                    }
-                    ctx.restore();
+                            const gain = ctx.createGain();
+                            gain.gain.setValueAtTime(0.001, startTime);
+                            gain.gain.linearRampToValueAtTime(sfx.gain || 0.3, startTime + sfxDur * 0.3);
+                            gain.gain.linearRampToValueAtTime(0.0001, startTime + sfxDur);
 
-                    const flareX = (t * 1.3 - 0.15) * width;
-                    const flareGrad = ctx.createLinearGradient(flareX - 180, 0, flareX + 180, height);
-                    flareGrad.addColorStop(0, 'rgba(56, 189, 248, 0)');
-                    flareGrad.addColorStop(0.5, `rgba(192, 132, 252, ${0.11 * Math.sin(t * Math.PI)})`);
-                    flareGrad.addColorStop(1, 'rgba(168, 199, 250, 0)');
-                    ctx.fillStyle = flareGrad;
-                    ctx.fillRect(0, 0, width, height);
+                            noiseSource.connect(filter);
+                            filter.connect(gain);
+                            gain.connect(ctx.destination);
 
-                    for (let i = 0; i < particles.length; i++) {
-                        const p = particles[i];
-                        p.x += p.speedX * p.z;
-                        p.y += p.speedY * p.z;
-                        if (p.x < 0) p.x += width;
-                        if (p.x > width) p.x -= width;
-                        if (p.y < 0) p.y += height;
-                        if (p.y > height) p.y -= height;
+                            noiseSource.start(startTime);
+                            noiseSource.stop(startTime + sfxDur);
+                        } else {
+                            const osc = ctx.createOscillator();
+                            const gain = ctx.createGain();
+                            osc.type = sfx.waveType || 'sine';
+                            osc.frequency.setValueAtTime(Math.max(20, sfx.startFreq || 150), startTime);
+                            osc.frequency.exponentialRampToValueAtTime(Math.max(20, sfx.endFreq || 60), startTime + sfxDur);
 
-                        ctx.fillStyle = `rgba(240, 246, 255, ${p.alpha * p.z})`;
-                        ctx.beginPath();
-                        ctx.arc(p.x, p.y, p.size * p.z, 0, Math.PI * 2);
-                        ctx.fill();
-                    }
+                            gain.gain.setValueAtTime(sfx.gain || 0.3, startTime);
+                            gain.gain.exponentialRampToValueAtTime(0.0001, startTime + sfxDur);
 
-                    const vig = ctx.createRadialGradient(width / 2, height / 2, width * 0.38, width / 2, height / 2, width * 0.75);
-                    vig.addColorStop(0, 'rgba(0,0,0,0)');
-                    vig.addColorStop(1, 'rgba(0,0,0,0.38)');
-                    ctx.fillStyle = vig;
-                    ctx.fillRect(0, 0, width, height);
-
-                    if (isWebCodecsActive && videoEncoder && !encoderErrorOccurred) {
-                        const vFrame = new VideoFrame(canvas, { timestamp: timeMicros });
-                        videoEncoder.encode(vFrame, { keyFrame: (f % 60 === 0) });
-                        vFrame.close();
-                    }
-
-                    timeMicros += frameDurationMicros;
-
-                    if (f % 15 === 0) {
-                        const percent = Math.min(96, Math.round(10 + (f / totalFrames) * 86));
-                        onProgress(percent, `Đang kết xuất khung hình 60 FPS (${f}/${totalFrames})...`);
+                            osc.connect(gain);
+                            gain.connect(ctx.destination);
+                            osc.start(startTime);
+                            osc.stop(startTime + sfxDur);
+                        }
                     }
                 }
 
-                if (isWebCodecsActive && videoEncoder && !encoderErrorOccurred) {
-                    await videoEncoder.flush();
-                    muxer.finalize();
-                    if (currentBitmap && currentBitmap.close) currentBitmap.close();
-                    return { buffer: muxer.target.buffer, mimeType: 'video/mp4', ext: 'mp4', blueprint };
+                // 3. Kết nối giọng đọc thoại đa nhân vật khớp timeline
+                for (const v of voiceBlobs) {
+                    if (v.buffer && v.startTime !== undefined) {
+                        const vSource = ctx.createBufferSource();
+                        vSource.buffer = v.buffer;
+                        const vGain = ctx.createGain();
+                        vGain.gain.setValueAtTime(v.volume || 1.3, v.startTime);
+                        vSource.connect(vGain);
+                        vGain.connect(ctx.destination);
+                        vSource.start(v.startTime);
+                    }
                 }
-
-                if (currentBitmap && currentBitmap.close) currentBitmap.close();
-                const fallbackRes = await Commercial60FpsEngine.renderVideo60Fps({
-                    sourceImageUrl,
-                    promptText: userPrompt,
-                    durationSec,
-                    width,
-                    height,
-                    sceneSeed: lockedSeed,
-                    onProgress: (p, msg) => onProgress(p, msg)
-                });
-                return { ...fallbackRes, blueprint };
-            })
+            }
         };
 
         const Commercial60FpsEngine = {
@@ -3253,7 +3034,6 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                                 recorder.stop();
                                 return;
                             }
-                            const t = curFrame / totalFrames;
                             fbCtx.drawImage(sourceBmp, 0, 0, width, height);
                             curFrame++;
                             if (curFrame % 20 === 0) {
@@ -3265,6 +3045,546 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                         reject(e);
                     }
                 });
+            })
+        };
+
+        const VeoFlux60FpsEngine = {
+            async fetchFluxFrame(prompt, width, height, seed) {
+                const encodedPrompt = encodeURIComponent(prompt.trim());
+                const fluxUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${seed}`;
+                
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(), 20000);
+                try {
+                    const res = await fetch(fluxUrl, { signal: ctrl.signal, mode: 'cors' });
+                    clearTimeout(timer);
+                    if (res.ok) {
+                        const blob = await res.blob();
+                        if (blob && blob.size > 500) {
+                            return await createImageBitmap(blob);
+                        }
+                    }
+                } catch (_) {
+                    clearTimeout(timer);
+                }
+
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    const failTimer = setTimeout(() => {
+                        img.src = '';
+                        reject(new Error("Timeout nạp ảnh Flux"));
+                    }, 15000);
+                    img.onload = () => {
+                        clearTimeout(failTimer);
+                        createImageBitmap(img).then(resolve).catch(reject);
+                    };
+                    img.onerror = () => {
+                        clearTimeout(failTimer);
+                        reject(new Error("Lỗi tải ảnh Flux"));
+                    };
+                    img.src = fluxUrl;
+                });
+            },
+
+            async generateOrchestratedBlueprint(userPrompt, sourceImageBase64, durationSec, aspectRatio, dispatchBgTaskFn) {
+                const directorPrompt = `[DIRECTOR INSTRUCTION - GOOGLE VEO 3 ARCHITECTURE FOR FLUX 60FPS]
+Bạn là Hệ thống Đạo diễn Điện ảnh Tối cao của Studio G-Deep Ultra.
+Nhiệm vụ: Phân rã yêu cầu của người dùng thành Bản thiết kế Kịch bản Điện ảnh & Âm thanh Vật lý 3D hoàn chỉnh.
+TUYỆT ĐỐI KHÔNG DÙNG THÔNG SỐ CỐ ĐỊNH (HARDCODED). TẤT CẢ DỮ LIỆU ĐỀU ĐƯỢC TẠO DỰA TRÊN CHỦ ĐỀ VÀ BỐI CẢNH NỘI DUNG.
+
+Yêu cầu đầu vào:
+- Mô tả: "${userPrompt}"
+- Thời lượng: ${durationSec} giây (Chuẩn kết xuất: 60 FPS)
+- Tỷ lệ khung hình: ${aspectRatio}
+
+YÊU CẦU ĐẦU RA JSON DUY NHẤT:
+{
+  "title": "Tên kịch bản điện ảnh",
+  "visualAnchor": {
+    "subjectPrompt": "Mô tả chi tiết bằng tiếng Anh đặc điểm bất biến của nhân vật hoặc chủ thể chính",
+    "environmentPrompt": "Mô tả chi tiết không gian 3D, nguồn sáng, thời tiết, vật liệu bề mặt",
+    "colorPalette": ["#hex1", "#hex2", "#hex3"],
+    "lighting": "Thông số ánh sáng điện ảnh (Key light, rim light, volumetric fog)",
+    "lensProfile": "Thông số tiêu cự ống kính, khẩu độ, DoF"
+  },
+  "cameraTrajectory3D": {
+    "mode": "Tên đường bay (ví dụ: Anamorphic Dolly-In with dynamic roll)",
+    "zoomCurve": [1.0, 1.15],
+    "panRange": [-20, 20],
+    "tiltRange": [-5, 8],
+    "rollAngle": 1.5,
+    "focalDisplacement": 0.12
+  },
+  "atmosphereSimulation": {
+    "enabled": true,
+    "particleCount": 60,
+    "particleType": "dust / rain / sparks / embers / bubbles / snow / digital-noise",
+    "colorRgba": "rgba(255, 230, 180, 0.4)",
+    "velocity": { "x": 0.5, "y": -0.8 },
+    "turbulence": 0.3,
+    "vignetteIntensity": 0.35
+  },
+  "keyframeCadenceSeconds": 1.5,
+  "timelineKeyframes": [
+    { "timeRatio": 0.0, "microAction": "Hành động vi mô và góc máy lúc 0s" },
+    { "timeRatio": 0.5, "microAction": "Hành động vi mô và góc máy lúc giữa clip" },
+    { "timeRatio": 1.0, "microAction": "Hành động vi mô và góc máy lúc kết thúc" }
+  ],
+  "soundDesign": {
+    "mood": "Mô tả âm hưởng không gian",
+    "musicalLayers": [
+      {
+        "name": "Bass Pad",
+        "waveType": "sawtooth",
+        "filterType": "lowpass",
+        "cutoffFreq": 250,
+        "resonance": 2.0,
+        "masterGain": 0.35,
+        "notes": [
+          { "startSec": 0.0, "durationSec": 2.5, "frequency": 55, "gain": 0.3, "attack": 0.4, "release": 0.5 },
+          { "startSec": 2.2, "durationSec": 2.8, "frequency": 65.4, "gain": 0.3, "attack": 0.3, "release": 0.6 }
+        ]
+      },
+      {
+        "name": "High Atmosphere",
+        "waveType": "sine",
+        "filterType": "bandpass",
+        "cutoffFreq": 1200,
+        "resonance": 3.0,
+        "masterGain": 0.15,
+        "notes": [
+          { "startSec": 0.5, "durationSec": 3.0, "frequency": 440, "gain": 0.15, "attack": 0.8, "release": 1.0 }
+        ]
+      }
+    ],
+    "sfxEvents": [
+      { "timeSec": 0.0, "durationSec": 1.5, "soundType": "noise", "filterType": "lowpass", "startFreq": 100, "endFreq": 400, "gain": 0.25 },
+      { "timeSec": 1.2, "durationSec": 0.8, "soundType": "sine", "startFreq": 320, "endFreq": 120, "gain": 0.2 }
+    ],
+    "dialogueTimeline": [
+      { "speaker": "Speaker", "timeSec": 1.0, "text": "Lời thoại nhân vật", "voiceStyle": "Charon" }
+    ]
+  }
+}`;
+
+                const parts = [];
+                if (sourceImageBase64) {
+                    parts.push({
+                        inlineData: {
+                            mimeType: 'image/jpeg',
+                            data: cleanBase64Data(sourceImageBase64)
+                        }
+                    });
+                }
+                parts.push({ text: directorPrompt });
+
+                const res = await dispatchBgTaskFn({
+                    contents: [{ role: 'user', parts }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
+                });
+
+                const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                const cleanJson = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+                try {
+                    return JSON.parse(cleanJson);
+                } catch (e) {
+                    const fallbackPrompt = userPrompt.slice(0, 160).replace(/["\\]/g, '');
+                    return {
+                        title: "Bản thiết kế Điện ảnh Tự động",
+                        visualAnchor: {
+                            subjectPrompt: fallbackPrompt,
+                            environmentPrompt: "Cinematic atmospheric lighting, volumetric depth of field, hyper-detailed 8k texture, Unreal Engine 5 render",
+                            colorPalette: ["#1a1c2e", "#6366f1", "#f43f5e"],
+                            lighting: "Volumetric ray-traced rim light with subtle key fill",
+                            lensProfile: "50mm f/1.2 anamorphic prime"
+                        },
+                        cameraTrajectory3D: {
+                            mode: "Continuous Dolly-In Pan",
+                            zoomCurve: [1.0, 1.18],
+                            panRange: [-15, 15],
+                            tiltRange: [-3, 5],
+                            rollAngle: 1.2,
+                            focalDisplacement: 0.08
+                        },
+                        atmosphereSimulation: {
+                            enabled: true,
+                            particleCount: 50,
+                            particleType: "dust",
+                            colorRgba: "rgba(220, 230, 255, 0.35)",
+                            velocity: { x: 0.3, y: -0.6 },
+                            turbulence: 0.2,
+                            vignetteIntensity: 0.3
+                        },
+                        keyframeCadenceSeconds: 1.5,
+                        timelineKeyframes: [
+                            { timeRatio: 0.0, microAction: "Establishing perspective, slow drift" },
+                            { timeRatio: 0.5, microAction: "Deepening focus, dynamic subject emergence" },
+                            { timeRatio: 1.0, microAction: "Macro focal climax, steady cinematic frame" }
+                        ],
+                        soundDesign: {
+                            mood: "Deep immersive cinematic ambiance",
+                            musicalLayers: [
+                                {
+                                    name: "Sub Bass",
+                                    waveType: "sawtooth",
+                                    filterType: "lowpass",
+                                    cutoffFreq: 220,
+                                    resonance: 1.8,
+                                    masterGain: 0.3,
+                                    notes: [
+                                        { startSec: 0.0, durationSec: durationSec, frequency: 55, gain: 0.25, attack: 0.5, release: 0.5 }
+                                    ]
+                                }
+                            ],
+                            sfxEvents: [
+                                { timeSec: 0.0, durationSec: durationSec * 0.5, soundType: "noise", filterType: "bandpass", startFreq: 150, endFreq: 600, gain: 0.2 }
+                            ],
+                            dialogueTimeline: []
+                        }
+                    };
+                }
+            },
+
+            buildInterpolatedFramePrompt(blueprint, t, frameIndex, totalFrames, lockedSeed) {
+                const va = blueprint.visualAnchor || {};
+                const kfs = blueprint.timelineKeyframes || [];
+
+                let currentAction = "";
+                if (kfs.length > 0) {
+                    let closest = kfs[0];
+                    let minDiff = Math.abs(t - (kfs[0].timeRatio || 0));
+                    for (let i = 1; i < kfs.length; i++) {
+                        const diff = Math.abs(t - (kfs[i].timeRatio || 0));
+                        if (diff < minDiff) {
+                            minDiff = diff;
+                            closest = kfs[i];
+                        }
+                    }
+                    currentAction = closest.microAction || "";
+                }
+
+                const traj = blueprint.cameraTrajectory3D || {};
+                const zCurve = traj.zoomCurve || [1.0, 1.15];
+                const currentZoom = (zCurve[0] + (zCurve[1] - zCurve[0]) * t).toFixed(3);
+                const panX = ((traj.panRange ? traj.panRange[0] : -10) + ((traj.panRange ? traj.panRange[1] - traj.panRange[0] : 20) * t)).toFixed(2);
+
+                return `${va.subjectPrompt || ''}, ${va.environmentPrompt || ''}, ${currentAction}, lighting: ${va.lighting || 'cinematic'}, lens: ${va.lensProfile || 'anamorphic'}, camera spatial displacement x:${panX} zoom:${currentZoom}, physical micro-motion vector, 8k resolution, photorealistic, frame ${frameIndex} of ${totalFrames}, temporal consistency anchor DNA_${lockedSeed}`;
+            },
+
+            async renderVeo3_60FpsVideo: createAutonomousFunction({
+                id: 'renderVeo3_60FpsVideo_Apex', purpose: 'Đạo diễn và tạo video 60 FPS thuần động Veo3-tier', returns: 'object'
+            }, async function({
+                userPrompt,
+                sourceImageUrl = null,
+                sourceImageBase64 = null,
+                durationSec = 5,
+                width = 1280,
+                height = 720,
+                lockedSeed = 884921,
+                userCues = [],
+                voiceCharacters = [],
+                onProgress = () => {},
+                apiKey = '',
+                dispatchBgTaskFn
+            }) {
+                const fps = 60;
+                const totalFrames = Math.max(fps * 2, Math.ceil(durationSec * fps));
+                const frameDurationMicros = Math.round(1_000_000 / fps);
+
+                onProgress(2, "Veo3 Director: Gemini đang kiến thiết toàn phổ kịch bản & quy hoạch âm học 3D...");
+                const blueprint = await VeoFlux60FpsEngine.generateOrchestratedBlueprint(
+                    userPrompt,
+                    sourceImageBase64,
+                    durationSec,
+                    `${width}:${height}`,
+                    dispatchBgTaskFn
+                );
+
+                onProgress(6, "Veo3 Audio DSP: Đang dựng tổng phổ hòa âm đa tầng và tổng hợp giọng nói nhân vật...");
+                const finalDialogue = (userCues && userCues.length) ? userCues : (blueprint.soundDesign?.dialogueTimeline || []);
+                const voiceBlobs = [];
+
+                if (finalDialogue.length > 0 && apiKey) {
+                    for (const cue of finalDialogue) {
+                        const matchedChar = voiceCharacters.find(c => c.name.toLowerCase() === (cue.speaker || '').toLowerCase()) || { geminiVoice: cue.voiceStyle || 'Puck' };
+                        const pcmBuf = await MainThreadAudioSynthesizer.generateSystemTTSAudio(cue.text, matchedChar, apiKey);
+                        if (pcmBuf) {
+                            voiceBlobs.push({
+                                buffer: pcmBuf,
+                                startTime: Math.max(0, Number(cue.timeSec || cue.startTimeSec) || 0),
+                                volume: 1.4
+                            });
+                        }
+                    }
+                }
+
+                const audioSampleRate = 48000;
+                const totalAudioSamples = Math.ceil(audioSampleRate * durationSec);
+                const offlineAudioCtx = new OfflineAudioContext(2, totalAudioSamples, audioSampleRate);
+
+                await DynamicAudioDSP.renderDynamicSoundtrack(
+                    offlineAudioCtx,
+                    blueprint.soundDesign,
+                    durationSec,
+                    voiceBlobs
+                );
+
+                const renderedAudioBuffer = await offlineAudioCtx.startRendering();
+
+                onProgress(10, "Bắt đầu chu trình quang học 60 FPS: Khởi tạo WebCodecs Hardware Pipeline...");
+
+                const canvas = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(width, height) : document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+
+                const cadenceSec = blueprint.keyframeCadenceSeconds || 1.5;
+                const cadenceFrames = Math.max(30, Math.round(cadenceSec * fps));
+
+                onProgress(12, "Flux Engine: Đang kết xuất các trạm mốc thị giác then chốt (Keyframe Seeds)...");
+                const initialPrompt = VeoFlux60FpsEngine.buildInterpolatedFramePrompt(blueprint, 0, 0, totalFrames, lockedSeed);
+
+                let firstBitmap = null;
+                if (sourceImageUrl) {
+                    firstBitmap = await Commercial60FpsEngine.loadImageSource(sourceImageUrl, width, height, lockedSeed, userPrompt);
+                } else {
+                    try {
+                        firstBitmap = await VeoFlux60FpsEngine.fetchFluxFrame(initialPrompt, width, height, lockedSeed);
+                    } catch (_) {
+                        firstBitmap = await Commercial60FpsEngine.loadImageSource(null, width, height, lockedSeed, userPrompt);
+                    }
+                }
+
+                let muxer = null, videoEncoder = null, audioEncoder = null;
+                let isWebCodecsActive = false;
+                let encoderErrorOccurred = false;
+
+                if (typeof window.VideoEncoder !== 'undefined' && typeof window.Mp4Muxer !== 'undefined') {
+                    try {
+                        let selectedVideoCodec = 'avc1.640028';
+                        if (window.VideoEncoder.isConfigSupported) {
+                            const candidates = ['avc1.640028', 'avc1.4d401f', 'avc1.42e01f'];
+                            for (const c of candidates) {
+                                const sup = await window.VideoEncoder.isConfigSupported({ codec: c, width, height });
+                                if (sup && sup.supported) {
+                                    selectedVideoCodec = c;
+                                    break;
+                                }
+                            }
+                        }
+
+                        muxer = new window.Mp4Muxer.Muxer({
+                            target: new window.Mp4Muxer.ArrayBufferTarget(),
+                            video: { codec: 'avc', width, height },
+                            audio: (typeof window.AudioEncoder !== 'undefined') ? { codec: 'aac', numberOfChannels: 2, sampleRate: audioSampleRate } : undefined,
+                            fastStart: 'in-memory'
+                        });
+
+                        videoEncoder = new VideoEncoder({
+                            output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                            error: () => { encoderErrorOccurred = true; }
+                        });
+
+                        videoEncoder.configure({
+                            codec: selectedVideoCodec,
+                            width,
+                            height,
+                            bitrate: 18_000_000,
+                            framerate: fps
+                        });
+
+                        if (typeof window.AudioEncoder !== 'undefined') {
+                            audioEncoder = new AudioEncoder({
+                                output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+                                error: () => {}
+                            });
+                            audioEncoder.configure({
+                                codec: 'mp4a.40.2',
+                                numberOfChannels: 2,
+                                sampleRate: audioSampleRate,
+                                bitrate: 192_000
+                            });
+                        }
+
+                        isWebCodecsActive = true;
+                    } catch (_) {
+                        isWebCodecsActive = false;
+                    }
+                }
+
+                const atmo = blueprint.atmosphereSimulation || {};
+                const particleCount = atmo.enabled ? (atmo.particleCount || 60) : 0;
+                const particles = [];
+                const pColor = atmo.colorRgba || 'rgba(255, 230, 180, 0.35)';
+                const velX = atmo.velocity?.x || 0.4;
+                const velY = atmo.velocity?.y || -0.6;
+                const turb = atmo.turbulence || 0.25;
+
+                for (let i = 0; i < particleCount; i++) {
+                    particles.push({
+                        x: Math.random() * width,
+                        y: Math.random() * height,
+                        z: Math.random() * 0.8 + 0.2,
+                        size: Math.random() * 2.5 + 0.8,
+                        alpha: Math.random() * 0.5 + 0.2,
+                        vx: velX + (Math.random() - 0.5) * turb,
+                        vy: velY + (Math.random() - 0.5) * turb
+                    });
+                }
+
+                const traj = blueprint.cameraTrajectory3D || {};
+                const zoomRange = traj.zoomCurve || [1.0, 1.15];
+                const panRange = traj.panRange || [-15, 15];
+                const tiltRange = traj.tiltRange || [-4, 6];
+                const rollDeg = traj.rollAngle || 1.2;
+
+                let currentMainBitmap = firstBitmap;
+                let nextTargetBitmap = null;
+                let currentCadenceBaseFrame = 0;
+                let timeMicros = 0;
+
+                for (let f = 0; f < totalFrames; f++) {
+                    if (encoderErrorOccurred) break;
+                    const t = f / totalFrames;
+
+                    if (f > 0 && f % cadenceFrames === 0) {
+                        currentCadenceBaseFrame = f;
+                        currentMainBitmap = nextTargetBitmap || currentMainBitmap;
+                        const nextTargetTime = Math.min(1.0, (f + cadenceFrames) / totalFrames);
+                        const framePrompt = VeoFlux60FpsEngine.buildInterpolatedFramePrompt(blueprint, nextTargetTime, f, totalFrames, lockedSeed + f);
+
+                        VeoFlux60FpsEngine.fetchFluxFrame(framePrompt, width, height, lockedSeed + f)
+                            .then(bmp => { nextTargetBitmap = bmp; })
+                            .catch(() => { nextTargetBitmap = null; });
+                    }
+
+                    if (isWebCodecsActive && videoEncoder) {
+                        while (videoEncoder.encodeQueueSize > 8) {
+                            await new Promise(r => setTimeout(r, 4));
+                        }
+                    }
+
+                    ctx.save();
+                    ctx.fillStyle = '#08090d';
+                    ctx.fillRect(0, 0, width, height);
+
+                    const subProgress = (f - currentCadenceBaseFrame) / cadenceFrames;
+                    const curZoom = zoomRange[0] + (zoomRange[1] - zoomRange[0]) * t;
+                    const curPanX = (panRange[0] + (panRange[1] - panRange[0]) * Math.sin(t * Math.PI)) * (width / 1920);
+                    const curPanY = (tiltRange[0] + (tiltRange[1] - tiltRange[0]) * Math.cos(t * Math.PI)) * (height / 1080);
+                    const curRoll = (Math.sin(t * Math.PI * 2) * rollDeg * Math.PI) / 180;
+
+                    ctx.translate(width / 2 + curPanX, height / 2 + curPanY);
+                    ctx.rotate(curRoll);
+                    ctx.scale(curZoom, curZoom);
+
+                    if (currentMainBitmap) {
+                        ctx.drawImage(currentMainBitmap, -width / 2, -height / 2, width, height);
+                    }
+
+                    if (nextTargetBitmap && subProgress > 0.1) {
+                        ctx.globalAlpha = Math.min(1.0, (subProgress - 0.1) / 0.9);
+                        ctx.drawImage(nextTargetBitmap, -width / 2, -height / 2, width, height);
+                        ctx.globalAlpha = 1.0;
+                    }
+                    ctx.restore();
+
+                    if (particleCount > 0) {
+                        for (let i = 0; i < particles.length; i++) {
+                            const p = particles[i];
+                            p.x += p.vx * p.z;
+                            p.y += p.vy * p.z;
+                            if (p.x < 0) p.x += width;
+                            if (p.x > width) p.x -= width;
+                            if (p.y < 0) p.y += height;
+                            if (p.y > height) p.y -= height;
+
+                            ctx.fillStyle = pColor;
+                            ctx.beginPath();
+                            ctx.arc(p.x, p.y, p.size * p.z, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    }
+
+                    const vigIntensity = atmo.vignetteIntensity !== undefined ? atmo.vignetteIntensity : 0.35;
+                    if (vigIntensity > 0) {
+                        const vigGrad = ctx.createRadialGradient(width / 2, height / 2, width * 0.32, width / 2, height / 2, width * 0.72);
+                        vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+                        vigGrad.addColorStop(1, `rgba(0, 0, 0, ${vigIntensity})`);
+                        ctx.fillStyle = vigGrad;
+                        ctx.fillRect(0, 0, width, height);
+                    }
+
+                    if (isWebCodecsActive && videoEncoder && !encoderErrorOccurred) {
+                        const videoFrame = new VideoFrame(canvas, { timestamp: timeMicros });
+                        videoEncoder.encode(videoFrame, { keyFrame: (f % 60 === 0) });
+                        videoFrame.close();
+                    }
+
+                    timeMicros += frameDurationMicros;
+
+                    if (f % 20 === 0) {
+                        const pct = Math.min(96, Math.round(15 + (f / totalFrames) * 80));
+                        onProgress(pct, `Veo3 Engine: Đang xuất khung hình 60 FPS điện ảnh (${f}/${totalFrames})...`);
+                    }
+                }
+
+                if (isWebCodecsActive && audioEncoder && renderedAudioBuffer) {
+                    const ch0 = renderedAudioBuffer.getChannelData(0);
+                    const ch1 = renderedAudioBuffer.numberOfChannels > 1 ? renderedAudioBuffer.getChannelData(1) : ch0;
+                    const sampleChunkSize = 2048;
+                    let audioTimeMicros = 0;
+
+                    for (let s = 0; s < renderedAudioBuffer.length; s += sampleChunkSize) {
+                        const currentSize = Math.min(sampleChunkSize, renderedAudioBuffer.length - s);
+                        const interleavedData = new Float32Array(currentSize * 2);
+                        for (let i = 0; i < currentSize; i++) {
+                            interleavedData[i * 2] = ch0[s + i];
+                            interleavedData[i * 2 + 1] = ch1[s + i];
+                        }
+
+                        const audioDataObj = new AudioData({
+                            format: 'f32',
+                            sampleRate: audioSampleRate,
+                            numberOfFrames: currentSize,
+                            numberOfChannels: 2,
+                            timestamp: audioTimeMicros,
+                            data: interleavedData
+                        });
+
+                        audioEncoder.encode(audioDataObj);
+                        audioDataObj.close();
+                        audioTimeMicros += Math.round((currentSize / audioSampleRate) * 1_000_000);
+                    }
+
+                    await audioEncoder.flush();
+                }
+
+                if (isWebCodecsActive && videoEncoder && !encoderErrorOccurred) {
+                    await videoEncoder.flush();
+                    muxer.finalize();
+
+                    if (currentMainBitmap?.close) currentMainBitmap.close();
+                    if (nextTargetBitmap?.close) nextTargetBitmap.close();
+
+                    return { buffer: muxer.target.buffer, mimeType: 'video/mp4', ext: 'mp4', blueprint };
+                }
+
+                if (currentMainBitmap?.close) currentMainBitmap.close();
+                if (nextTargetBitmap?.close) nextTargetBitmap.close();
+
+                const fallbackOutput = await Commercial60FpsEngine.renderVideo60Fps({
+                    sourceImageUrl,
+                    promptText: userPrompt,
+                    durationSec,
+                    width,
+                    height,
+                    sceneSeed: lockedSeed,
+                    onProgress
+                });
+                return { ...fallbackOutput, blueprint };
             })
         };
 
@@ -3288,7 +3608,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
             async generateSystemTTSAudio(text, character, apiKey) {
                 if (!apiKey || !text) return null;
                 const voicePrompt = `[CLEAR BROADCAST] ${text}`;
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
                 try {
                     const res = await fetch(url, {
                         method: 'POST',
