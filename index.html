@@ -92,7 +92,7 @@
                         </div>
                     </div>
                     <div style="max-width: 760px; margin: 16px auto 0 auto; width: 100%; display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end;">
-                        <button id="l0-btn-bypass" style="background:rgba(255,255,255,0.08); hover:bg-white/20; color:#fff; border:none; padding:10px 16px; border-radius:10px; font-size:12px; cursor:pointer; font-weight:600;">Bỏ Qua & Mở Giao Diện</button>
+                        <button id="l0-btn-bypass" style="background:rgba(255,255,255,0.08); color:#fff; border:none; padding:10px 16px; border-radius:10px; font-size:12px; cursor:pointer; font-weight:600;">Bỏ Qua & Mở Giao Diện</button>
                         <button id="l0-btn-clean" style="background:rgba(239,68,68,0.2); color:#fca5a5; border:none; padding:10px 16px; border-radius:10px; font-size:12px; cursor:pointer; font-weight:600;">Reset Cache Dữ Liệu</button>
                     </div>
                 `;
@@ -127,7 +127,8 @@
                 const benignList = [
                     'ResizeObserver loop', 'speechSynthesis', 'favicon.ico', 'canceled',
                     'aborted', 'AbortError', 'Script error.', 'Extension context',
-                    'Loading chunk', 'reading \'indexOf\'', 'The operation was aborted'
+                    'Loading chunk', 'reading \'indexOf\'', 'The operation was aborted',
+                    'play() failed because the user didn\'t interact'
                 ];
                 return benignList.some(str => msg.includes(str));
             }
@@ -231,9 +232,10 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
             }, 3800);
 
             window.addEventListener('error', function(e) {
-                if (!isHypervisorEngaged && e.message && !isBenignError(e.message)) {
+                const errMsg = e.message || (e.error ? e.error.message : '');
+                if (!isHypervisorEngaged && errMsg && !isBenignError(errMsg)) {
                     clearTimeout(bootWatchdog);
-                    engageRescueMode(`Fatal Error: ${e.message} tại ${e.filename || 'bundle'}:${e.lineno || 0}`);
+                    engageRescueMode(`Fatal Error: ${errMsg} tại ${e.filename || 'bundle'}:${e.lineno || 0}`);
                 }
             }, true);
 
@@ -249,7 +251,6 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
             window.__L0_CLEAR_WATCHDOG__ = function() {
                 clearTimeout(bootWatchdog);
                 try {
-                    // Reset bộ đếm boot về 0 khi app đã khởi động thành công
                     sessionStorage.removeItem(BOOT_KEY);
                 } catch(e) {}
                 console.log("[L0 Hypervisor] Watchdog giải trừ thành công. Hệ thống vận hành bình thường.");
@@ -1912,6 +1913,30 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
         'use strict';
 
         // =========================================================================
+        // TIỆN ÍCH TRÍCH XUẤT JSON AN TOÀN CHỐNG SỰ CỐ TEXT BAO QUANH
+        // =========================================================================
+        function extractJsonFromText(rawText) {
+            if (!rawText) return null;
+            const str = String(rawText).trim();
+            const codeBlockMatch = str.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+            if (codeBlockMatch && codeBlockMatch[1]) {
+                try { return JSON.parse(codeBlockMatch[1].trim()); } catch (_) {}
+            }
+            try { return JSON.parse(str); } catch (_) {}
+            const firstBrace = str.indexOf('{');
+            const lastBrace = str.lastIndexOf('}');
+            if (firstBrace !== -1 && lastBrace > firstBrace) {
+                try { return JSON.parse(str.substring(firstBrace, lastBrace + 1)); } catch (_) {}
+            }
+            const firstBracket = str.indexOf('[');
+            const lastBracket = str.lastIndexOf(']');
+            if (firstBracket !== -1 && lastBracket > firstBracket) {
+                try { return JSON.parse(str.substring(firstBracket, lastBracket + 1)); } catch (_) {}
+            }
+            return null;
+        }
+
+        // =========================================================================
         // ĐỘNG CƠ MA TRẬN TỔ HỢP PHI TUYẾN TÍNH ĐỘNG VÔ HẠN
         // =========================================================================
         const DynamicNonlinearHyperMesh = (function() {
@@ -1975,17 +2000,8 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                     this.value = initialVal;
                     this.bridge = bridge;
                     this.isPulsing = false;
-                    this.checkpointTrail = [this._clone(initialVal)];
+                    this.checkpointTrail = [Date.now()];
                     this.resonanceListeners = new Set();
-                }
-
-                _clone(v) {
-                    if (v === null || typeof v !== 'object') return v;
-                    if (v instanceof HTMLElement || typeof v === 'function' || v instanceof Worker || v instanceof AbortController) return v;
-                    if (Array.isArray(v)) {
-                        return v.slice(-10).map(item => (item && typeof item === 'object') ? { id: item.id, role: item.role } : item);
-                    }
-                    try { return JSON.parse(JSON.stringify(v)); } catch (_) { return v; }
                 }
 
                 mutate(candidateVal, sourceIntent = 'DYNAMIC_SURGE') {
@@ -1997,7 +2013,7 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                         this.bridge.value = candidateVal;
                     }
 
-                    this.checkpointTrail.push(this._clone(candidateVal));
+                    this.checkpointTrail.push(Date.now());
                     if (this.checkpointTrail.length > 8) this.checkpointTrail.shift();
 
                     activationVector[this.index] = this._quantizeActivity(candidateVal);
@@ -2013,7 +2029,7 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                     if (typeof val === 'number') return Math.min(1.0, Math.max(0.0, Math.abs(val) / 100.0));
                     if (typeof val === 'string') return val.length > 0 ? Math.min(1.0, val.length / 300.0) : 0.0;
                     if (Array.isArray(val)) return val.length > 0 ? Math.min(1.0, val.length / 25.0) : 0.0;
-                    if (val !== null && typeof val === 'object') return Object.keys(val).length > 0 ? 0.75 : 0.0;
+                    if (val !== null && typeof val === 'object') return 0.75;
                     return 0.0;
                 }
 
@@ -2127,19 +2143,19 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                     const r = window.Vue.ref(initialVal);
                     const node = enrollDynamicNode(id, initialVal, r);
                     return new Proxy(r, {
-                        get(t, p, recv) {
+                        get(t, p) {
                             if (p === '__node') return node;
                             if (p === '__v_raw') return t;
                             if (p === '__v_isRef') return true;
                             if (p === '__v_skip') return false;
-                            return Reflect.get(t, p, recv);
+                            return t[p];
                         },
-                        set(t, p, v, recv) {
-                            const res = Reflect.set(t, p, v, recv);
+                        set(t, p, v) {
+                            t[p] = v;
                             if (p === 'value') {
                                 node.mutate(v, 'DIRECT_REF_MUTATION');
                             }
-                            return res;
+                            return true;
                         }
                     });
                 },
@@ -2147,17 +2163,17 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                     const rx = window.Vue.reactive(initialObj);
                     const node = enrollDynamicNode(id, initialObj, { value: rx });
                     return new Proxy(rx, {
-                        get(t, p, recv) {
+                        get(t, p) {
                             if (p === '__node') return node;
                             if (p === '__v_raw') return t;
                             if (p === '__v_isReactive') return true;
                             if (p === '__v_skip') return false;
-                            return Reflect.get(t, p, recv);
+                            return t[p];
                         },
-                        set(t, p, v, recv) {
-                            const res = Reflect.set(t, p, v, recv);
+                        set(t, p, v) {
+                            t[p] = v;
                             node.mutate(t, `PROP_${String(p)}`);
-                            return res;
+                            return true;
                         }
                     });
                 },
@@ -3342,7 +3358,7 @@ Trả về DUY NHẤT một khối mã nguồn đã vá bên trong \`\`\`javascr
                 if (!promptText || promptText.trim().length < 5) return heuristicPlan;
 
                 const fileNames = attachments && attachments.length ? `Tệp: ${attachments.map(a => a.name).join(', ')}` : '';
-                const plannerPrompt = `[NHIỆM VỤ: BÓC TÁCH THỰC THỂ VÀ TRUY VẤN]\nNội dung: """${promptText}"""\n${fileNames}\n\nYêu cầu:\n1. Bóc tách thực thể chính.\n2. Tạo 2 - 3 câu truy vấn ngắn gọn.\n\nTRẢ VỀ JSON:\n{\n  "entities": ["thực thể 1"],\n  "intent": "Mục đích",\n  "queries": ["truy vấn 1"]\n}`;
+                const plannerPrompt = `[NHIỆM VỤ: BÓC TÁCH THỰC THỂ VÀ TRUY VẤN]\nNội dung: """${promptText}"""\n${fileNames}\n\nYêu cầu:\n1. Bóc tách thực thể chính.\n2. Tạo 2 - 3 câu truy vấn ngắn gọn.\n\nTRẢ VỀ JSON DUY NHẤT:\n{\n  "entities": ["thực thể 1"],\n  "intent": "Mục đích",\n  "queries": ["truy vấn 1"]\n}`;
 
                 try {
                     const llmPromise = dispatchBackgroundTaskFn({
@@ -3356,9 +3372,8 @@ Trả về DUY NHẤT một khối mã nguồn đã vá bên trong \`\`\`javascr
                     
                     const rawJson = res?.candidates?.[0]?.content?.parts?.[0]?.text;
                     if (rawJson) {
-                        const cleanJson = rawJson.replace(/```json/gi, '').replace(/```/g, '').trim();
-                        const parsed = JSON.parse(cleanJson);
-                        if (Array.isArray(parsed.queries) && parsed.queries.length > 0) {
+                        const parsed = extractJsonFromText(rawJson);
+                        if (parsed && Array.isArray(parsed.queries) && parsed.queries.length > 0) {
                             return {
                                 entities: Array.isArray(parsed.entities) && parsed.entities.length ? parsed.entities : heuristicPlan.entities,
                                 queries: parsed.queries.slice(0, 3),
@@ -3449,18 +3464,18 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                         generationConfig: { temperature: 0.15, maxOutputTokens: 2048 }
                     });
                     const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                    const cleanJson = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
-                    return JSON.parse(cleanJson);
-                } catch (e) {
-                    return {
-                        title: "Kịch bản Điện ảnh 60 FPS",
-                        masterCharacterDNA: "a photorealistic character, hyperdetailed 8k texture",
-                        masterEnvironmentDNA: "standing in an atmospheric environment with cinematic volumetric lighting",
-                        cameraMotion3D: "Cinematic steady push-in forward",
-                        ambientAudioDescription: "Cinematic ambient soundscape",
-                        dialogueTimeline: [{ speaker: "Nhân vật", timeSec: 1.0, text: userPrompt.slice(0, 100) }]
-                    };
-                }
+                    const parsed = extractJsonFromText(raw);
+                    if (parsed) return parsed;
+                } catch (e) {}
+
+                return {
+                    title: "Kịch bản Điện ảnh 60 FPS",
+                    masterCharacterDNA: "a photorealistic character, hyperdetailed 8k texture",
+                    masterEnvironmentDNA: "standing in an atmospheric environment with cinematic volumetric lighting",
+                    cameraMotion3D: "Cinematic steady push-in forward",
+                    ambientAudioDescription: "Cinematic ambient soundscape",
+                    dialogueTimeline: [{ speaker: "Nhân vật", timeSec: 1.0, text: userPrompt.slice(0, 100) }]
+                };
             },
 
             renderVeo3_60FpsVideo: async function({
@@ -3624,15 +3639,17 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                             'video/webm;codecs=vp9,opus',
                             'video/webm'
                         ];
-                        let chosenMime = candidateTypes.find(t => MediaRecorder.isTypeSupported(t)) || '';
-                        if (!chosenMime || !MediaRecorder.isTypeSupported(chosenMime)) {
+                        let chosenMime = candidateTypes.find(t => {
+                            try { return MediaRecorder.isTypeSupported(t); } catch (_) { return false; }
+                        }) || '';
+                        if (!chosenMime) {
                             chosenMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
                         }
 
-                        const recorder = new MediaRecorder(stream, {
+                        const recorder = new MediaRecorder(stream, chosenMime ? {
                             mimeType: chosenMime,
                             videoBitsPerSecond: 16000000
-                        });
+                        } : undefined);
 
                         const chunks = [];
                         recorder.ondataavailable = (e) => {
@@ -3731,7 +3748,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                 const bin = atob(pcmBase64);
                 const bytes = new Uint8Array(bin.length);
                 for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                const dv = new DataView(bytes.buffer);
+                const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
                 const count = Math.floor(bytes.length / 2);
                 const actx = new (window.AudioContext || window.webkitAudioContext)();
                 const buf = actx.createBuffer(1, count, sampleRate);
@@ -4117,7 +4134,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                         if (!apiKeyPool.value.length) return false;
                         notify("Đang kiểm tra danh sách khóa hệ thống...");
                         let pass = 0;
-                        const testModel = "gemini-2.0-flash";
+                        const testModel = "gemini-2.5-flash";
                         for (const k of apiKeyPool.value) {
                             try {
                                 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${k.key}`, {
@@ -4529,14 +4546,25 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                     };
 
                     const downloadLightboxImage = function() {
-                        if (lightbox.url) downloadImageFile(lightbox.url, `GDeep_Image_${Date.now()}.jpg`);
+                        if (lightbox.url) {
+                            if (lightbox.url.startsWith('data:') || lightbox.url.startsWith('blob:')) {
+                                downloadDirectMedia(lightbox.url, `GDeep_Image_${Date.now()}.jpg`);
+                            } else {
+                                downloadImageFile(lightbox.url, `GDeep_Image_${Date.now()}.jpg`);
+                            }
+                        }
                         return true;
                     };
 
                     const downloadImageFromMessage = function(msg) {
-                        const match = (msg.content || '').match(/!\[.*?\]\((https?:\/\/.*?)\)/);
+                        const match = (msg.content || '').match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
                         if (match && match[1]) {
-                            downloadImageFile(match[1], `GDeep_Image_${Date.now()}.jpg`);
+                            const targetUrl = match[1];
+                            if (targetUrl.startsWith('data:') || targetUrl.startsWith('blob:')) {
+                                downloadDirectMedia(targetUrl, `GDeep_Image_${Date.now()}.jpg`);
+                            } else {
+                                downloadImageFile(targetUrl, `GDeep_Image_${Date.now()}.jpg`);
+                            }
                             return true;
                         } else {
                             notify("Không tìm thấy hình ảnh hợp lệ", true);
@@ -4576,7 +4604,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                             let finalSourceImg = explicitSourceImage;
                             let sourceImageBase64 = null;
                             if (!finalSourceImg && msg) {
-                                const mMatch = (msg.content || '').match(/!\[.*?\]\((https?:\/\/[^\s\)]+)/);
+                                const mMatch = (msg.content || '').match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
                                 if (mMatch && mMatch[1]) finalSourceImg = mMatch[1];
                                 else if (msg.attachments && msg.attachments.length) {
                                     const imgAtt = msg.attachments.find(a => a.mimeType?.startsWith('image/'));
@@ -5077,11 +5105,28 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                         reader.onload = async () => {
                             try {
                                 const data = JSON.parse(reader.result);
-                                if (!Array.isArray(data.threads) || !Array.isArray(data.messages) || !Array.isArray(data.gems)) {
+                                if (data.thread && Array.isArray(data.messages)) {
+                                    const importedThread = normalizeThreadRecord(data.thread);
+                                    importedThread.id = generateUUID();
+                                    importedThread.title = (importedThread.title || 'Hội thoại') + ' (Đã nhập)';
+                                    importedThread.updatedAt = getMonotonicTimestamp();
+                                    const importedMsgs = data.messages.map(m => normalizeMessageRecord(m, importedThread.id));
+                                    threads.value.unshift(importedThread);
+                                    saveThreadToLocalStorageBackup(importedThread);
+                                    if (db) {
+                                        await db.threads.put(cleanForDb(importedThread));
+                                        await db.messages.bulkPut(importedMsgs.map(m => cleanForDb(m)));
+                                    }
+                                    await loadThread(importedThread.id);
+                                    notify("Đã nhập hội thoại thành công.");
+                                    return;
+                                }
+
+                                if (!Array.isArray(data.threads) || !Array.isArray(data.messages)) {
                                     throw new Error();
                                 }
                                 threads.value = data.threads.map(t => normalizeThreadRecord(t));
-                                gems.value = data.gems;
+                                if (Array.isArray(data.gems) && data.gems.length > 0) gems.value = data.gems;
                                 try {
                                     localStorage.setItem('gdeep_threads_backup', JSON.stringify(data.threads));
                                     data.threads.forEach(t => {
@@ -5094,10 +5139,12 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                                     await db.transaction('rw', db.threads, db.messages, db.gems, async () => {
                                         await db.threads.clear();
                                         await db.messages.clear();
-                                        await db.gems.clear();
                                         await db.threads.bulkAdd(data.threads.map(t => cleanForDb(t)));
                                         await db.messages.bulkAdd(data.messages.map(m => cleanForDb(m)));
-                                        await db.gems.bulkAdd(data.gems.map(g => cleanForDb(g)));
+                                        if (Array.isArray(data.gems) && data.gems.length > 0) {
+                                            await db.gems.clear();
+                                            await db.gems.bulkAdd(data.gems.map(g => cleanForDb(g)));
+                                        }
                                     });
                                 }
                                 await loadThreadsForActiveGem();
@@ -5396,6 +5443,23 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                         msg.isTruncated = false;
                         msg.interruptionReason = null;
                         scheduleDbSave(msg);
+
+                        const msgIdx = currentMessages.value.findIndex(m => m.id === msg.id);
+                        if (msgIdx > 0) {
+                            const prevMsg = currentMessages.value[msgIdx - 1];
+                            if (prevMsg && prevMsg.role === 'system_execution' && v.rawExecutionParts) {
+                                prevMsg.rawExecutionParts = JSON.parse(JSON.stringify(v.rawExecutionParts));
+                                prevMsg.htmlContent = getExecutionLogsHtml(prevMsg);
+                                scheduleDbSave(prevMsg);
+                            }
+                            const prevThought = currentMessages.value[msgIdx - (prevMsg?.role === 'system_execution' ? 2 : 1)];
+                            if (prevThought && prevThought.role === 'system_thought' && v.thought !== undefined) {
+                                prevThought.content = v.thought;
+                                prevThought.htmlContent = compileMarkdownSync(v.thought, true);
+                                scheduleDbSave(prevThought);
+                            }
+                        }
+
                         triggerHaptic('light');
                         nextTick(() => renderMermaidDiagrams());
                         return true;
@@ -5477,7 +5541,12 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                         }
                         await loadThread(res.threadId);
                         nextTick(() => setTimeout(() => {
-                            document.getElementById(`msg-${res.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            const targetEl = document.getElementById(`msg-${res.id}`);
+                            if (targetEl) {
+                                targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                targetEl.classList.add('ring-2', 'ring-indigo-400');
+                                setTimeout(() => targetEl.classList.remove('ring-2', 'ring-indigo-400'), 2000);
+                            }
                         }, 150));
                         return true;
                     };
@@ -6182,7 +6251,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                             const aiTitle = result?.candidates?.[0]?.content?.parts?.[0]?.text;
                             
                             if (aiTitle && aiTitle.trim()) {
-                                const finalTitle = aiTitle.trim().replace(/^["'«»“”]|["'«»“”]$/g, '').replace(/^(tiêu đề|title):\s*/i, '');
+                                const finalTitle = aiTitle.trim().replace(/^["'«»“”*#]|["'«»“”*#]$/g, '').replace(/^(tiêu đề|title):\s*/i, '');
                                 if (finalTitle && cur.isAutoGenerated) {
                                     cur.title = finalTitle;
                                     cur.isAutoGenerated = false;
@@ -6849,6 +6918,12 @@ Yêu cầu bắt buộc:
                             }
                             scheduleDbSave(botMsg);
 
+                            const curThread = threads.value.find(t => t.id === targetThreadId);
+                            if (curThread) {
+                                curThread.updatedAt = getMonotonicTimestamp();
+                                saveThreadToLocalStorageBackup(curThread);
+                            }
+
                             if ((!abortController.value || !abortController.value.signal.aborted) && thisRequestToken === activeRequestToken.value) {
                                 nextTick(() => renderMermaidDiagrams());
                                 triggerHaptic('light');
@@ -7501,6 +7576,7 @@ Yêu cầu bắt buộc:
             };
 
             app.component('lucide-icon', {
+                inheritAttrs: false,
                 props: {
                     name: { type: [String, Object, Promise], required: true },
                     customClass: { type: String, default: '' },
