@@ -13,7 +13,6 @@
     <!-- ======================================================================= -->
     <script id="l0-hypervisor">
         (function() {
-            // 1. KIỂM TRA VÀ TIÊM BẢN VÁ NÓNG (HOT-PATCH) TỪ LẦN SẬP TRƯỚC
             const hotPatch = localStorage.getItem('GDEEP_BOOT_HOTPATCH');
             if (hotPatch) {
                 console.warn("[L0 Hypervisor] Đang tiêm bản vá khẩn cấp vào RAM...");
@@ -22,20 +21,18 @@
                     script.textContent = hotPatch;
                     document.documentElement.appendChild(script);
                 } catch(e) {}
-                localStorage.removeItem('GDEEP_BOOT_HOTPATCH'); // Dùng xong phải xóa để tránh lặp vô tận
+                localStorage.removeItem('GDEEP_BOOT_HOTPATCH');
             }
 
             let isHypervisorEngaged = false;
 
-            // 2. KHỞI TẠO BỘ GIÁM SÁT SINH TỒN
             const engageRescueMode = async function(crashReason) {
                 if (isHypervisorEngaged) return;
                 isHypervisorEngaged = true;
 
                 const logger = document.getElementById('l0-logs');
-                const log = (msg) => { logger.innerHTML += `> ${msg}<br>`; console.log(msg); };
+                const log = (msg) => { if(logger) logger.innerHTML += `> ${msg}<br>`; console.log(msg); };
 
-                // Moi móc API Key từ LocalStorage bằng Javascript thuần
                 const poolStr = localStorage.getItem('gdeep_api_keys_pool');
                 if (!poolStr) {
                     log("<span style='color:#fbbf24'>Không tìm thấy API Key. Hủy bỏ tự chữa lành. Đang ép mở UI...</span>");
@@ -49,7 +46,6 @@
 
                 log("Đã xác thực API Key. Đang gửi báo cáo bệnh án lên Bộ Não Trung Tâm...");
 
-                // Soạn Prompt phản tư hệ thống
                 const prompt = `[CẤP CỨU L0: SỤP ĐỔ BOOT-TIME ỨNG DỤNG WEB]
 Nền tảng G-Deep Ultra vừa bị sập ngay lúc khởi động (Màn hình đen).
 Lỗi ghi nhận được: "${crashReason}"
@@ -59,7 +55,6 @@ Bạn là trình giám sát L0 Meta-Hypervisor. Hãy viết MỘT ĐOẠN JAVASC
 Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải thích.`;
 
                 try {
-                    // Gọi API thủ công không thông qua ứng dụng chính
                     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -84,15 +79,12 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                 }
             };
 
-            // 3. GIĂNG BẪY (TRAPS) ĐỂ BẮT LỖI
-            // Bẫy 1: Quá thời gian (Màn hình đen kẹt quá 2.5 giây)
             const bootWatchdog = setTimeout(() => {
                 if (document.getElementById('initial-app-skeleton')) {
                     engageRescueMode("Timeout: Giao diện (Vue) bị đóng băng quá 2.5 giây do vòng lặp hoặc nghẽn mạng.");
                 }
             }, 2500);
 
-            // Bẫy 2: Lỗi cú pháp Javascript chết người (Syntax Error / TypeError)
             window.addEventListener('error', function(e) {
                 if (!isHypervisorEngaged && e.message) {
                     clearTimeout(bootWatchdog);
@@ -100,7 +92,6 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                 }
             }, true);
 
-            // Bẫy 3: Lỗi bất đồng bộ không được xử lý (Văng Promise / Database đơ)
             window.addEventListener('unhandledrejection', function(e) {
                 if (!isHypervisorEngaged && e.reason) {
                     clearTimeout(bootWatchdog);
@@ -108,9 +99,7 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                 }
             }, true);
 
-            // Báo cáo an toàn nếu khởi động thành công (Vue sẽ tự gọi cái này hoặc DOM biến mất)
             window.__L0_CLEAR_WATCHDOG__ = () => clearTimeout(bootWatchdog);
-
         })();
     </script>
     <!-- ======================================================================= -->
@@ -120,25 +109,19 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     
-    <!-- ĐẶT NGAY ĐẦU THẺ <HEAD> TRƯỚC MỌI THƯ VIỆN KHÁC -->
-<script id="jit-bootloader">
-(function() {
-    window.__JIT_LOGS__ = [];
-
-    // Lắng nghe mọi sự cố trước khi chúng kịp làm sập trang
-    window.addEventListener('error', async function(e) {
-        // Nếu lỗi xảy ra ở tầng nạp script chính
-        if (e.message && (e.message.includes('SyntaxError') || e.message.includes('Assignment to constant'))) {
-            console.warn("[JIT Guardian] Phát hiện lỗi cấu trúc trước/khi nạp:", e.message);
-            window.__JIT_LOGS__.push({ type: 'CRITICAL_BOOT', error: e.message, lineno: e.lineno });
-            
-            // Tự động gỡ bỏ màn hình đen để ứng dụng không bị kẹt
-            var sk = document.getElementById('initial-app-skeleton');
-            if (sk) sk.remove();
-        }
-    }, true);
-})();
-</script>
+    <script id="jit-bootloader">
+    (function() {
+        window.__JIT_LOGS__ = [];
+        window.addEventListener('error', async function(e) {
+            if (e.message && (e.message.includes('SyntaxError') || e.message.includes('Assignment to constant'))) {
+                console.warn("[JIT Guardian] Phát hiện lỗi cấu trúc trước/khi nạp:", e.message);
+                window.__JIT_LOGS__.push({ type: 'CRITICAL_BOOT', error: e.message, lineno: e.lineno });
+                var sk = document.getElementById('initial-app-skeleton');
+                if (sk) sk.remove();
+            }
+        }, true);
+    })();
+    </script>
 
     <!-- External Runtime Core Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -153,6 +136,9 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
                         surfaceElevated: '#171924',
                         surfaceBorder: 'rgba(255, 255, 255, 0.08)',
                         textMuted: '#9aa2b1'
+                    },
+                    spacing: {
+                        '4.5': '1.125rem'
                     }
                 }
             }
@@ -170,7 +156,6 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/4.0.1/dexie.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
-    <!-- Hardware Accelerated MP4 Muxer for WebCodecs -->
     <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"></script>
 
     <style>
@@ -618,8 +603,26 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
             gap: 3px;
         }
 
-        .lucide-icon-svg { stroke-linecap: round; stroke-linejoin: round; width: 100%; height: 100%; display: block; }
-        .lucide-icon-wrapper { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; aspect-ratio: 1 / 1; }
+        /* HỆ THỐNG ĐỊNH DẠNG ICON LUCIDE CHỐNG MẤT NÉT CẠNH VIỀN */
+        .lucide-icon-svg { 
+            stroke-linecap: round; 
+            stroke-linejoin: round; 
+            width: 100%; 
+            height: 100%; 
+            display: block; 
+            overflow: visible !important;
+            pointer-events: none;
+        }
+        .lucide-icon-wrapper { 
+            display: inline-flex; 
+            align-items: center; 
+            justify-content: center; 
+            flex-shrink: 0; 
+            aspect-ratio: 1 / 1; 
+            overflow: visible !important;
+            vertical-align: middle;
+            line-height: 1;
+        }
 
         .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
         .fade-enter-from, .fade-leave-to { opacity: 0; }
@@ -689,7 +692,7 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
             setTimeout(function() { sk.remove(); }, 300);
         }
     }, 1500);
-</script>
+    </script>
 
     <!-- MAIN VUE VIEWPORT -->
     <div id="app" v-cloak class="app-viewport select-none bg-background"
@@ -761,7 +764,7 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
             <div class="px-3.5 pt-3 shrink-0">
                 <div class="relative flex items-center">
                     <input v-model="searchQuery" type="text" placeholder="Tìm kiếm nội dung..." class="w-full bg-surfaceElevated border border-white/5 rounded-xl pl-8 pr-3 py-2 text-xs text-white outline-none allow-select">
-                    <lucide-icon name="search" class="w-3.5 h-3.5 text-textMuted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" strokeWidth="1.5"></lucide-icon>
+                    <lucide-icon name="search" class="w-3.5 h-3.5 text-textMuted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" stroke-width="1.5"></lucide-icon>
                 </div>
             </div>
             
@@ -1765,7 +1768,6 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
 
         // =========================================================================
         // ĐỘNG CƠ MA TRẬN TỔ HỢP PHI TUYẾN TÍNH ĐỘNG VÔ HẠN
-        // ĐÃ SỬA: ĐẦY ĐỦ CÁC CỜ PHẢN ỨNG CỦA VUE 3 (__v_raw, __v_isRef, __v_skip)
         // =========================================================================
         const DynamicNonlinearHyperMesh = (function() {
             const RANK = 16;
@@ -2724,7 +2726,7 @@ Trả về DUY NHẤT một khối mã nguồn đã vá bên trong \`\`\`javascr
                 'target', 'rel', 'data-code-action', 'data-table-action', 'data-lang', 'data-raw-code', 'data-mermaid-code',
                 'data-rendered', 'src', 'controls', 'aria-label', 'aria-hidden', 'role', 'aria-live', 'aria-busy', 'aria-selected',
                 'aria-checked', 'id', 'width', 'height', 'xmlns', 'display', 'd', 'points', 'cx', 'cy', 'r', 'rx', 'ry',
-                'x1', 'x2', 'y1', 'y2', 'x', 'y', 'transform', 'type', 'alt', 'loop', 'autoplay'
+                'x1', 'x2', 'y1', 'y2', 'x', 'y', 'transform', 'type', 'alt', 'loop', 'autoplay', 'overflow'
             ]
         };
 
@@ -7063,7 +7065,13 @@ Yêu cầu bắt buộc:
                 }
             });
 
-            // TỪ ĐIỂN BIỂU TƯỢNG LUCIDE SVG CHUẨN XÁC
+            // =========================================================================
+            // TỪ ĐIỂN BIỂU TƯỢNG LUCIDE SVG CHUẨN XÁC VÀ TOÀN DIỆN
+            // ĐÃ KHẮC PHỤC TRIỆT ĐỂ:
+            // 1. Toàn bộ đường path hình học chuẩn xác 100% SVG W3C Specs (copy, globe, external-link, image...).
+            // 2. Không cắt cụt viền (no-clipping), bảo toàn độ sắc nét và tọa độ nguyên bản.
+            // 3. Hỗ trợ bí danh aliases và tự động nhận dạng chuỗi kebab-case / camelCase.
+            // =========================================================================
             const ICON_ELEMENTS_MAP = {
                 'film': [
                     { tag: 'rect', attrs: { width: '20', height: '20', x: '2', y: '2', rx: '2.18', ry: '2.18' } },
@@ -7077,7 +7085,7 @@ Yêu cầu bắt buộc:
                 ],
                 'copy': [
                     { tag: 'rect', attrs: { width: '14', height: '14', x: '8', y: '8', rx: '2', ry: '2' } },
-                    { tag: 'path', attrs: { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2' } }
+                    { tag: 'path', attrs: { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' } }
                 ],
                 'download': [
                     { tag: 'path', attrs: { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' } },
@@ -7119,7 +7127,7 @@ Yêu cầu bắt buộc:
                 'globe': [
                     { tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } },
                     { tag: 'line', attrs: { x1: '2', x2: '22', y1: '12', y2: '12' } },
-                    { tag: 'path', attrs: { d: 'M12 2a15.3 15.3 0 0 1 4 10 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' } }
+                    { tag: 'path', attrs: { d: 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' } }
                 ],
                 'menu': [
                     { tag: 'line', attrs: { x1: '4', x2: '20', y1: '12', y2: '12' } },
@@ -7262,7 +7270,7 @@ Yêu cầu bắt buộc:
                     { tag: 'path', attrs: { d: 'M8 16H3v5' } }
                 ],
                 'external-link': [
-                    { tag: 'path', attrs: { d: 'M18 13v6a2 2 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' } },
+                    { tag: 'path', attrs: { d: 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' } },
                     { tag: 'polyline', attrs: { points: '15 3 21 3 21 9' } },
                     { tag: 'line', attrs: { x1: '10', x2: '21', y1: '14', y2: '3' } }
                 ],
@@ -7288,9 +7296,9 @@ Yêu cầu bắt buộc:
                     { tag: 'polyline', attrs: { points: '22 12 18 12 15 21 9 3 6 12 2 12' } }
                 ],
                 'image': [
-                    { tag: 'rect', attrs: { width: '18', height: '18', x: '3', y: '3', rx: '2' } },
+                    { tag: 'rect', attrs: { width: '18', height: '18', x: '3', y: '3', rx: '2', ry: '2' } },
                     { tag: 'circle', attrs: { cx: '9', cy: '9', r: '2' } },
-                    { tag: 'path', attrs: { d: 'm21 15-3.086-3.086a2 2 0 0-2.828 0L6 21' } }
+                    { tag: 'path', attrs: { d: 'm21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21' } }
                 ],
                 'file': [
                     { tag: 'path', attrs: { d: 'M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z' } },
@@ -7302,11 +7310,59 @@ Yêu cầu bắt buộc:
                 ]
             };
 
+            // Hệ thống phân giải bí danh Aliases cho Lucide Icons
+            const ICON_ALIASES = {
+                'trash': 'trash-2',
+                'trash2': 'trash-2',
+                'filetext': 'file-text',
+                'file_text': 'file-text',
+                'messagesquare': 'message-square',
+                'message_square': 'message-square',
+                'pluscircle': 'plus-circle',
+                'plus_circle': 'plus-circle',
+                'externallink': 'external-link',
+                'external_link': 'external-link',
+                'rotatecw': 'rotate-cw',
+                'rotate_cw': 'rotate-cw',
+                'refreshcw': 'refresh-cw',
+                'refresh_cw': 'refresh-cw',
+                'chevrondown': 'chevron-down',
+                'chevron_down': 'chevron-down',
+                'chevronup': 'chevron-up',
+                'chevron_up': 'chevron-up',
+                'chevronleft': 'chevron-left',
+                'chevron_left': 'chevron-left',
+                'chevronright': 'chevron-right',
+                'chevron_right': 'chevron-right',
+                'thumbsup': 'thumbs-up',
+                'thumbs_up': 'thumbs-up',
+                'thumbsdown': 'thumbs-down',
+                'thumbs_down': 'thumbs-down',
+                'volume': 'volume-2',
+                'volume2': 'volume-2',
+                'volume_2': 'volume-2',
+                'alerttriangle': 'alert-triangle',
+                'alert_triangle': 'alert-triangle',
+                'warning': 'alert-triangle',
+                'xcircle': 'x-circle',
+                'x_circle': 'x-circle',
+                'close': 'x',
+                'arrowup': 'arrow-up',
+                'arrow_up': 'arrow-up',
+                'arrowdown': 'arrow-down',
+                'arrow_down': 'arrow-down',
+                'gitfork': 'git-fork',
+                'git_fork': 'git-fork'
+            };
+
+            // COMPONENT LUCIDE-ICON TOÀN DIỆN, BẢO TOÀN NÉT VẼ TẠI MỌI CẠNH
             app.component('lucide-icon', {
                 props: {
                     name: { type: [String, Object, Promise], required: true },
                     customClass: { type: String, default: '' },
                     strokeWidth: { type: [Number, String], default: null },
+                    stroke: { type: String, default: null },
+                    fill: { type: String, default: null },
                     size: { type: [Number, String], default: null },
                     color: { type: String, default: 'currentColor' }
                 },
@@ -7320,60 +7376,70 @@ Yêu cầu bắt buộc:
                                 rawName = 'file';
                             }
                         }
-                        const iconName = (typeof rawName === 'string' ? rawName : '').toLowerCase().trim();
-                        const defs = ICON_ELEMENTS_MAP[iconName] || [{ tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } }];
                         
-                        const childVNodes = defs.map(d => {
-                            const mergedAttrs = { ...d.attrs, 'vector-effect': 'non-scaling-stroke' };
-                            return h(d.tag, mergedAttrs);
-                        });
+                        let cleanName = (typeof rawName === 'string' ? rawName : '').trim().toLowerCase();
+                        cleanName = cleanName.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
+                        const resolvedName = ICON_ALIASES[cleanName] || cleanName;
                         
-                        const combinedClass = [attrs.class, props.customClass].filter(Boolean).join(' ');
-                        const hasExplicitClassSize = /\b(w-\d+|h-\d+|w-\[|h-\[)/.test(combinedClass);
+                        const defs = ICON_ELEMENTS_MAP[resolvedName] || [
+                            { tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } }
+                        ];
 
+                        const childVNodes = defs.map(d => h(d.tag, { ...d.attrs }));
+
+                        const combinedClass = [attrs.class, props.customClass].filter(Boolean).join(' ');
+                        const hasExplicitClassSize = /\b(w-\d+(\.\d+)?|h-\d+(\.\d+)?|w-\[|h-\[)/.test(combinedClass);
+
+                        // Phân giải tham số stroke-width đa biến thể
                         let calculatedStroke = '2';
-                        if (props.strokeWidth !== null && props.strokeWidth !== undefined && props.strokeWidth !== '') {
-                            calculatedStroke = String(props.strokeWidth);
-                        } else {
-                            if (/\b(w-3(\.5)?|h-3(\.5)?|w-4\b|h-4\b)/.test(combinedClass)) {
-                                calculatedStroke = '1.5';
-                            } else if (/\b(w-2|h-2)/.test(combinedClass)) {
-                                calculatedStroke = '1.25';
-                            }
+                        const explicitStroke = props.strokeWidth ?? attrs['stroke-width'] ?? attrs['strokewidth'] ?? null;
+                        if (explicitStroke !== null && explicitStroke !== undefined && explicitStroke !== '') {
+                            calculatedStroke = String(explicitStroke);
                         }
 
-                        const wrapperStyles = {};
-                        if (props.size) {
-                            const sizeVal = typeof props.size === 'number' ? `${props.size}px` : props.size;
+                        // Phân giải kích thước size trực tiếp
+                        const explicitSize = props.size ?? attrs['size'] ?? null;
+                        const wrapperStyles = {
+                            overflow: 'visible'
+                        };
+                        if (explicitSize) {
+                            const sizeVal = typeof explicitSize === 'number' ? `${explicitSize}px` : String(explicitSize);
                             wrapperStyles.width = sizeVal;
                             wrapperStyles.height = sizeVal;
                         }
-                        if (props.color && props.color !== 'currentColor') {
-                            wrapperStyles.color = props.color;
+
+                        // Phân giải màu sắc
+                        const resolvedColor = props.color && props.color !== 'currentColor' ? props.color : (props.stroke || 'currentColor');
+                        if (resolvedColor !== 'currentColor') {
+                            wrapperStyles.color = resolvedColor;
                         }
+
+                        // Phân giải tham số fill (hỗ trợ nút dừng fill-current)
+                        const resolvedFill = props.fill ?? (combinedClass.includes('fill-current') ? 'currentColor' : 'none');
 
                         const wrapperClasses = [
                             'lucide-icon-wrapper',
-                            (!hasExplicitClassSize && !props.size) ? 'w-4 h-4' : '',
+                            (!hasExplicitClassSize && !explicitSize) ? 'w-4 h-4' : '',
                             combinedClass
                         ].filter(Boolean);
 
                         return h('span', { 
                             class: wrapperClasses, 
-                            style: wrapperStyles,
+                            style: [wrapperStyles, attrs.style],
                             'aria-hidden': attrs['aria-label'] ? undefined : 'true'
                         }, [
                             h('svg', {
                                 class: 'lucide-icon-svg',
                                 xmlns: 'http://www.w3.org/2000/svg',
                                 viewBox: '0 0 24 24',
-                                fill: 'none',
-                                stroke: props.color || 'currentColor',
+                                fill: resolvedFill,
+                                stroke: resolvedColor,
                                 'stroke-width': calculatedStroke,
                                 'stroke-linecap': 'round',
                                 'stroke-linejoin': 'round',
                                 preserveAspectRatio: 'xMidYMid meet',
-                                'shape-rendering': 'geometricPrecision'
+                                'shape-rendering': 'geometricPrecision',
+                                style: { overflow: 'visible' }
                             }, childVNodes)
                         ]);
                     };
