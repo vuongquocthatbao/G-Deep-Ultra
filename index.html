@@ -772,7 +772,7 @@
 
                         <div class="bg-surfaceElevated p-3.5 rounded-xl border border-white/5 space-y-2">
                             <h4 class="font-bold text-white block uppercase text-[10px] tracking-wider">Tông Màu Giao Diện</h4>
-                            <div class="flex items-center gap-2.5 pt-1">
+                            <div class="flex items-center gap-2.5 pt-1 flex-wrap">
                                 <button type="button" v-for="c in accentColors" :key="c.name" @click="changeAccentColor(c)" :style="{ background: c.color }" :class="['btn-instant w-7 h-7 rounded-full border-0 transition-all', selectedAccent === c.color ? 'scale-110 shadow-md ring-2 ring-white' : 'opacity-60 hover:opacity-100']" :title="c.name"></button>
                             </div>
                         </div>
@@ -2739,7 +2739,7 @@
         };
 
         // ============================================================
-        // 9. 60 FPS AI CINEMA & MULTI-VOICE TTS ENGINE
+        // 9. NÂNG CẤP: 60 FPS TRUE FRAME-BY-FRAME AI CINEMA ENGINE
         // ============================================================
         const AICinemaEngine = {
             loadImage(url) {
@@ -2881,30 +2881,144 @@
                 return await offlineCtx.startRendering();
             },
 
-            async renderToMp4_60FPS({ sceneImages, totalDurationSec = 5, aspectRatio = '16:9', ambientType = 'cinematic', dialogueScript = [], voiceCharacters = [], apiKey = '', onProgress }) {
-                if (!sceneImages || sceneImages.length === 0) throw new Error("Không có phân cảnh hợp lệ.");
-                
+            async generate60PromptsPerSecond({ durationSec, userPrompt, baseImgDesc, characterSeed, styleType, aspectRatio, dispatchBgTaskFn, onStatus }) {
+                const totalFrames = durationSec * 60;
+                const allPrompts = new Array(totalFrames);
+
+                for (let sec = 0; sec < durationSec; sec++) {
+                    if (onStatus) onStatus(`Gemini Lite đang đạo diễn giây ${sec + 1}/${durationSec} (khung hình ${sec * 60 + 1} - ${(sec + 1) * 60})...`);
+
+                    const directorSystemPrompt = `[BỘ ĐẠO DIỄN ĐIỆN ẢNH 60 FPS - GEMINI LITE]
+Nhiệm vụ: Tạo chính xác 60 câu prompt tạo ảnh siêu chi tiết bằng tiếng Anh cho GIÂY THỨ ${sec + 1} (từ giây ${sec}.000 đến giây ${sec + 1}.000).
+Mỗi frame cách nhau đúng 1/60 giây (~0.0167s).
+
+THÔNG SỐ BẮT BUỘC:
+- Chủ đề: "${userPrompt}"
+- Bối cảnh/Nhân vật gốc: "${baseImgDesc || 'Cinematic ultra-realistic scene'}"
+- Mã nhận diện Seed khóa: #${characterSeed}
+- Phong cách: ${styleType} | Tỷ lệ: ${aspectRatio}
+- Yêu cầu chuyển động: Cực kỳ mượt mà, vi chuyển động (micro-motion) của camera và nhân vật giữa các frame liền kề (giữ nguyên trang phục, khuôn mặt, ánh sáng chính, chỉ thay đổi góc máy vi mô hoặc chuyển động cơ/bước chân theo delta 1/60s).
+
+TRẢ VỀ DUY NHẤT MỘT MẢNG JSON 60 PHẦN TỬ CHUỖI (Array of 60 strings), KHÔNG CÓ KÝ TỰ NÀO KHÁC:
+[
+  "Frame 0 (t=${sec}.000s): ... #${characterSeed}, ultra-realistic, 8k, smooth 60fps",
+  ...
+  "Frame 59 (t=${sec}.983s): ... #${characterSeed}, ultra-realistic, 8k, smooth 60fps"
+]`;
+
+                    let success = false;
+                    let retries = 0;
+
+                    while (!success && retries < 4) {
+                        try {
+                            const res = await dispatchBgTaskFn({
+                                contents: [{ role: 'user', parts: [{ text: directorSystemPrompt }] }],
+                                generationConfig: { 
+                                    temperature: 0.2, 
+                                    maxOutputTokens: 8192,
+                                    responseMimeType: "application/json"
+                                }
+                            });
+
+                            const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                            const parsed = JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
+
+                            if (Array.isArray(parsed) && parsed.length >= 60) {
+                                for (let f = 0; f < 60; f++) {
+                                    allPrompts[sec * 60 + f] = parsed[f];
+                                }
+                                success = true;
+                            } else if (Array.isArray(parsed) && parsed.length > 0) {
+                                for (let f = 0; f < 60; f++) {
+                                    const sampleIdx = Math.min(Math.floor((f / 60) * parsed.length), parsed.length - 1);
+                                    allPrompts[sec * 60 + f] = `${parsed[sampleIdx]}, micro-delta timestamp ${((sec + f/60)).toFixed(3)}s, smooth 60fps coherence, #${characterSeed}`;
+                                }
+                                success = true;
+                            }
+                        } catch (e) {
+                            retries++;
+                            await new Promise(r => setTimeout(r, 800));
+                        }
+                    }
+
+                    if (!success) {
+                        for (let f = 0; f < 60; f++) {
+                            allPrompts[sec * 60 + f] = `Cinematic ${styleType}, ${userPrompt}, frame ${sec * 60 + f}, timestamp ${((sec + f/60)).toFixed(3)}s, hyper-detailed 8k, seed #${characterSeed}`;
+                        }
+                    }
+                }
+
+                return allPrompts;
+            },
+
+            async executeFluxFrameQueue(prompts, { width, height, characterSeed, concurrency = 4, onProgress }) {
+                const total = prompts.length;
+                const frameMap = new Map();
+                let completedCount = 0;
+                let nextIndexToFetch = 0;
+
+                const fetchWorker = async () => {
+                    while (nextIndexToFetch < total) {
+                        const currentIndex = nextIndexToFetch++;
+                        const promptText = prompts[currentIndex];
+                        const frameSeed = characterSeed + currentIndex;
+                        const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText)}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${frameSeed}`;
+
+                        let img = null;
+                        let attempts = 0;
+                        while (!img && attempts < 3) {
+                            try {
+                                img = await this.loadImage(fluxUrl);
+                            } catch (e) {
+                                attempts++;
+                                await new Promise(r => setTimeout(r, 400));
+                            }
+                        }
+
+                        if (!img && currentIndex > 0 && frameMap.has(currentIndex - 1)) {
+                            img = frameMap.get(currentIndex - 1);
+                        }
+
+                        frameMap.set(currentIndex, img);
+                        completedCount++;
+                        if (onProgress) onProgress(completedCount, total);
+                    }
+                };
+
+                const workers = Array.from({ length: Math.min(concurrency, total) }, () => fetchWorker());
+                await Promise.all(workers);
+
+                const orderedFrames = [];
+                for (let i = 0; i < total; i++) {
+                    orderedFrames.push(frameMap.get(i));
+                }
+                return orderedFrames;
+            },
+
+            applyCinematicGradeAndBlend(ctx, currentImg, prevImg, width, height) {
+                ctx.save();
+                ctx.globalAlpha = 1.0;
+                ctx.drawImage(currentImg, 0, 0, width, height);
+
+                if (prevImg) {
+                    ctx.globalAlpha = 0.18;
+                    ctx.drawImage(prevImg, 0, 0, width, height);
+                }
+
+                ctx.globalAlpha = 0.08;
+                ctx.fillStyle = '#0a1128';
+                ctx.fillRect(0, 0, width, height);
+                ctx.restore();
+            },
+
+            async renderFrameByFrame60FPS({ orderedFrames, totalDurationSec, width, height, masterAudio, onProgress }) {
                 const fps = 60;
-                let width = 1280, height = 720;
-                if (aspectRatio === '9:16') { width = 720; height = 1280; }
-                else if (aspectRatio === '1:1') { width = 720; height = 720; }
-                else if (aspectRatio === '21:9') { width = 1280; height = 544; }
-
-                width = width % 2 === 0 ? width : width - 1;
-                height = height % 2 === 0 ? height : height - 1;
-
-                const totalFrames = Math.ceil(totalDurationSec * fps);
-                const sceneCount = sceneImages.length;
-                const framesPerScene = totalFrames / sceneCount;
-
-                const masterAudio = await this.mixMasterAudioTrack(dialogueScript, voiceCharacters, totalDurationSec, ambientType, apiKey);
-
+                const totalFrames = orderedFrames.length;
                 const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
                 const ArrayBufferTargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
 
                 if (!MuxerClass || typeof VideoEncoder === 'undefined') {
-                    // Fallback to Canvas MediaRecorder if WebCodecs is unavailable
-                    return await this.renderFallbackMediaRecorder({ sceneImages, totalDurationSec, width, height, fps, masterAudio, onProgress });
+                    return await this.renderFallbackMediaRecorder({ sceneImages: orderedFrames, totalDurationSec, width, height, fps, masterAudio, onProgress });
                 }
 
                 const muxer = new MuxerClass({
@@ -2916,14 +3030,14 @@
 
                 const videoEncoder = new VideoEncoder({
                     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-                    error: (e) => console.error(e)
+                    error: (e) => console.error("WebCodecs Error:", e)
                 });
 
                 videoEncoder.configure({
-                    codec: 'avc1.420028',
+                    codec: 'avc1.64002a',
                     width,
                     height,
-                    bitrate: 6_000_000,
+                    bitrate: 12_000_000,
                     framerate: 60
                 });
 
@@ -2970,41 +3084,22 @@
 
                 const canvas = new OffscreenCanvas(width, height);
                 const ctx = canvas.getContext('2d');
-                let timeMicros = 0;
                 const frameDurationMicros = 1_000_000 / fps;
+                let timeMicros = 0;
 
                 for (let f = 0; f < totalFrames; f++) {
-                    const sceneIndex = Math.min(Math.floor(f / framesPerScene), sceneCount - 1);
-                    const nextSceneIndex = Math.min(sceneIndex + 1, sceneCount - 1);
-                    const progressInScene = (f % framesPerScene) / framesPerScene;
+                    const currentImg = orderedFrames[f];
+                    const prevImg = f > 0 ? orderedFrames[f - 1] : null;
 
-                    const smoothProgress = Math.sin(progressInScene * Math.PI / 2);
-                    const scale = 1.0 + (smoothProgress * 0.14);
-                    const panX = (width * 0.04) * (smoothProgress - 0.5);
-                    const panY = (height * 0.02) * (smoothProgress - 0.5);
-
-                    ctx.save();
                     ctx.clearRect(0, 0, width, height);
-                    ctx.translate(width / 2, height / 2);
-                    ctx.scale(scale, scale);
-                    ctx.translate(-width / 2 - panX, -height / 2 - panY);
-
-                    ctx.globalAlpha = 1.0;
-                    this.drawImageCover(ctx, sceneImages[sceneIndex], width, height);
-
-                    if (sceneCount > 1 && progressInScene > 0.82 && sceneIndex !== nextSceneIndex) {
-                        const crossFade = (progressInScene - 0.82) / 0.18;
-                        ctx.globalAlpha = crossFade;
-                        this.drawImageCover(ctx, sceneImages[nextSceneIndex], width, height);
-                    }
-                    ctx.restore();
+                    this.applyCinematicGradeAndBlend(ctx, currentImg, prevImg, width, height);
 
                     const vFrame = new VideoFrame(canvas, { timestamp: timeMicros });
                     videoEncoder.encode(vFrame, { keyFrame: f % 60 === 0 });
                     vFrame.close();
                     timeMicros += frameDurationMicros;
 
-                    if (onProgress && f % 30 === 0) {
+                    if (onProgress && f % 15 === 0) {
                         onProgress(Math.round((f / totalFrames) * 100));
                         await new Promise(r => setTimeout(r, 0));
                     }
@@ -3071,25 +3166,25 @@
             const { createApp, ref, reactive, onMounted, onUnmounted, nextTick, computed, watch, toRaw, h } = window.Vue;
 
             const MODELS = [
-                { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra", persona: "G-Deep Ultra" },
-                { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", persona: "G-Deep Pro" },
-                { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Lite", persona: "G-Deep Lite" }
+                { id: "gemini-2.5-flash", apiEndpointId: "gemini-2.5-flash", name: "Ultra", persona: "G-Deep Ultra" },
+                { id: "gemini-2.5-pro", apiEndpointId: "gemini-2.5-pro", name: "Pro", persona: "G-Deep Pro" },
+                { id: "gemini-2.0-flash", apiEndpointId: "gemini-2.0-flash", name: "Lite", persona: "G-Deep Lite" }
             ];
-            const FALLBACK_MODEL_CHAIN = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
-            const BACKGROUND_MODELS = { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" };
+            const FALLBACK_MODEL_CHAIN = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+            const BACKGROUND_MODELS = { FAST: "gemini-2.0-flash", LITE: "gemini-2.0-flash-lite" };
             const MAX_HISTORY_TOKENS = 1000000;
             const ACCENT_COLORS = [
-    { name: "Lam", color: "#a8c7fa", gradient: "linear-gradient(135deg, #6366f1 0%, #a8c7fa 50%, #d0bcff 100%)", glow: "rgba(168, 199, 250, 0.2)" },
-    { name: "Tím", color: "#d0bcff", gradient: "linear-gradient(135deg, #a855f7 0%, #d0bcff 50%, #ec4899 100%)", glow: "rgba(208, 188, 255, 0.2)" },
-    { name: "Lục", color: "#a8f0e6", gradient: "linear-gradient(135deg, #10b981 0%, #a8f0e6 50%, #14b8a6 100%)", glow: "rgba(168, 240, 230, 0.2)" },
-    { name: "Hồng", color: "#fbb8c1", gradient: "linear-gradient(135deg, #f43f5e 0%, #fbb8c1 50%, #fb7185 100%)", glow: "rgba(251, 184, 193, 0.2)" },
-    { name: "Hổ Phách", color: "#fed7aa", gradient: "linear-gradient(135deg, #f97316 0%, #fed7aa 50%, #fcd34d 100%)", glow: "rgba(254, 215, 170, 0.2)" },
-    { name: "Ngọc Lam", color: "#7dd3fc", gradient: "linear-gradient(135deg, #0284c7 0%, #7dd3fc 50%, #a5f3fc 100%)", glow: "rgba(125, 211, 252, 0.2)" },
-    { name: "Hoàng Kim", color: "#fde68a", gradient: "linear-gradient(135deg, #eab308 0%, #fde68a 50%, #fef08a 100%)", glow: "rgba(253, 230, 138, 0.2)" },
-    { name: "Lục Bảo", color: "#86efac", gradient: "linear-gradient(135deg, #059669 0%, #86efac 50%, #bbf7d0 100%)", glow: "rgba(134, 239, 172, 0.2)" },
-    { name: "San Hô", color: "#fca5a5", gradient: "linear-gradient(135deg, #dc2626 0%, #fca5a5 50%, #fda4af 100%)", glow: "rgba(252, 165, 165, 0.2)" },
-    { name: "Bạch Kim", color: "#e2e8f0", gradient: "linear-gradient(135deg, #64748b 0%, #e2e8f0 50%, #f8fafc 100%)", glow: "rgba(226, 232, 240, 0.2)" }
-];
+                { name: "Lam", color: "#a8c7fa", gradient: "linear-gradient(135deg, #6366f1 0%, #a8c7fa 50%, #d0bcff 100%)", glow: "rgba(168, 199, 250, 0.2)" },
+                { name: "Tím", color: "#d0bcff", gradient: "linear-gradient(135deg, #a855f7 0%, #d0bcff 50%, #ec4899 100%)", glow: "rgba(208, 188, 255, 0.2)" },
+                { name: "Lục", color: "#a8f0e6", gradient: "linear-gradient(135deg, #10b981 0%, #a8f0e6 50%, #14b8a6 100%)", glow: "rgba(168, 240, 230, 0.2)" },
+                { name: "Hồng", color: "#fbb8c1", gradient: "linear-gradient(135deg, #f43f5e 0%, #fbb8c1 50%, #fb7185 100%)", glow: "rgba(251, 184, 193, 0.2)" },
+                { name: "Hổ Phách", color: "#fed7aa", gradient: "linear-gradient(135deg, #f97316 0%, #fed7aa 50%, #fcd34d 100%)", glow: "rgba(254, 215, 170, 0.2)" },
+                { name: "Ngọc Lam", color: "#7dd3fc", gradient: "linear-gradient(135deg, #0284c7 0%, #7dd3fc 50%, #a5f3fc 100%)", glow: "rgba(125, 211, 252, 0.2)" },
+                { name: "Hoàng Kim", color: "#fde68a", gradient: "linear-gradient(135deg, #eab308 0%, #fde68a 50%, #fef08a 100%)", glow: "rgba(253, 230, 138, 0.2)" },
+                { name: "Lục Bảo", color: "#86efac", gradient: "linear-gradient(135deg, #059669 0%, #86efac 50%, #bbf7d0 100%)", glow: "rgba(134, 239, 172, 0.2)" },
+                { name: "San Hô", color: "#fca5a5", gradient: "linear-gradient(135deg, #dc2626 0%, #fca5a5 50%, #fda4af 100%)", glow: "rgba(252, 165, 165, 0.2)" },
+                { name: "Bạch Kim", color: "#e2e8f0", gradient: "linear-gradient(135deg, #64748b 0%, #e2e8f0 50%, #f8fafc 100%)", glow: "rgba(226, 232, 240, 0.2)" }
+            ];
 
             let db = null;
             try {
@@ -3331,7 +3426,7 @@
                         if (!apiKeyPool.value.length) return;
                         notify("Đang kiểm tra kết nối khóa...");
                         let pass = 0;
-                        const testModel = "gemini-2.5-flash";
+                        const testModel = "gemini-2.0-flash";
                         for (const k of apiKeyPool.value) {
                             try {
                                 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${k.key}`, {
@@ -3720,7 +3815,6 @@
 
                         if (isGenerating.value) return;
                         isGenerating.value = true;
-                        searchStatusText.value = "G-Deep " + (currentModel.value.name) + " đang thiết kế kịch bản chuyển động và phân bổ lời thoại...";
                         triggerHaptic('light');
 
                         const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
@@ -3728,142 +3822,75 @@
 
                         try {
                             const durationSec = Number(cinemaConfig.duration) || 5;
-                            const motionType = cinemaConfig.cameraMotion || 'cinematic_auto';
-                            const styleType = cinemaConfig.style || 'cinematic';
                             const aspectRatio = cinemaConfig.aspectRatio || '16:9';
                             const videoSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
                             const healthyKey = getNextHealthyApiKey()?.key || '';
 
-                            if (baseImgUrl && !baseImgData) {
-                                try {
-                                    const img = await AICinemaEngine.loadImage(baseImgUrl);
-                                    const cv = document.createElement('canvas');
-                                    cv.width = img.naturalWidth || 768;
-                                    cv.height = img.naturalHeight || 768;
-                                    const ctx = cv.getContext('2d');
-                                    ctx.drawImage(img, 0, 0);
-                                    const dataUrl = cv.toDataURL('image/jpeg', 0.85);
-                                    baseImgData = { mimeType:'image/jpeg', data: cleanBase64Data(dataUrl) };
-                                } catch (e) {}
-                            }
+                            let width = 1280, height = 720;
+                            if (aspectRatio === '9:16') { width = 720; height = 1280; }
+                            else if (aspectRatio === '1:1') { width = 720; height = 720; }
+                            else if (aspectRatio === '21:9') { width = 1280; height = 544; }
 
-                            const parts = [];
-                            if (baseImgData && baseImgData.data) {
-                                parts.push({
-                                    inlineData: {
-                                        mimeType: baseImgData.mimeType,
-                                        data: baseImgData.data
-                                    }
-                                });
-                            }
-
-                            const numKeyScenes = Math.min(10, Math.max(2, Math.round(durationSec / 4)));
-                            const voiceMatrixInfo = cinemaVoiceCharacters.value.map(c => 
-                                `- ${c.name}: Giới tính ${c.gender === 'male' ? 'Nam' : 'Nữ'}, Giọng ${c.geminiVoice}`
-                            ).join('\n');
-
-                            const directorPrompt = `[YÊU CẦU: THIẾT LẬP KỊCH BẢN CHUYỂN ĐỘNG & LỜI THOẠI 60 FPS]
-Mô tả: "${customPrompt || 'Thước phim điện ảnh sống động'}"
-Thời lượng: ${durationSec} giây | Tỷ lệ: ${aspectRatio} | Phong cách: ${styleType} | Chuyển động: ${motionType}
-
-NHÂN VẬT LỒNG TIẾNG:
-${voiceMatrixInfo}
-
-HƯỚNG DẪN:
-1. Tạo danh sách ${numKeyScenes} phân cảnh (scene_prompts) đặc tả chuyển động camera liên tục bằng tiếng Anh.
-2. Viết các đoạn thoại phù hợp với mốc thời gian (startTimeSec).
-
-TRẢ VỀ JSON DUY NHẤT:
-{
-  "visual_theme": "Chủ đề video",
-  "ambient_sound": "cinematic",
-  "scene_prompts": [
-    "Scene 1: High detail cinematic 8k...",
-    "Scene 2: Smooth camera pan..."
-  ],
-  "dialogue_script": [
-    { "speaker": "Nhân vật 1", "startTimeSec": 1.0, "text": "Lời thoại..." }
-  ]
-}`;
-                            parts.push({ text: directorPrompt });
-
-                            const directorResult = await dispatchBackgroundTaskWithFallback({
-                                contents: [{ role: 'user', parts }],
-                                generationConfig: { temperature: 0.15, maxOutputTokens: 2048 },
-                                safetySettings: SAFETY_SETTINGS
+                            // 1. GEMINI LITE ĐẠO DIỄN: SINH 60 PROMPT/GIÂY
+                            searchStatusText.value = `G-Deep Đạo diễn đang thiết kế chuyển động 60 FPS...`;
+                            
+                            const framePrompts = await AICinemaEngine.generate60PromptsPerSecond({
+                                durationSec,
+                                userPrompt: customPrompt || 'Cinematic realistic movement scene',
+                                baseImgDesc: baseImgUrl ? 'Visual continuous evolution from source image' : '',
+                                characterSeed: videoSeed,
+                                styleType: cinemaConfig.style || 'cinematic',
+                                aspectRatio,
+                                dispatchBgTaskFn: dispatchBackgroundTaskWithFallback,
+                                onStatus: (st) => { searchStatusText.value = st; }
                             });
 
-                            const rawJson = directorResult?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                            let storyboard = null;
-                            try {
-                                storyboard = JSON.parse(rawJson.replace(/```json/gi, '').replace(/```/g, '').trim());
-                            } catch (_) {
-                                storyboard = {
-                                    visual_theme: customPrompt || "Cinematic Motion Scene",
-                                    ambient_sound: "cinematic",
-                                    scene_prompts: [customPrompt || "Cinematic 8k scene, photorealistic 60fps"],
-                                    dialogue_script: userTimelineCues.value.length ? userTimelineCues.value : []
-                                };
-                            }
+                            // 2. SONG SONG KẾT XUẤT TOÀN BỘ KHUNG HÌNH FLUX
+                            searchStatusText.value = `Đang kết xuất khung hình điện ảnh (0/${framePrompts.length})...`;
+                            const renderedFrames = await AICinemaEngine.executeFluxFrameQueue(framePrompts, {
+                                width,
+                                height,
+                                characterSeed: videoSeed,
+                                concurrency: 4,
+                                onProgress: (done, total) => {
+                                    searchStatusText.value = `Đang vẽ khung hình siêu mượt: ${done}/${total} frames...`;
+                                }
+                            });
 
-                            if (userTimelineCues.value.length > 0) {
-                                storyboard.dialogue_script = userTimelineCues.value;
-                            }
+                            // 3. MASTER ÂM THANH & LỒNG TIẾNG ĐA NHÂN VẬT
+                            searchStatusText.value = `Đang tạo dải âm thanh và hòa âm lồng tiếng...`;
+                            const masterAudio = await AICinemaEngine.mixMasterAudioTrack(
+                                userTimelineCues.value,
+                                cinemaVoiceCharacters.value,
+                                durationSec,
+                                'cinematic',
+                                healthyKey
+                            );
 
-                            searchStatusText.value = `Đang kết xuất các khung hình chủ đạo...`;
-                            const loadedSceneImages = [];
-
-                            if (baseImgUrl) {
-                                try {
-                                    const initialImg = await AICinemaEngine.loadImage(baseImgUrl);
-                                    loadedSceneImages.push(initialImg);
-                                } catch (err) {}
-                            }
-
-                            let fluxW = 1280, fluxH = 720;
-                            if (aspectRatio === '9:16') { fluxW = 768; fluxH = 1344; }
-                            else if (aspectRatio === '1:1') { fluxW = 1024; fluxH = 1024; }
-                            else if (aspectRatio === '21:9') { fluxW = 1344; fluxH = 576; }
-
-                            const scenePrompts = storyboard.scene_prompts || [customPrompt];
-                            for (let i = (baseImgUrl ? 1 : 0); i < scenePrompts.length; i++) {
-                                searchStatusText.value = `Đang vẽ phân cảnh [${i + 1}/${scenePrompts.length}]...`;
-                                const prompt = scenePrompts[i];
-                                const frameUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${fluxW}&height=${fluxH}&model=flux-realism&nologo=true&seed=${videoSeed + i * 17}`;
-                                try {
-                                    const imgObj = await AICinemaEngine.loadImage(frameUrl);
-                                    loadedSceneImages.push(imgObj);
-                                } catch (e) {}
-                            }
-
-                            if (loadedSceneImages.length === 0) {
-                                throw new Error("Không thể khởi tạo khung hình.");
-                            }
-
-                            searchStatusText.value = `Đang lồng tiếng và kết xuất video 60 FPS...`;
-                            const mp4Blob = await AICinemaEngine.renderToMp4_60FPS({
-                                sceneImages: loadedSceneImages,
+                            // 4. MUXING MP4 60 FPS HARDWARE ACCELERATED
+                            searchStatusText.value = `Đang đóng gói MP4 60 FPS chuẩn AVC/AAC...`;
+                            const mp4Blob = await AICinemaEngine.renderFrameByFrame60FPS({
+                                orderedFrames: renderedFrames,
                                 totalDurationSec: durationSec,
-                                aspectRatio,
-                                ambientType: storyboard.ambient_sound || 'cinematic',
-                                dialogueScript: storyboard.dialogue_script || [],
-                                voiceCharacters: cinemaVoiceCharacters.value,
-                                apiKey: healthyKey,
-                                onProgress: (percent) => {
-                                    searchStatusText.value = `Đang xuất bản video 60 FPS (${percent}%)...`;
+                                width,
+                                height,
+                                masterAudio,
+                                onProgress: (pct) => {
+                                    searchStatusText.value = `Xuất bản MP4 60 FPS: ${pct}%...`;
                                 }
                             });
 
                             const videoUrl = ObjectUrlRegistry.create(mp4Blob);
                             targetMsg.renderedVideoUrl = videoUrl;
-                            
-                            const dialogueSummary = (storyboard.dialogue_script || []).map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`).join('\n');
+
+                            const dialogueSummary = userTimelineCues.value.map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`).join('\n');
                             targetMsg.content = (targetMsg.content || '') + 
-                                `\n\n🎬 **[Xưởng Phim Chuyển Động 60 FPS]** Đã xuất bản thành công video **${durationSec}s**.\n` +
-                                `- **Chủ đề:** ${storyboard.visual_theme}\n` +
-                                `- **Tỷ lệ & Định dạng:** ${aspectRatio} | 60.0 FPS\n` +
+                                `\n\n🎬 **[Xưởng Phim Chuyển Động 60 FPS Siêu Thực]**\n` +
+                                `- **Thời lượng:** ${durationSec}s | **Tổng frames:** ${durationSec * 60} frames\n` +
+                                `- **Tỷ lệ & Tốc độ:** ${aspectRatio} | 60.0 FPS Siêu mượt\n` +
+                                `- **Mã nhận diện bối cảnh:** #${videoSeed}\n` +
                                 (dialogueSummary ? `\n🎙️ **Lời thoại nhân vật:**\n${dialogueSummary}` : '');
-                                
+
                             targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                             scheduleDbSave(targetMsg);
                             scrollToBottom(true);
@@ -5219,7 +5246,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         const candidateModels = [
                             BACKGROUND_MODELS.FAST,
                             BACKGROUND_MODELS.LITE,
-                            "gemini-2.5-flash"
+                            "gemini-2.0-flash"
                         ].filter(Boolean);
 
                         for (const targetModel of candidateModels) {
