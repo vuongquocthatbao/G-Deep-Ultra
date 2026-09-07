@@ -31,7 +31,7 @@
             }
             bootState.lastBoot = now;
             
-            if (bootState.attempts >= 3) {
+            if (bootState.attempts >= 4) {
                 bootState.safeMode = true;
                 console.warn(`[L0 Hypervisor] Phát hiện chu kỳ reload bất thường (${bootState.attempts} lần). Chuyển sang Safe Mode.`);
             }
@@ -73,7 +73,7 @@
                         <div style="display:flex; align-items:center; justify-content:space-between; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; margin-bottom: 16px;">
                             <div style="display:flex; align-items:center; gap: 10px;">
                                 <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; box-shadow:0 0 10px #ef4444; display:inline-block;"></span>
-                                <strong style="color:#ffffff; font-size:15px; letter-spacing:0.5px;">HỆ THỐNG KHẮC PHỤC SỰ CỐ KHỞI ĐỘNG</strong>
+                                <strong style="color:#ffffff; font-size:15px; letter-spacing:0.5px;">HỆ THỐNG TỰ PHỤC HỒI G-DEEP</strong>
                             </div>
                             <span style="font-size:11px; background:rgba(239,68,68,0.15); color:#f87171; padding:3px 8px; border-radius:6px;">CHẾ ĐỘ AN TOÀN</span>
                         </div>
@@ -82,7 +82,7 @@
                             <div style="color:#f2f4f8; word-break:break-word;">${reason}</div>
                         </div>
                         <div id="l0-terminal-logs" style="background:#040507; border:1px solid rgba(255,255,255,0.05); border-radius:12px; padding:14px; font-size:11.5px; height:180px; overflow-y:auto; line-height:1.7; color:#38bdf8;">
-                            > Khởi động chu trình kiểm tra hệ thống...<br>
+                            > Khởi động chu trình tự chẩn đoán...<br>
                             ${logs.map(l => `> ${l}<br>`).join('')}
                         </div>
                     </div>
@@ -95,7 +95,10 @@
                 document.documentElement.appendChild(hudElement);
 
                 document.getElementById('l0-btn-bypass')?.addEventListener('click', () => {
-                    document.getElementById('initial-app-skeleton')?.remove();
+                    const sk = document.getElementById('initial-app-skeleton');
+                    if (sk) sk.remove();
+                    const appEl = document.getElementById('app');
+                    if (appEl) appEl.removeAttribute('v-cloak');
                     hudElement?.remove();
                 });
                 document.getElementById('l0-btn-clean')?.addEventListener('click', () => {
@@ -132,39 +135,11 @@
 
                 renderDiagnosticsHUD(crashReason);
 
-                if (bootState.safeMode) {
-                    appendLog("<span style='color:#fbbf24'>Kích hoạt chế độ bảo vệ. Đang hiển thị giao diện...</span>");
-                    setTimeout(() => {
-                        const sk = document.getElementById('initial-app-skeleton');
-                        if (sk) sk.remove();
-                        hudElement?.remove();
-                    }, 1000);
-                    return;
-                }
-
-                let apiKey = "";
-                try {
-                    const poolStr = localStorage.getItem('gdeep_api_keys_pool');
-                    if (poolStr) {
-                        const parsed = JSON.parse(poolStr);
-                        apiKey = parsed.find(k => k.status === 'active')?.key || parsed[0]?.key || "";
-                    }
-                } catch(e) {}
-
-                if (!apiKey) {
-                    appendLog("<span style='color:#fbbf24'>Chưa thiết lập khóa hệ thống. Mở giao diện cấu hình...</span>");
-                    setTimeout(() => {
-                        const sk = document.getElementById('initial-app-skeleton');
-                        if (sk) sk.remove();
-                        hudElement?.remove();
-                    }, 1000);
-                    return;
-                }
-
-                appendLog("Đang điều phối cơ chế tự phục hồi...");
                 setTimeout(() => {
                     const sk = document.getElementById('initial-app-skeleton');
                     if (sk) sk.remove();
+                    const appEl = document.getElementById('app');
+                    if (appEl) appEl.removeAttribute('v-cloak');
                     hudElement?.remove();
                 }, 1200);
             };
@@ -172,15 +147,17 @@
             const bootWatchdog = setTimeout(() => {
                 const sk = document.getElementById('initial-app-skeleton');
                 if (sk && sk.isConnected && window.getComputedStyle(sk).display !== 'none') {
-                    engageRescueMode("Quá thời gian chờ tải tài nguyên mạng. Đang tự động mở giao diện...");
+                    const appEl = document.getElementById('app');
+                    if (appEl) appEl.removeAttribute('v-cloak');
+                    sk.remove();
                 }
-            }, 3800);
+            }, 3200);
 
             window.addEventListener('error', function(e) {
                 const errMsg = e.message || (e.error ? e.error.message : '');
                 if (!isHypervisorEngaged && errMsg && !isBenignError(errMsg)) {
                     clearTimeout(bootWatchdog);
-                    engageRescueMode(`Trạng thái: ${errMsg} tại ${e.filename || 'bundle'}:${e.lineno || 0}`);
+                    console.warn(`[L0 Watchdog Caught Error]:`, errMsg);
                 }
             }, true);
 
@@ -188,7 +165,7 @@
                 const msg = e.reason?.message || String(e.reason || '');
                 if (!isHypervisorEngaged && msg && !isBenignError(msg)) {
                     clearTimeout(bootWatchdog);
-                    engageRescueMode(`Ngoại lệ Promise: ${msg}`);
+                    console.warn(`[L0 Watchdog Unhandled Rejection]:`, msg);
                 }
             }, true);
 
@@ -207,19 +184,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     
-    <script id="jit-bootloader">
-    (function() {
-        window.__JIT_LOGS__ = [];
-        window.addEventListener('error', function(e) {
-            if (e.message && (e.message.includes('SyntaxError') || e.message.includes('Assignment to constant'))) {
-                window.__JIT_LOGS__.push({ type: 'CRITICAL_BOOT', error: e.message, lineno: e.lineno });
-                var sk = document.getElementById('initial-app-skeleton');
-                if (sk) sk.remove();
-            }
-        }, true);
-    })();
-    </script>
-
     <!-- External Runtime Core Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -1712,15 +1676,15 @@
                               @keydown="handleKeydown" @paste="handlePaste" @input="resizeTextarea" @focus="handleInputFocus"
                               rows="1" class="w-full bg-transparent border-0 outline-none resize-none min-h-[38px] max-h-[160px] px-2 py-2 text-white placeholder-textMuted/60 text-[14.5px] leading-relaxed allow-select custom-scrollbar pr-7"
                               :placeholder="'Hỏi G-Deep ' + (currentModel?.name || 'Ultra')...'"></textarea>
-                    <button type="button" v-if="inputText.length > 0" @click="inputText = ''; resizeTextarea()" title="Xóa văn bản" class="btn-instant action-btn-sm absolute right-1 text-textMuted hover:text-white p-1 rounded-full">
+                    <button type="button" v-if="inputText && inputText.length > 0" @click="inputText = ''; resizeTextarea()" title="Xóa văn bản" class="btn-instant action-btn-sm absolute right-1 text-textMuted hover:text-white p-1 rounded-full">
                         <lucide-icon name="x-circle" class="w-4 h-4"></lucide-icon>
                     </button>
                 </div>
 
-                <button type="submit" v-if="!isGenerating" :disabled="!inputText.trim() && pendingAttachments.length === 0"
+                <button type="submit" v-if="!isGenerating" :disabled="(!inputText || !inputText.trim()) && pendingAttachments.length === 0"
                         :class="['btn-instant rounded-full flex items-center justify-center shrink-0 ml-0.5 w-9 h-9 md:w-10 md:h-10 border-0',
-                        (inputText.trim() || pendingAttachments.length > 0) ? 'text-zinc-950 font-bold shadow-md cursor-pointer hover:brightness-110' : 'bg-white/5 text-textMuted opacity-25']"
-                        :style="{ background: (inputText.trim() || pendingAttachments.length > 0) ? selectedAccent : '' }" title="Gửi yêu cầu">
+                        (inputText && inputText.trim() || pendingAttachments.length > 0) ? 'text-zinc-950 font-bold shadow-md cursor-pointer hover:brightness-110' : 'bg-white/5 text-textMuted opacity-25']"
+                        :style="{ background: (inputText && inputText.trim() || pendingAttachments.length > 0) ? selectedAccent : '' }" title="Gửi yêu cầu">
                     <lucide-icon name="arrow-up" class="w-4 h-4 text-zinc-950"></lucide-icon>
                 </button>
                 <button type="button" v-if="isGenerating" @click="cancelGeneration" class="btn-instant rounded-full flex items-center justify-center shrink-0 ml-0.5 w-9 h-9 md:w-10 md:h-10 bg-red-500/20 text-red-400 shadow-md hover:bg-red-500/30 animate-pulse border-0" title="Dừng xử lý">
@@ -1897,8 +1861,6 @@
 
         // =========================================================================
         // ĐỘNG CƠ TRÍCH XUẤT VÀ TRUY CẬP MỌI LIÊN KẾT (URL GROUNDING ENGINE)
-        // CƠ CHẾ TƯƠNG ĐỒNG GEMINI ADVANCED: BÓC TÁCH BÀI VIẾT, YOUTUBE TRANSCRIPT,
-        // TIKTOK, FACEBOOK VÀ MỌI NGUỒN WEB
         // =========================================================================
         const UrlGroundingEngine = {
             URL_REGEX: /https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)/gi,
@@ -1928,7 +1890,6 @@
                     catch (_) { return 'web'; }
                 })();
 
-                // TẦNG 1: Truy xuất qua Jina AI Reader
                 try {
                     const jinaUrl = `https://r.jina.ai/${url}`;
                     const ctrl = new AbortController();
@@ -1954,7 +1915,6 @@
                     }
                 } catch (_) {}
 
-                // TẦNG 2: Proxy AllOrigins
                 try {
                     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
                     const ctrl = new AbortController();
@@ -1973,28 +1933,6 @@
                                 url,
                                 domain,
                                 title,
-                                text: clean.slice(0, 24000),
-                                snippet: clean.slice(0, 280)
-                            };
-                        }
-                    }
-                } catch (_) {}
-
-                // TẦNG 3: Fetch trực tiếp
-                try {
-                    const ctrl = new AbortController();
-                    const timer = setTimeout(() => ctrl.abort(), 6500);
-                    const res = await fetch(url, { signal: ctrl.signal, mode: 'cors' });
-                    clearTimeout(timer);
-                    if (res.ok) {
-                        const text = await res.text();
-                        const clean = this.cleanExtractedText(text);
-                        if (clean && clean.length > 50) {
-                            return {
-                                success: true,
-                                url,
-                                domain,
-                                title: domain,
                                 text: clean.slice(0, 24000),
                                 snippet: clean.slice(0, 280)
                             };
@@ -2023,7 +1961,7 @@
         };
 
         // =========================================================================
-        // TIỆN ÍCH TRÍCH XUẤT JSON AN TOÀN CHỐNG SỰ CỐ TEXT BAO QUANH
+        // TIỆN ÍCH TRÍCH XUẤT JSON AN TOÀN
         // =========================================================================
         function extractJsonFromText(rawText) {
             if (!rawText) return null;
@@ -2047,7 +1985,7 @@
         }
 
         // =========================================================================
-        // ĐỘNG CƠ MA TRẬN TỔ HỢP PHI TUYẾN TÍNH ĐỘNG VÔ HẠN
+        // ĐỘNG CƠ MA TRẬN TỔ HỢP PHI TUYẾN TÍNH ĐỘNG VÔ HẠN (TƯƠNG THÍCH HOÀN TOÀN VUE 3)
         // =========================================================================
         const DynamicNonlinearHyperMesh = (function() {
             const RANK = 16;
@@ -2119,10 +2057,6 @@
                     this.isPulsing = true;
 
                     this.value = candidateVal;
-                    if (this.bridge && 'value' in this.bridge) {
-                        this.bridge.value = candidateVal;
-                    }
-
                     this.checkpointTrail.push(Date.now());
                     if (this.checkpointTrail.length > 8) this.checkpointTrail.shift();
 
@@ -2252,51 +2186,26 @@
                 dynamicRef(id, initialVal) {
                     const r = window.Vue.ref(initialVal);
                     const node = enrollDynamicNode(id, initialVal, r);
-                    return new Proxy(r, {
-                        get(t, p) {
-                            if (p === '__node') return node;
-                            if (p === '__v_raw') return t;
-                            if (p === '__v_isRef') return true;
-                            if (p === '__v_skip') return false;
-                            return t[p];
-                        },
-                        set(t, p, v) {
-                            t[p] = v;
-                            if (p === 'value') {
-                                node.mutate(v, 'DIRECT_REF_MUTATION');
-                            }
-                            return true;
-                        }
-                    });
+                    window.Vue.watch(r, (newVal) => {
+                        node.mutate(newVal, 'DYNAMIC_REF_MUTATION');
+                    }, { deep: false });
+                    return r;
                 },
                 dynamicReactive(id, initialObj) {
                     const rx = window.Vue.reactive(initialObj);
-                    const node = enrollDynamicNode(id, initialObj, { value: rx });
-                    return new Proxy(rx, {
-                        get(t, p) {
-                            if (p === '__node') return node;
-                            if (p === '__v_raw') return t;
-                            if (p === '__v_isReactive') return true;
-                            if (p === '__v_skip') return false;
-                            return t[p];
-                        },
-                        set(t, p, v) {
-                            t[p] = v;
-                            node.mutate(t, `PROP_${String(p)}`);
-                            return true;
-                        }
-                    });
+                    const node = enrollDynamicNode(id, rx, { value: rx });
+                    window.Vue.watch(rx, (newVal) => {
+                        node.mutate(newVal, 'DYNAMIC_RX_MUTATION');
+                    }, { deep: true });
+                    return rx;
                 },
                 dynamicVar(id, initialVal) {
                     const node = enrollDynamicNode(id, initialVal, null);
-                    return {
-                        get value() { return node.value; },
-                        set value(v) { node.mutate(v, 'RUNTIME_VAR_MUTATION'); },
-                        get() { return node.value; },
-                        set(v) { node.mutate(v, 'RUNTIME_VAR_MUTATION'); },
-                        __node: node,
-                        __v_skip: true
-                    };
+                    const r = window.Vue.ref(initialVal);
+                    window.Vue.watch(r, (newVal) => {
+                        node.mutate(newVal, 'DYNAMIC_VAR_MUTATION');
+                    });
+                    return r;
                 },
                 scheduleMatrixCycle,
                 recalculateDynamicMatrix,
@@ -2325,7 +2234,6 @@
                     this.errorCount = 0;
                     this.callCount = 0;
                     this.garbageBag = new Set();
-                    this.evolutionHistory = [];
                     this.isHealing = false;
                 }
 
@@ -2357,23 +2265,6 @@
                     this.selfClean();
                 }
 
-                verifyDependencies() {
-                    for (const depId of this.dependencies) {
-                        const depNode = registry.get(depId);
-                        if (depNode && depNode.healthScore < 40) {
-                            queueMicrotask(() => {
-                                depNode.proactiveHeal();
-                            });
-                        }
-                    }
-                }
-
-                proactiveHeal() {
-                    if (this.isHealing || this.healthScore >= 60) return;
-                    const syntheticError = new Error(`[CHẨN ĐOÁN]: Điểm sinh tồn tụt xuống ${this.healthScore}%. Cần tái cấu trúc.`);
-                    this.jitRepairAndRetry(syntheticError, [], false);
-                }
-
                 getFallbackValue() {
                     if (this.expects && this.expects.fallbackReturnValue !== undefined) return this.expects.fallbackReturnValue;
                     if (this.returns === 'string') return '';
@@ -2385,41 +2276,26 @@
 
                 execute(...args) {
                     this.callCount++;
-                    this.verifyDependencies();
-
                     try {
                         const result = this.impl.apply(this, args);
-
                         if (result && typeof result.then === 'function') {
                             return result.then(val => {
                                 this.selfReward();
                                 return val;
-                            }).catch(async (err) => {
+                            }).catch((err) => {
                                 this.selfPenalize();
-                                return await this.jitRepairAndRetry(err, args);
+                                return this.getFallbackValue();
                             }).finally(() => {
                                 if (this.callCount % 15 === 0) this.selfClean();
                             });
                         }
-
                         this.selfReward();
                         if (this.callCount % 15 === 0) this.selfClean();
                         return result;
-
                     } catch (syncErr) {
                         this.selfPenalize();
-                        queueMicrotask(() => {
-                            this.jitRepairAndRetry(syncErr, args);
-                        });
                         return this.getFallbackValue();
                     }
-                }
-
-                async jitRepairAndRetry(err, args, autoExecute = true) {
-                    if (this.isHealing) return this.getFallbackValue();
-                    this.isHealing = true;
-                    this.isHealing = false;
-                    return this.getFallbackValue();
                 }
             }
 
@@ -3733,7 +3609,6 @@ TRẢ VỀ JSON DUY NHẤT:
                                 recorder.stop();
                                 return;
                             }
-
                             const t = curFrame / totalFrames;
                             ctx.save();
                             ctx.fillStyle = '#08090d';
