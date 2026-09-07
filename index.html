@@ -9,13 +9,11 @@
     <title>G-Deep - Nền tảng Trí tuệ Nhân tạo Hợp nhất</title>
 
     <!-- ======================================================================= -->
-    <!-- TẦNG 0: L0 META-HYPERVISOR - HỆ THỐNG TỰ CHẨN ĐOÁN & VÁ LỖI NÂNG CẤP     -->
-    <!-- ĐÃ TÍCH HỢP CIRCUIT BREAKER CHỐNG VÒNG LẶP & IN-SITU LIVE HOT-PATCHING  -->
+    <!-- TẦNG 0: L0 META-HYPERVISOR - HỆ THỐNG TỰ CHẨN ĐOÁN & PHỤC HỒI NÂNG CẤP   -->
     <!-- ======================================================================= -->
     <script id="l0-hypervisor">
         (function() {
             'use strict';
-
             const BOOT_KEY = 'GDEEP_L0_BOOT_CYCLE';
             let bootState = { attempts: 0, lastBoot: 0, safeMode: false };
             try {
@@ -33,151 +31,35 @@
             
             if (bootState.attempts >= 4) {
                 bootState.safeMode = true;
-                console.warn(`[L0 Hypervisor] Phát hiện chu kỳ reload bất thường (${bootState.attempts} lần). Chuyển sang Safe Mode.`);
             }
             try { sessionStorage.setItem(BOOT_KEY, JSON.stringify(bootState)); } catch(e) {}
 
-            const hotPatch = localStorage.getItem('GDEEP_BOOT_HOTPATCH');
-            if (hotPatch) {
-                try {
-                    const runHotpatch = function() {
-                        try {
-                            const patchFn = new Function(hotPatch);
-                            patchFn();
-                        } catch(err) {
-                            console.error("[L0 Hypervisor] Lỗi thực thi hotpatch:", err);
-                        }
-                    };
-                    if (document.body) runHotpatch();
-                    else document.addEventListener('DOMContentLoaded', runHotpatch, { once: true });
-                } catch(e) {}
-                localStorage.removeItem('GDEEP_BOOT_HOTPATCH');
-            }
-
-            let isHypervisorEngaged = false;
-            let hudElement = null;
-
-            function renderDiagnosticsHUD(reason, logs = []) {
-                if (hudElement) return;
-                hudElement = document.createElement('div');
-                hudElement.id = 'l0-diagnostics-hud';
-                hudElement.style.cssText = `
-                    position: fixed; inset: 0; background: rgba(8, 9, 13, 0.96); backdrop-filter: blur(20px);
-                    z-index: 100000; color: #f2f4f8; font-family: 'JetBrains Mono', monospace, sans-serif;
-                    padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
-                    box-sizing: border-box; overflow: auto;
-                `;
-
-                hudElement.innerHTML = `
-                    <div style="max-width: 760px; margin: 0 auto; width: 100%;">
-                        <div style="display:flex; align-items:center; justify-content:space-between; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; margin-bottom: 16px;">
-                            <div style="display:flex; align-items:center; gap: 10px;">
-                                <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; box-shadow:0 0 10px #ef4444; display:inline-block;"></span>
-                                <strong style="color:#ffffff; font-size:15px; letter-spacing:0.5px;">HỆ THỐNG TỰ PHỤC HỒI G-DEEP</strong>
-                            </div>
-                            <span style="font-size:11px; background:rgba(239,68,68,0.15); color:#f87171; padding:3px 8px; border-radius:6px;">CHẾ ĐỘ AN TOÀN</span>
-                        </div>
-                        <div style="background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.06); border-radius:12px; padding:14px; font-size:12px; line-height:1.6; margin-bottom: 16px; color:#9aa2b1;">
-                            <div style="color:#f87171; font-weight:bold; margin-bottom:4px;">THÔNG TIN TRẠNG THÁI:</div>
-                            <div style="color:#f2f4f8; word-break:break-word;">${reason}</div>
-                        </div>
-                        <div id="l0-terminal-logs" style="background:#040507; border:1px solid rgba(255,255,255,0.05); border-radius:12px; padding:14px; font-size:11.5px; height:180px; overflow-y:auto; line-height:1.7; color:#38bdf8;">
-                            > Khởi động chu trình tự chẩn đoán...<br>
-                            ${logs.map(l => `> ${l}<br>`).join('')}
-                        </div>
-                    </div>
-                    <div style="max-width: 760px; margin: 16px auto 0 auto; width: 100%; display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end;">
-                        <button id="l0-btn-bypass" style="background:rgba(255,255,255,0.08); color:#fff; border:none; padding:10px 16px; border-radius:10px; font-size:12px; cursor:pointer; font-weight:600;">Mở Trực Tiếp Giao Diện</button>
-                        <button id="l0-btn-clean" style="background:rgba(239,68,68,0.2); color:#fca5a5; border:none; padding:10px 16px; border-radius:10px; font-size:12px; cursor:pointer; font-weight:600;">Làm Mới Bộ Nhớ Đệm</button>
-                    </div>
-                `;
-
-                document.documentElement.appendChild(hudElement);
-
-                document.getElementById('l0-btn-bypass')?.addEventListener('click', () => {
-                    const sk = document.getElementById('initial-app-skeleton');
-                    if (sk) sk.remove();
-                    const appEl = document.getElementById('app');
-                    if (appEl) appEl.removeAttribute('v-cloak');
-                    hudElement?.remove();
-                });
-                document.getElementById('l0-btn-clean')?.addEventListener('click', () => {
-                    try {
-                        localStorage.removeItem('GDEEP_BOOT_HOTPATCH');
-                        sessionStorage.clear();
-                    } catch(e) {}
-                    location.reload();
-                });
-            }
-
-            const appendLog = function(msg) {
-                const term = document.getElementById('l0-terminal-logs');
-                if (term) {
-                    term.innerHTML += `> ${msg}<br>`;
-                    term.scrollTop = term.scrollHeight;
-                }
-            };
-
-            function isBenignError(msg) {
-                if (!msg) return true;
-                const benignList = [
-                    'ResizeObserver loop', 'speechSynthesis', 'favicon.ico', 'canceled',
-                    'aborted', 'AbortError', 'Script error.', 'Extension context',
-                    'Loading chunk', 'reading \'indexOf\'', 'The operation was aborted',
-                    'play() failed because the user didn\'t interact'
-                ];
-                return benignList.some(str => msg.includes(str));
-            }
-
-            const engageRescueMode = async function(crashReason) {
-                if (isHypervisorEngaged) return;
-                isHypervisorEngaged = true;
-
-                renderDiagnosticsHUD(crashReason);
-
-                setTimeout(() => {
-                    const sk = document.getElementById('initial-app-skeleton');
-                    if (sk) sk.remove();
-                    const appEl = document.getElementById('app');
-                    if (appEl) appEl.removeAttribute('v-cloak');
-                    hudElement?.remove();
-                }, 1200);
-            };
-
-            const bootWatchdog = setTimeout(() => {
+            function forceRevealUI() {
                 const sk = document.getElementById('initial-app-skeleton');
-                if (sk && sk.isConnected && window.getComputedStyle(sk).display !== 'none') {
-                    const appEl = document.getElementById('app');
-                    if (appEl) appEl.removeAttribute('v-cloak');
-                    sk.remove();
+                if (sk) {
+                    sk.style.opacity = '0';
+                    setTimeout(() => { try { sk.remove(); } catch(e) { sk.style.display = 'none'; } }, 200);
                 }
-            }, 3200);
+                const appEl = document.getElementById('app');
+                if (appEl) {
+                    appEl.removeAttribute('v-cloak');
+                    appEl.style.opacity = '1';
+                }
+            }
 
-            window.addEventListener('error', function(e) {
-                const errMsg = e.message || (e.error ? e.error.message : '');
-                if (!isHypervisorEngaged && errMsg && !isBenignError(errMsg)) {
-                    clearTimeout(bootWatchdog);
-                    console.warn(`[L0 Watchdog Caught Error]:`, errMsg);
-                }
-            }, true);
-
-            window.addEventListener('unhandledrejection', function(e) {
-                const msg = e.reason?.message || String(e.reason || '');
-                if (!isHypervisorEngaged && msg && !isBenignError(msg)) {
-                    clearTimeout(bootWatchdog);
-                    console.warn(`[L0 Watchdog Unhandled Rejection]:`, msg);
-                }
-            }, true);
+            const bootWatchdog = setTimeout(forceRevealUI, 2200);
 
             window.__L0_CLEAR_WATCHDOG__ = function() {
                 clearTimeout(bootWatchdog);
-                try {
-                    sessionStorage.removeItem(BOOT_KEY);
-                } catch(e) {}
+                forceRevealUI();
+                try { sessionStorage.removeItem(BOOT_KEY); } catch(e) {}
             };
+
+            window.addEventListener('DOMContentLoaded', () => {
+                setTimeout(forceRevealUI, 1000);
+            });
         })();
     </script>
-    <!-- ======================================================================= -->
 
     <!-- Preconnect & Fonts Layer -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -217,7 +99,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/4.0.1/dexie.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"></script>
 
     <style>
         :root {
@@ -230,12 +111,13 @@
             --glow-color: rgba(168, 199, 250, 0.2);
         }
 
-        [v-cloak] { display: none !important; }
+        [v-cloak] { opacity: 0; }
         *, *::before, *::after { box-sizing: border-box !important; }
         
         html, body {
             height: 100% !important;
             width: 100% !important;
+            min-height: 100% !important;
             margin: 0 !important;
             padding: 0 !important;
             background-color: #08090d;
@@ -295,9 +177,11 @@
         }
 
         .app-viewport {
-            height: var(--app-height) !important;
+            height: 100vh !important;
+            height: var(--app-height, 100dvh) !important;
             width: 100% !important;
-            max-height: var(--app-height) !important;
+            max-height: 100vh !important;
+            max-height: var(--app-height, 100dvh) !important;
             max-width: 100% !important;
             overflow: hidden !important;
             display: flex;
@@ -1451,7 +1335,7 @@
                         </div>
 
                         <div class="timeline-ruler" @click="handleTimelineRulerClick" title="Chọn vị trí thời gian">
-                            <div v-for="(cue, cueIdx) in userTimelineCues" :key="cue.id"
+                            <div v-for="cue in userTimelineCues" :key="cue.id"
                                  class="timeline-cue-badge"
                                  :style="{ left: ((cue.startTimeSec / cinemaConfig.duration) * 100) + '%', background: getCharacterBadgeColor(cue.speaker) }"
                                  :title="cue.speaker + ' (' + cue.startTimeSec + 's): ' + cue.text">
@@ -1859,9 +1743,6 @@
     <script>
         'use strict';
 
-        // =========================================================================
-        // ĐỘNG CƠ TRÍCH XUẤT VÀ TRUY CẬP MỌI LIÊN KẾT (URL GROUNDING ENGINE)
-        // =========================================================================
         const UrlGroundingEngine = {
             URL_REGEX: /https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)/gi,
 
@@ -1960,9 +1841,6 @@
             }
         };
 
-        // =========================================================================
-        // TIỆN ÍCH TRÍCH XUẤT JSON AN TOÀN
-        // =========================================================================
         function extractJsonFromText(rawText) {
             if (!rawText) return null;
             const str = String(rawText).trim();
@@ -1984,240 +1862,6 @@
             return null;
         }
 
-        // =========================================================================
-        // ĐỘNG CƠ MA TRẬN TỔ HỢP PHI TUYẾN TÍNH ĐỘNG VÔ HẠN (TƯƠNG THÍCH HOÀN TOÀN VUE 3)
-        // =========================================================================
-        const DynamicNonlinearHyperMesh = (function() {
-            const RANK = 16;
-            const EMBEDDING_DIM = 8;
-
-            let nodeCounter = 0;
-            const nodeMap = new Map();
-            const idToIndex = new Map();
-            const indexToId = new Map();
-
-            let capacity = 128;
-            let activationVector = new Float32Array(capacity);
-            let semanticEmbeddings = new Float32Array(capacity * EMBEDDING_DIM);
-            let dynamicWeights = new Float32Array(RANK * capacity);
-            let dynamicBiases = new Float32Array(RANK * capacity);
-
-            const rankQueryVectors = new Float32Array(RANK * EMBEDDING_DIM);
-            const rankKeyVectors = new Float32Array(RANK * EMBEDDING_DIM);
-            const rankBiasW = new Float32Array(RANK);
-            const rankBiasB = new Float32Array(RANK);
-            const manifoldPotentials = new Float32Array(RANK);
-
-            for (let i = 0; i < RANK * EMBEDDING_DIM; i++) {
-                rankQueryVectors[i] = (Math.random() - 0.5) * 0.3;
-                rankKeyVectors[i] = (Math.random() - 0.5) * 0.3;
-            }
-            for (let r = 0; r < RANK; r++) {
-                rankBiasW[r] = (Math.random() - 0.5) * 0.1;
-                rankBiasB[r] = (Math.random() - 0.5) * 0.1;
-            }
-
-            function ensureCapacity(requiredCount) {
-                if (requiredCount <= capacity) return;
-                let newCap = capacity * 2;
-                while (newCap < requiredCount) newCap *= 2;
-
-                const newAct = new Float32Array(newCap);
-                newAct.set(activationVector);
-                activationVector = newAct;
-
-                const newEmbed = new Float32Array(newCap * EMBEDDING_DIM);
-                newEmbed.set(semanticEmbeddings);
-                semanticEmbeddings = newEmbed;
-
-                const newWeights = new Float32Array(RANK * newCap);
-                const newBiases = new Float32Array(RANK * newCap);
-                for (let r = 0; r < RANK; r++) {
-                    newWeights.set(dynamicWeights.subarray(r * capacity, (r + 1) * capacity), r * newCap);
-                    newBiases.set(dynamicBiases.subarray(r * capacity, (r + 1) * capacity), r * newCap);
-                }
-                dynamicWeights = newWeights;
-                dynamicBiases = newBiases;
-                capacity = newCap;
-            }
-
-            class DynamicOmniNode {
-                constructor(id, index, initialVal, bridge = null) {
-                    this.id = id;
-                    this.index = index;
-                    this.value = initialVal;
-                    this.bridge = bridge;
-                    this.isPulsing = false;
-                    this.checkpointTrail = [Date.now()];
-                    this.resonanceListeners = new Set();
-                }
-
-                mutate(candidateVal, sourceIntent = 'DYNAMIC_SURGE') {
-                    if (this.isPulsing) return;
-                    this.isPulsing = true;
-
-                    this.value = candidateVal;
-                    this.checkpointTrail.push(Date.now());
-                    if (this.checkpointTrail.length > 8) this.checkpointTrail.shift();
-
-                    activationVector[this.index] = this._quantizeActivity(candidateVal);
-                    this._updateSemanticEmbedding();
-
-                    DynamicNonlinearHyperMesh.scheduleMatrixCycle(this.index);
-
-                    this.isPulsing = false;
-                }
-
-                _quantizeActivity(val) {
-                    if (typeof val === 'boolean') return val ? 1.0 : 0.0;
-                    if (typeof val === 'number') return Math.min(1.0, Math.max(0.0, Math.abs(val) / 100.0));
-                    if (typeof val === 'string') return val.length > 0 ? Math.min(1.0, val.length / 300.0) : 0.0;
-                    if (Array.isArray(val)) return val.length > 0 ? Math.min(1.0, val.length / 25.0) : 0.0;
-                    if (val !== null && typeof val === 'object') return 0.75;
-                    return 0.0;
-                }
-
-                _updateSemanticEmbedding() {
-                    const act = activationVector[this.index];
-                    const offset = this.index * EMBEDDING_DIM;
-                    for (let d = 0; d < EMBEDDING_DIM; d++) {
-                        semanticEmbeddings[offset + d] = (semanticEmbeddings[offset + d] * 0.88) + (act * (Math.random() - 0.5) * 0.12);
-                    }
-                }
-
-                receiveNonlinearImpulse(sourceIndex, influenceEnergy) {
-                    for (const listener of this.resonanceListeners) {
-                        try { listener(this.value, indexToId.get(sourceIndex), influenceEnergy); } catch (_) {}
-                    }
-                }
-            }
-
-            function recalculateDynamicMatrix() {
-                for (let r = 0; r < RANK; r++) {
-                    const rOffset = r * EMBEDDING_DIM;
-                    const bW = rankBiasW[r];
-                    const bB = rankBiasB[r];
-                    const matOffset = r * capacity;
-
-                    for (let i = 0; i < nodeCounter; i++) {
-                        const embOffset = i * EMBEDDING_DIM;
-                        let dotQ = 0.0, dotK = 0.0;
-                        for (let d = 0; d < EMBEDDING_DIM; d++) {
-                            dotQ += semanticEmbeddings[embOffset + d] * rankQueryVectors[rOffset + d];
-                            dotK += semanticEmbeddings[embOffset + d] * rankKeyVectors[rOffset + d];
-                        }
-                        dynamicWeights[matOffset + i] = 1.0 / (1.0 + Math.exp(-(dotQ + bW)));
-                        dynamicBiases[matOffset + i] = 1.0 / (1.0 + Math.exp(-(dotK + bB)));
-                    }
-                }
-            }
-
-            function computeAllOrdersNonlinearPotential() {
-                for (let r = 0; r < RANK; r++) {
-                    let prodAccum = 1.0;
-                    const rOffset = r * capacity;
-                    for (let i = 0; i < nodeCounter; i++) {
-                        const term = Math.tanh(dynamicWeights[rOffset + i] * activationVector[i] + dynamicBiases[rOffset + i]);
-                        prodAccum *= (1.0 + term);
-                    }
-                    manifoldPotentials[r] = prodAccum - 1.0;
-                }
-            }
-
-            function resolveGlobalHomeostasis(triggerIndex) {
-                let totalEnergy = 0.0;
-                for (let r = 0; r < RANK; r++) totalEnergy += Math.abs(manifoldPotentials[r]);
-                if (totalEnergy < 0.001) return;
-
-                for (let j = 0; j < nodeCounter; j++) {
-                    if (j === triggerIndex) continue;
-                    let resonance = 0.0;
-                    for (let r = 0; r < RANK; r++) {
-                        resonance += Math.tanh(manifoldPotentials[r] * dynamicWeights[r * capacity + j]);
-                    }
-                    const finalInfluence = 1.0 / (1.0 + Math.exp(-resonance));
-                    if (finalInfluence > 0.58) {
-                        const targetNode = nodeMap.get(indexToId.get(j));
-                        if (targetNode) targetNode.receiveNonlinearImpulse(triggerIndex, finalInfluence);
-                    }
-                }
-            }
-
-            let matrixBatchScheduled = false;
-            let pendingTriggers = new Set();
-
-            function scheduleMatrixCycle(triggerIndex) {
-                pendingTriggers.add(triggerIndex);
-                if (!matrixBatchScheduled) {
-                    matrixBatchScheduled = true;
-                    queueMicrotask(() => {
-                        matrixBatchScheduled = false;
-                        recalculateDynamicMatrix();
-                        computeAllOrdersNonlinearPotential();
-                        for (const idx of pendingTriggers) {
-                            resolveGlobalHomeostasis(idx);
-                        }
-                        pendingTriggers.clear();
-                    });
-                }
-            }
-
-            function enrollDynamicNode(id, initialVal, bridge = null) {
-                let idx = idToIndex.get(id);
-                if (idx === undefined) {
-                    idx = nodeCounter++;
-                    ensureCapacity(nodeCounter);
-                    idToIndex.set(id, idx);
-                    indexToId.set(idx, id);
-                    const embOffset = idx * EMBEDDING_DIM;
-                    for (let d = 0; d < EMBEDDING_DIM; d++) {
-                        semanticEmbeddings[embOffset + d] = (Math.random() - 0.5) * 0.2;
-                    }
-                }
-                const node = new DynamicOmniNode(id, idx, initialVal, bridge);
-                nodeMap.set(id, node);
-                activationVector[idx] = node._quantizeActivity(initialVal);
-                return node;
-            }
-
-            recalculateDynamicMatrix();
-
-            return {
-                dynamicRef(id, initialVal) {
-                    const r = window.Vue.ref(initialVal);
-                    const node = enrollDynamicNode(id, initialVal, r);
-                    window.Vue.watch(r, (newVal) => {
-                        node.mutate(newVal, 'DYNAMIC_REF_MUTATION');
-                    }, { deep: false });
-                    return r;
-                },
-                dynamicReactive(id, initialObj) {
-                    const rx = window.Vue.reactive(initialObj);
-                    const node = enrollDynamicNode(id, rx, { value: rx });
-                    window.Vue.watch(rx, (newVal) => {
-                        node.mutate(newVal, 'DYNAMIC_RX_MUTATION');
-                    }, { deep: true });
-                    return rx;
-                },
-                dynamicVar(id, initialVal) {
-                    const node = enrollDynamicNode(id, initialVal, null);
-                    const r = window.Vue.ref(initialVal);
-                    window.Vue.watch(r, (newVal) => {
-                        node.mutate(newVal, 'DYNAMIC_VAR_MUTATION');
-                    });
-                    return r;
-                },
-                scheduleMatrixCycle,
-                recalculateDynamicMatrix,
-                computeAllOrdersNonlinearPotential,
-                resolveGlobalHomeostasis,
-                nodeMap
-            };
-        })();
-
-        // =========================================================================
-        // MẠNG LƯỚI TÁC TỬ JIT (JUST-IN-TIME) TỰ NHẬN THỨC VÀ HỆ MIỄN DỊCH CHÉO
-        // =========================================================================
         const MeshEngine = (function() {
             const registry = new Map();
 
@@ -2225,16 +1869,11 @@
                 constructor(meta, impl) {
                     this.id = meta.id;
                     this.purpose = meta.purpose || 'Mục tiêu vận hành hệ thống';
-                    this.expects = meta.expects || {};
-                    this.returns = meta.returns || 'any';
-                    this.dependencies = meta.dependencies || [];
                     this.impl = impl;
-                    
                     this.healthScore = 100;
                     this.errorCount = 0;
                     this.callCount = 0;
                     this.garbageBag = new Set();
-                    this.isHealing = false;
                 }
 
                 registerGarbage(ref) {
@@ -2254,47 +1893,23 @@
                     this.garbageBag.clear();
                 }
 
-                selfReward() {
-                    this.healthScore = Math.min(100, this.healthScore + 2);
-                    if (this.errorCount > 0) this.errorCount = Math.max(0, this.errorCount - 1);
-                }
-
-                selfPenalize() {
-                    this.healthScore = Math.max(0, this.healthScore - 15);
-                    this.errorCount++;
-                    this.selfClean();
-                }
-
-                getFallbackValue() {
-                    if (this.expects && this.expects.fallbackReturnValue !== undefined) return this.expects.fallbackReturnValue;
-                    if (this.returns === 'string') return '';
-                    if (this.returns === 'array') return [];
-                    if (this.returns === 'boolean') return false;
-                    if (this.returns === 'number') return 0;
-                    return null;
-                }
-
                 execute(...args) {
                     this.callCount++;
                     try {
                         const result = this.impl.apply(this, args);
                         if (result && typeof result.then === 'function') {
-                            return result.then(val => {
-                                this.selfReward();
-                                return val;
-                            }).catch((err) => {
-                                this.selfPenalize();
-                                return this.getFallbackValue();
+                            return result.catch(err => {
+                                console.warn(`[Mesh Engine Agent ${this.id} Error]:`, err);
+                                return null;
                             }).finally(() => {
-                                if (this.callCount % 15 === 0) this.selfClean();
+                                if (this.callCount % 20 === 0) this.selfClean();
                             });
                         }
-                        this.selfReward();
-                        if (this.callCount % 15 === 0) this.selfClean();
+                        if (this.callCount % 20 === 0) this.selfClean();
                         return result;
                     } catch (syncErr) {
-                        this.selfPenalize();
-                        return this.getFallbackValue();
+                        console.warn(`[Mesh Engine Agent ${this.id} Sync Error]:`, syncErr);
+                        return null;
                     }
                 }
             }
@@ -2321,53 +1936,31 @@
             { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
         ];
 
-        const initSecurityContext = MeshEngine.createAutonomousNode({
-            id: 'initSecurityContext',
-            purpose: 'Khởi tạo ngữ cảnh bảo mật cho PDF.js và Mermaid'
-        }, function() {
-            if (typeof window !== 'undefined' && window.pdfjsLib) {
-                window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-            }
-            if (typeof window !== 'undefined' && window.mermaid) {
-                try {
-                    window.mermaid.initialize({
-                        startOnLoad: false,
-                        theme: 'dark',
-                        securityLevel: 'strict',
-                        fontFamily: 'Plus Jakarta Sans, sans-serif'
-                    });
-                } catch (e) {}
-            }
-            return true;
-        });
-        initSecurityContext();
-
         const ObjectUrlRegistry = {
             _urls: new Set(),
-            create: MeshEngine.createAutonomousNode({ id: 'ObjectUrlRegistry_create' }, function(blob) {
+            create: function(blob) {
                 try {
                     const url = URL.createObjectURL(blob);
-                    this.registerGarbage(url);
-                    ObjectUrlRegistry._urls.add(url);
+                    this._urls.add(url);
                     return url;
                 } catch (e) { return ''; }
-            }),
-            revoke: MeshEngine.createAutonomousNode({ id: 'ObjectUrlRegistry_revoke' }, function(url) {
-                if (url && ObjectUrlRegistry._urls.has(url)) {
+            },
+            revoke: function(url) {
+                if (url && this._urls.has(url)) {
                     try { URL.revokeObjectURL(url); } catch (_) {}
-                    ObjectUrlRegistry._urls.delete(url);
+                    this._urls.delete(url);
                     return true;
                 }
                 return false;
-            }),
-            revokeAll: MeshEngine.createAutonomousNode({ id: 'ObjectUrlRegistry_revokeAll' }, function() {
+            },
+            revokeAll: function() {
                 let cnt = 0;
-                for (const url of ObjectUrlRegistry._urls) {
+                for (const url of this._urls) {
                     try { URL.revokeObjectURL(url); cnt++; } catch (_) {}
                 }
-                ObjectUrlRegistry._urls.clear();
+                this._urls.clear();
                 return cnt;
-            })
+            }
         };
 
         const GDeepEventBus = {
@@ -2439,29 +2032,29 @@
         const dbWriteQueue = new AsyncTaskQueue(1);
 
         let lastAssignedTimestamp = 0;
-        const getMonotonicTimestamp = MeshEngine.createAutonomousNode({ id: 'getMonotonicTimestamp' }, function() {
+        function getMonotonicTimestamp() {
             const now = Date.now();
             lastAssignedTimestamp = (now <= lastAssignedTimestamp) ? lastAssignedTimestamp + 1 : now;
             return lastAssignedTimestamp;
-        });
+        }
 
-        const escapeHTML = MeshEngine.createAutonomousNode({ id: 'escapeHTML' }, function(str) {
+        function escapeHTML(str) {
             if (str === null || str === undefined) return '';
             return String(str).replace(/[&<>"']/g, function(match) {
                 const escapeMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
                 return escapeMap[match];
             });
-        });
+        }
 
-        const cleanBase64Data = MeshEngine.createAutonomousNode({ id: 'cleanBase64Data' }, function(dataStr) {
+        function cleanBase64Data(dataStr) {
             if (!dataStr) return '';
             const str = String(dataStr);
             const commaIdx = str.indexOf(',');
             const pureBase64 = commaIdx !== -1 ? str.slice(commaIdx + 1) : str;
             return pureBase64.replace(/[\s\r\n]+/g, '');
-        });
+        }
 
-        const normalizeMimeType = MeshEngine.createAutonomousNode({ id: 'normalizeMimeType' }, function(mimeType, fileName = '') {
+        function normalizeMimeType(mimeType, fileName = '') {
             let mime = (typeof mimeType === 'string' ? mimeType : '').toLowerCase().trim();
             if (!mime || mime === 'application/octet-stream') {
                 const ext = (fileName || '').split('.').pop().toLowerCase();
@@ -2478,9 +2071,9 @@
             }
             if (mime === 'image/jpg') mime = 'image/jpeg';
             return mime || 'application/octet-stream';
-        });
+        }
 
-        const safeCopyToClipboard = MeshEngine.createAutonomousNode({ id: 'safeCopyToClipboard' }, async function(text) {
+        async function safeCopyToClipboard(text) {
             if (!text) return false;
             if (typeof navigator !== 'undefined' && navigator.clipboard && typeof window !== 'undefined' && window.isSecureContext) {
                 try { 
@@ -2500,9 +2093,9 @@
                 ta.remove();
                 return res;
             } catch (_) { return false; }
-        });
+        }
 
-        const generateUUID = MeshEngine.createAutonomousNode({ id: 'generateUUID' }, function() {
+        function generateUUID() {
             if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
             const arr = new Uint8Array(16);
             if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
@@ -2514,9 +2107,9 @@
             arr[8] = (arr[8] & 0x3f) | 0x80;
             const hex = Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
             return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20,32)}`;
-        });
+        }
 
-        const getCodeFromBlock = MeshEngine.createAutonomousNode({ id: 'getCodeFromBlock' }, function(btn) {
+        function getCodeFromBlock(btn) {
             if (!btn) return '';
             const container = btn.closest('.code-block-wrapper');
             if (container && container.getAttribute('data-raw-code')) {
@@ -2529,7 +2122,7 @@
                 return clone.textContent || '';
             }
             return '';
-        });
+        }
 
         window.copyCodeToClipboard = async function(btn) {
             const rawText = getCodeFromBlock(btn);
@@ -2678,7 +2271,7 @@
             }
         };
 
-        const stripDuplicateContinuationPrefix = function(existingTail, newChunk, maxOverlap = 400, minOverlap = 3) {
+        function stripDuplicateContinuationPrefix(existingTail, newChunk, maxOverlap = 400, minOverlap = 3) {
             if (!newChunk) return '';
             if (!existingTail) return String(newChunk);
             const tailStr = String(existingTail);
@@ -2688,9 +2281,9 @@
                 if (tailStr.endsWith(chunkStr.slice(0, len))) return chunkStr.slice(len);
             }
             return chunkStr;
-        };
+        }
 
-        const analyzeContinuationBoundary = function(text) {
+        function analyzeContinuationBoundary(text) {
             if (!text) return { isCodeOpen: false, lang: 'text', isTableOpen: false, lastChunk: '' };
             const cleanText = String(text);
             const lines = cleanText.split('\n');
@@ -2711,9 +2304,9 @@
             }
             const isTableOpen = lines.slice(-8).filter(l => l.includes('|')).length >= 2 && lines[lines.length - 1].includes('|');
             return { isCodeOpen, lang: (currentLang || 'text').trim(), isTableOpen, lastChunk: cleanText.slice(-350) };
-        };
+        }
 
-        const buildSeamlessContinuationPrompt = function(boundaryState) {
+        function buildSeamlessContinuationPrompt(boundaryState) {
             const state = boundaryState || {};
             const lastChunk = state.lastChunk || '';
             let prompt = `[YÊU CẦU: TIẾP TỤC NỐI TIẾP VĂN BẢN]\nĐoạn trước kết thúc tại:\n"""\n${lastChunk}\n"""\n\nYêu cầu:\n1. Viết tiếp nối liền sau ký tự cuối cùng.\n2. Không lặp lại từ ngữ hay nội dung đã có.\n3. Không mở đầu bằng lời chào hay giải thích.\n`;
@@ -2724,9 +2317,9 @@
                 prompt += `4. Viết tiếp các dòng tiếp theo trong bảng dữ liệu.\n`;
             }
             return prompt;
-        };
+        }
 
-        const readSSEStream = async function(response, signal, onChunk) {
+        async function readSSEStream(response, signal, onChunk) {
             if (!response.body) throw new Error('Không có dữ liệu luồng');
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8', { stream: true });
@@ -2791,7 +2384,7 @@
             } finally {
                 reader.releaseLock();
             }
-        };
+        }
 
         const DOMPURIFY_CONFIG = {
             USE_PROFILES: { html: true, mathMl: true, svg: true },
@@ -2815,48 +2408,50 @@
             ]
         };
 
-        const createCustomRenderer = (markedInstance) => ({
-            code(tokenOrCode, infoString) {
-                const textCode = (typeof tokenOrCode === 'object' && tokenOrCode !== null) ? (tokenOrCode.text ?? tokenOrCode.raw ?? '') : (typeof tokenOrCode === 'string' ? tokenOrCode : '');
-                const rawLang = (typeof tokenOrCode === 'object' && tokenOrCode !== null) ? (tokenOrCode.lang || '') : (typeof infoString === 'string' ? infoString : '');
-                const validLang = MarkdownStreamProcessor.extractExactLanguage(rawLang);
+        function createCustomRenderer(markedInstance) {
+            return {
+                code(tokenOrCode, infoString) {
+                    const textCode = (typeof tokenOrCode === 'object' && tokenOrCode !== null) ? (tokenOrCode.text ?? tokenOrCode.raw ?? '') : (typeof tokenOrCode === 'string' ? tokenOrCode : '');
+                    const rawLang = (typeof tokenOrCode === 'object' && tokenOrCode !== null) ? (tokenOrCode.lang || '') : (typeof infoString === 'string' ? infoString : '');
+                    const validLang = MarkdownStreamProcessor.extractExactLanguage(rawLang);
 
-                if (validLang === 'mermaid') {
-                    const escaped = encodeURIComponent(textCode || '');
-                    return `<div class="mermaid-container" data-mermaid-code="${escaped}"><div class="text-xs text-purple-300 font-mono flex items-center gap-2 mb-2"><span class="w-2 h-2 rounded-full bg-purple-400 animate-ping"></span> Đang kết xuất sơ đồ...</div><pre class="text-[11px] font-mono opacity-60 overflow-x-auto w-full">${escapeHTML(textCode)}</pre></div>`;
-                }
+                    if (validLang === 'mermaid') {
+                        const escaped = encodeURIComponent(textCode || '');
+                        return `<div class="mermaid-container" data-mermaid-code="${escaped}"><div class="text-xs text-purple-300 font-mono flex items-center gap-2 mb-2"><span class="w-2 h-2 rounded-full bg-purple-400 animate-ping"></span> Đang kết xuất sơ đồ...</div><pre class="text-[11px] font-mono opacity-60 overflow-x-auto w-full">${escapeHTML(textCode)}</pre></div>`;
+                    }
 
-                const isPreviewable = ['html', 'svg', 'xml', 'js', 'javascript'].includes(validLang);
-                let highlightedCode = '';
-                if (window.hljs && validLang !== 'plaintext' && window.hljs.getLanguage(validLang)) {
-                    try { highlightedCode = window.hljs.highlight(textCode, { language: validLang }).value; } catch (_) { highlightedCode = escapeHTML(textCode); }
-                } else {
-                    highlightedCode = escapeHTML(textCode);
-                }
+                    const isPreviewable = ['html', 'svg', 'xml', 'js', 'javascript'].includes(validLang);
+                    let highlightedCode = '';
+                    if (window.hljs && validLang !== 'plaintext' && window.hljs.getLanguage(validLang)) {
+                        try { highlightedCode = window.hljs.highlight(textCode, { language: validLang }).value; } catch (_) { highlightedCode = escapeHTML(textCode); }
+                    } else {
+                        highlightedCode = escapeHTML(textCode);
+                    }
 
-                return `<div class="code-block-wrapper" data-lang="${validLang}" data-raw-code="${encodeURIComponent(textCode || '')}"><header class="code-header"><span class="font-mono text-blue-300 font-bold shrink-0 uppercase tracking-wider">${validLang}</span><menu class="flex items-center gap-1.5 shrink-0 flex-wrap m-0 p-0">${isPreviewable ? `<button type="button" class="btn-instant action-btn" data-code-action="preview" title="Xem trước">Xem trước</button>` : ''}<button type="button" class="btn-instant action-btn" data-code-action="download" title="Tải về">Tải về</button><button type="button" class="btn-instant action-btn" data-code-action="copy" title="Sao chép">Sao chép</button><button type="button" class="btn-instant action-btn text-cyan-400 hover:text-cyan-300" data-code-action="collapse"><span class="collapse-text">Thu gọn</span></button></menu></header><div class="code-content-wrap custom-scrollbar"><pre><code class="hljs language-${validLang}">${highlightedCode}</code></pre></div></div>`;
-            },
-            table(tokenOrHeader, bodyRows) {
-                const extractCell = (c) => (c?.text ?? c?.raw ?? (typeof c === 'string' ? c : ''));
-                const tools = `<menu class="table-header-tools"><button type="button" class="btn-instant action-btn" data-table-action="md"><span>MD</span></button><button type="button" class="btn-instant action-btn" data-table-action="json"><span>JSON</span></button><button type="button" class="btn-instant action-btn" data-table-action="csv"><span>CSV</span></button></menu>`;
-                
-                if (typeof tokenOrHeader === 'string') {
-                    return `<div class="table-wrapper">${tools}<table><thead>${tokenOrHeader}</thead><tbody>${bodyRows || ''}</tbody></table></div>`;
+                    return `<div class="code-block-wrapper" data-lang="${validLang}" data-raw-code="${encodeURIComponent(textCode || '')}"><header class="code-header"><span class="font-mono text-blue-300 font-bold shrink-0 uppercase tracking-wider">${validLang}</span><menu class="flex items-center gap-1.5 shrink-0 flex-wrap m-0 p-0">${isPreviewable ? `<button type="button" class="btn-instant action-btn" data-code-action="preview" title="Xem trước">Xem trước</button>` : ''}<button type="button" class="btn-instant action-btn" data-code-action="download" title="Tải về">Tải về</button><button type="button" class="btn-instant action-btn" data-code-action="copy" title="Sao chép">Sao chép</button><button type="button" class="btn-instant action-btn text-cyan-400 hover:text-cyan-300" data-code-action="collapse"><span class="collapse-text">Thu gọn</span></button></menu></header><div class="code-content-wrap custom-scrollbar"><pre><code class="hljs language-${validLang}">${highlightedCode}</code></pre></div></div>`;
+                },
+                table(tokenOrHeader, bodyRows) {
+                    const extractCell = (c) => (c?.text ?? c?.raw ?? (typeof c === 'string' ? c : ''));
+                    const tools = `<menu class="table-header-tools"><button type="button" class="btn-instant action-btn" data-table-action="md"><span>MD</span></button><button type="button" class="btn-instant action-btn" data-table-action="json"><span>JSON</span></button><button type="button" class="btn-instant action-btn" data-table-action="csv"><span>CSV</span></button></menu>`;
+                    
+                    if (typeof tokenOrHeader === 'string') {
+                        return `<div class="table-wrapper">${tools}<table><thead>${tokenOrHeader}</thead><tbody>${bodyRows || ''}</tbody></table></div>`;
+                    }
+                    const headerObj = tokenOrHeader.header || [];
+                    const rowsObj = tokenOrHeader.rows || [];
+                    const headerHtml = `<tr>${headerObj.map(c => `<th>${markedInstance.parseInline(extractCell(c)) || '&nbsp;'}</th>`).join('')}</tr>`;
+                    const bodyHtml = rowsObj.map(r => `<tr>${(Array.isArray(r) ? r : []).map(c => `<td>${markedInstance.parseInline(extractCell(c)) || '&nbsp;'}</td>`).join('')}</tr>`).join('');
+                    return `<div class="table-wrapper">${tools}<table><thead>${headerHtml}</thead><tbody>${bodyHtml}</tbody></table></div>`;
                 }
-                const headerObj = tokenOrHeader.header || [];
-                const rowsObj = tokenOrHeader.rows || [];
-                const headerHtml = `<tr>${headerObj.map(c => `<th>${markedInstance.parseInline(extractCell(c)) || '&nbsp;'}</th>`).join('')}</tr>`;
-                const bodyHtml = rowsObj.map(r => `<tr>${(Array.isArray(r) ? r : []).map(c => `<td>${markedInstance.parseInline(extractCell(c)) || '&nbsp;'}</td>`).join('')}</tr>`).join('');
-                return `<div class="table-wrapper">${tools}<table><thead>${headerHtml}</thead><tbody>${bodyHtml}</tbody></table></div>`;
-            }
-        });
+            };
+        }
 
         if (typeof window.marked !== 'undefined') {
             const customRendererInstance = createCustomRenderer(window.marked);
             window.marked.use({ breaks: true, gfm: true, renderer: customRendererInstance });
         }
 
-        const renderMarkdownCore = function(rawText, isFinal, markedInst, katexInst, hljsInst) {
+        function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
             if (!rawText) return '';
             let working = isFinal ? String(rawText) : MarkdownStreamProcessor.balanceMarkdownStream(rawText);
 
@@ -2931,20 +2526,19 @@
             }
             if (!isFinal) html += '<span class="streaming-terminal-cursor" aria-hidden="true"></span>';
             return html;
-        };
+        }
 
-        const compileMarkdownSync = function(raw, isFinal = true) {
+        function compileMarkdownSync(raw, isFinal = true) {
             if (!raw) return '';
             try {
                 const html = renderMarkdownCore(raw, isFinal, window.marked, window.katex, window.hljs) || '';
                 if (!isFinal) return html; 
                 return window.DOMPurify ? window.DOMPurify.sanitize(html, DOMPURIFY_CONFIG) : html;
             } catch (_) { return escapeHTML(String(raw || '')); }
-        };
+        }
 
         const compileMarkdown = (raw, isFinal = true) => compileMarkdownSync(raw, isFinal);
 
-        // PYODIDE WORKER ENGINE
         const pyodideWorkerCode = `
             importScripts("https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js");
             let pyodide = null, isInitializing = false;
@@ -2984,7 +2578,7 @@
         const pyodidePromises = new Map();
         let pyodideExecutionQueue = Promise.resolve(), pyodideWorker = null;
 
-        const createPyodideWorker = function() {
+        function createPyodideWorker() {
             if (pyodideWorker) { try { pyodideWorker.terminate(); } catch (_) {} }
             pyodidePromises.forEach(p => { if (p.timer) clearTimeout(p.timer); p.resolve({ output: "Làm mới luồng tính toán.", outcome: "ERROR" }); });
             pyodidePromises.clear();
@@ -3006,7 +2600,7 @@
                 pyodideWorker.onerror = () => { pyodideWorker = null; };
                 return true;
             } catch (_) { pyodideWorker = null; return false; }
-        };
+        }
         createPyodideWorker();
 
         const PythonEngine = {
@@ -3036,7 +2630,7 @@
             }
         };
 
-        const getExecutionLogsText = function(msg) {
+        function getExecutionLogsText(msg) {
             if (!msg?.rawExecutionParts?.length) return '';
             return msg.rawExecutionParts.map(part => {
                 const partContent = part.content !== undefined && part.content !== null ? String(part.content) : '';
@@ -3044,9 +2638,9 @@
                 const isSuccess = (part.outcome === "COMPLETED" || part.outcome === "OUTCOME_OK");
                 return `${isSuccess ? "KẾT QUẢ:" : part.outcome === "RUNNING" ? "ĐANG TÍNH TOÁN..." : "LỖI:"}\n\`\`\`text\n${partContent}\n\`\`\``;
             }).join('\n\n');
-        };
+        }
 
-        const getExecutionLogsHtml = function(msg) {
+        function getExecutionLogsHtml(msg) {
             if (!msg?.rawExecutionParts?.length) return '';
             const html = msg.rawExecutionParts.map((part, index) => {
                 const divider = index > 0 ? '<hr style="border-color:rgba(255,255,255,0.06);margin:6px 0;" aria-hidden="true">' : '';
@@ -3061,10 +2655,10 @@
                 return `${divider}<div style="color:${color};font-weight:bold;font-size:11px;">${isSuccess ? "HOÀN TẤT" : part.outcome === "RUNNING" ? "ĐANG XỬ LÝ..." : "CẢNH BÁO"}</div><pre style="color:#d1d5db;background:#090a0e;padding:8px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;">${escapeHTML(partContent)}</pre>`;
             }).join('');
             return window.DOMPurify ? window.DOMPurify.sanitize(html, DOMPURIFY_CONFIG) : html;
-        };
+        }
 
         let isMermaidRenderingActive = false, mermaidRenderPending = false;
-        const renderMermaidDiagrams = async function() {
+        async function renderMermaidDiagrams() {
             if (typeof window.mermaid === 'undefined') return false;
             if (isMermaidRenderingActive) { mermaidRenderPending = true; return false; }
             const containers = Array.from(document.querySelectorAll('.mermaid-container:not([data-rendered="true"])'));
@@ -3101,9 +2695,9 @@
                 isMermaidRenderingActive = false;
                 if (mermaidRenderPending) { mermaidRenderPending = false; setTimeout(renderMermaidDiagrams, 100); }
             }
-        };
+        }
 
-        const compressImage = function(file, maxWidth = 1280, maxHeight = 1280, quality = 0.82) {
+        function compressImage(file, maxWidth = 1280, maxHeight = 1280, quality = 0.82) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.readAsDataURL(file);
@@ -3138,9 +2732,9 @@
                 };
                 reader.onerror = reject;
             });
-        };
+        }
 
-        const isBinaryFile = function(file) {
+        function isBinaryFile(file) {
             return new Promise((resolve) => {
                 const reader = new FileReader();
                 reader.onload = (e) => {
@@ -3153,27 +2747,27 @@
                 reader.onerror = () => resolve(true);
                 reader.readAsArrayBuffer(file.slice(0, 4096));
             });
-        };
+        }
 
-        const readFileAsBase64 = function(file) {
+        function readFileAsBase64(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = () => resolve(cleanBase64Data(reader.result));
                 reader.onerror = reject;
                 reader.readAsDataURL(file);
             });
-        };
+        }
 
-        const readFileAsText = function(file) {
+        function readFileAsText(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = () => resolve(reader.result || '');
                 reader.onerror = reject;
                 reader.readAsText(file, 'UTF-8');
             });
-        };
+        }
 
-        const extractPdfText = async function(arrayBuffer) {
+        async function extractPdfText(arrayBuffer) {
             if (!arrayBuffer?.byteLength || typeof window.pdfjsLib === 'undefined') return "";
             let pdf = null, loadingTask = null;
             try {
@@ -3193,9 +2787,9 @@
             } finally {
                 if (pdf?.destroy) { try { pdf.destroy(); } catch (_) {} }
             }
-        };
+        }
 
-        const buildTurnParts = function(text, attachments = []) {
+        function buildTurnParts(text, attachments = []) {
             const parts = [];
             let promptText = (text || '').trim();
             let textAttachmentsSummary = '';
@@ -3232,7 +2826,7 @@
             }
 
             return parts.length > 0 ? parts : [{ text: " " }];
-        };
+        }
 
         const SearchIntelligenceEngine = {
             extractHeuristicEntitiesAndQueries: function(promptText, attachments = []) {
@@ -3308,9 +2902,333 @@
             }
         };
 
-        // =========================================================================
-        // PHÂN HỆ XƯỞNG PHIM 60 FPS (ĐỒNG NHẤT KHUNG HÌNH VÀ ÂM THANH)
-        // =========================================================================
+        const MainThreadAudioSynthesizer = {
+            decodePcmToAudioBuffer: function(pcmBase64, sampleRate = 24000) {
+                try {
+                    const bin = atob(pcmBase64);
+                    const bytes = new Uint8Array(bin.length);
+                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+                    const count = Math.floor(bytes.length / 2);
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    if (!AudioCtx) return null;
+                    const actx = new AudioCtx();
+                    const buf = actx.createBuffer(1, count, sampleRate);
+                    const cd = buf.getChannelData(0);
+                    for (let i = 0; i < count; i++) {
+                        const s = dv.getInt16(i * 2, true);
+                        cd[i] = s < 0 ? s / 32768 : s / 32767;
+                    }
+                    actx.close();
+                    return buf;
+                } catch(e) { return null; }
+            },
+
+            generateSystemTTSAudio: async function(text, character, apiKey) {
+                if (!apiKey || !text) return null;
+                const voicePrompt = `[PHÁT THANH RÕ RÀNG] ${text}`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+                try {
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{ role: 'user', parts: [{ text: voicePrompt }] }],
+                            generationConfig: {
+                                responseModalities: ["AUDIO"],
+                                speechConfig: {
+                                    voiceConfig: { prebuiltVoiceConfig: { voiceName: character.geminiVoice || 'Puck'} }
+                                }
+                            },
+                            safetySettings: SAFETY_SETTINGS
+                        })
+                    });
+                    if (!res.ok) return null;
+                    const json = await res.json();
+                    const part = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData && p.inlineData.mimeType?.startsWith('audio/'));
+                    if (part?.inlineData?.data) {
+                        return this.decodePcmToAudioBuffer(part.inlineData.data, 24000);
+                    }
+                } catch (_) {}
+                return null;
+            },
+
+            synthesizeSpatialBroadcastAudio: async function(durationSec, dialogueScript, voiceCharacters, apiKey) {
+                const sampleRate = 48000;
+                const totalSamples = Math.ceil(sampleRate * durationSec);
+                const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+                if (!OfflineCtx) return null;
+                
+                try {
+                    const actx = new OfflineCtx(2, totalSamples, sampleRate);
+                    const osc = actx.createOscillator();
+                    const oscGain = actx.createGain();
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(43.65, 0);
+
+                    const filter = actx.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    filter.frequency.setValueAtTime(160, 0);
+
+                    oscGain.gain.setValueAtTime(0.04, 0);
+                    oscGain.gain.linearRampToValueAtTime(0.07, durationSec * 0.5);
+                    oscGain.gain.linearRampToValueAtTime(0.02, durationSec);
+
+                    osc.connect(filter);
+                    filter.connect(oscGain);
+                    oscGain.connect(actx.destination);
+                    osc.start(0);
+                    osc.stop(durationSec);
+
+                    if (dialogueScript && dialogueScript.length && apiKey) {
+                        for (const line of dialogueScript) {
+                            const char = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
+                            const lineText = line.text || line.dialogue || '';
+                            if (!char || !lineText) continue;
+
+                            const pcmBuffer = await MainThreadAudioSynthesizer.generateSystemTTSAudio(lineText, char, apiKey);
+                            if (pcmBuffer) {
+                                const st = Math.min(Math.max(Number(line.startTimeSec || line.timeSec) || 0, 0), Math.max(0, durationSec - 0.5));
+                                const voiceSource = actx.createBufferSource();
+                                voiceSource.buffer = pcmBuffer;
+
+                                const voiceGain = actx.createGain();
+                                voiceGain.gain.setValueAtTime(1.4, 0);
+
+                                voiceSource.connect(voiceGain);
+                                voiceGain.connect(actx.destination);
+                                voiceSource.start(st);
+                            }
+                        }
+                    }
+
+                    const rendered = await actx.startRendering();
+                    const left = rendered.getChannelData(0);
+                    const right = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : left;
+                    const interleaved = new Float32Array(left.length * 2);
+                    for (let i = 0; i < left.length; i++) {
+                        interleaved[i * 2] = left[i];
+                        interleaved[i * 2 + 1] = right[i];
+                    }
+                    return { interleaved, sampleRate };
+                } catch(e) {
+                    return null;
+                }
+            }
+        };
+
+        const Commercial60FpsEngine = {
+            loadImageSource: async function(imageUrlOrBlob, width, height, seed, fallbackPrompt = '') {
+                let targetUrl = imageUrlOrBlob;
+                if (!targetUrl && fallbackPrompt) {
+                    const clean = fallbackPrompt.replace(/\s+/g, '-').slice(0, 180);
+                    targetUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(clean)}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${seed}`;
+                }
+
+                if (targetUrl) {
+                    try {
+                        const ctrl = new AbortController();
+                        const timer = setTimeout(() => ctrl.abort(), 12000);
+                        const res = await fetch(targetUrl, { signal: ctrl.signal, mode: 'cors' });
+                        clearTimeout(timer);
+                        if (res.ok) {
+                            const blob = await res.blob();
+                            if (blob && blob.size > 200) {
+                                return await createImageBitmap(blob);
+                            }
+                        }
+                    } catch (_) {}
+
+                    try {
+                        const img = new Image();
+                        img.crossOrigin = 'anonymous';
+                        await new Promise((resolve, reject) => {
+                            const timer = setTimeout(() => reject(new Error("Timeout")), 8000);
+                            img.onload = () => { clearTimeout(timer); resolve(); };
+                            img.onerror = () => { clearTimeout(timer); reject(); };
+                            img.src = targetUrl;
+                        });
+                        return await createImageBitmap(img);
+                    } catch (_) {}
+                }
+
+                const off = document.createElement('canvas');
+                off.width = width;
+                off.height = height;
+                const ctx = off.getContext('2d');
+                const grad = ctx.createLinearGradient(0, 0, width, height);
+                grad.addColorStop(0, '#0a0f24');
+                grad.addColorStop(0.5, '#312e81');
+                grad.addColorStop(1, '#08090d');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, width, height);
+
+                for (let i = 0; i < 180; i++) {
+                    ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.7 + 0.3})`;
+                    ctx.beginPath();
+                    ctx.arc(Math.random() * width, Math.random() * height, Math.random() * 2 + 0.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                return await createImageBitmap(off);
+            },
+
+            renderVideo60Fps: async function({
+                sourceBitmap,
+                promptText,
+                durationSec = 5,
+                width = 1280,
+                height = 720,
+                sceneSeed = 884921,
+                audioResult = null,
+                onProgress = () => {}
+            }) {
+                const totalFrames = durationSec * 60;
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+
+                const stream = canvas.captureStream ? canvas.captureStream(60) : null;
+                if (!stream) {
+                    throw new Error("Trình duyệt không hỗ trợ Canvas Video Stream.");
+                }
+
+                let audioContext = null;
+                if (audioResult && audioResult.interleaved) {
+                    try {
+                        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                        if (AudioCtx) {
+                            audioContext = new AudioCtx();
+                            const dest = audioContext.createMediaStreamDestination();
+                            const aBuf = audioContext.createBuffer(2, audioResult.interleaved.length / 2, audioResult.sampleRate || 48000);
+                            const lCh = aBuf.getChannelData(0);
+                            const rCh = aBuf.getChannelData(1);
+                            for (let i = 0; i < lCh.length; i++) {
+                                lCh[i] = audioResult.interleaved[i * 2];
+                                rCh[i] = audioResult.interleaved[i * 2 + 1];
+                            }
+                            const bSrc = audioContext.createBufferSource();
+                            bSrc.buffer = aBuf;
+                            bSrc.connect(dest);
+                            bSrc.start();
+                            const aTrack = dest.stream.getAudioTracks()[0];
+                            if (aTrack) stream.addTrack(aTrack);
+                        }
+                    } catch (_) {}
+                }
+
+                return new Promise((resolve, reject) => {
+                    try {
+                        const candidateTypes = [
+                            'video/mp4;codecs=avc1,mp4a.40.2',
+                            'video/mp4',
+                            'video/webm;codecs=vp9,opus',
+                            'video/webm'
+                        ];
+                        let chosenMime = candidateTypes.find(t => {
+                            try { return typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t); } catch (_) { return false; }
+                        }) || '';
+                        if (!chosenMime && typeof MediaRecorder !== 'undefined') {
+                            chosenMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+                        }
+
+                        const recorder = new MediaRecorder(stream, chosenMime ? {
+                            mimeType: chosenMime,
+                            videoBitsPerSecond: 16000000
+                        } : undefined);
+
+                        const chunks = [];
+                        recorder.ondataavailable = (e) => {
+                            if (e.data && e.data.size > 0) chunks.push(e.data);
+                        };
+
+                        recorder.onstop = () => {
+                            if (audioContext) { try { audioContext.close(); } catch (_) {} }
+                            const blob = new Blob(chunks, { type: chosenMime || 'video/webm' });
+                            blob.arrayBuffer().then(buf => {
+                                if (sourceBitmap?.close) sourceBitmap.close();
+                                resolve({ buffer: buf, mimeType: chosenMime || 'video/webm', ext: (chosenMime || '').includes('mp4') ? 'mp4' : 'webm' });
+                            });
+                        };
+
+                        const particles = [];
+                        for (let i = 0; i < 60; i++) {
+                            particles.push({
+                                x: Math.random() * width,
+                                y: Math.random() * height,
+                                z: Math.random() * 0.8 + 0.2,
+                                size: Math.random() * 2 + 0.8,
+                                alpha: Math.random() * 0.4 + 0.15,
+                                speedX: (Math.random() - 0.5) * 1.2,
+                                speedY: (Math.random() - 0.6) * 0.8
+                            });
+                        }
+
+                        recorder.start();
+                        let curFrame = 0;
+                        const interval = 1000 / 60;
+
+                        const timer = setInterval(() => {
+                            if (curFrame >= totalFrames) {
+                                clearInterval(timer);
+                                recorder.stop();
+                                return;
+                            }
+
+                            const t = curFrame / totalFrames;
+                            ctx.save();
+                            ctx.fillStyle = '#08090d';
+                            ctx.fillRect(0, 0, width, height);
+
+                            const zoom = 1.0 + (t * 0.14);
+                            const panX = Math.sin(t * Math.PI) * (width * 0.02);
+                            const panY = Math.cos(t * Math.PI * 0.5) * (height * 0.015);
+                            const tilt = Math.sin(t * Math.PI * 2) * 0.003;
+
+                            ctx.translate(width / 2 + panX, height / 2 + panY);
+                            ctx.rotate(tilt);
+                            ctx.scale(zoom, zoom);
+                            if (sourceBitmap) {
+                                ctx.drawImage(sourceBitmap, -width / 2, -height / 2, width, height);
+                            }
+                            ctx.restore();
+
+                            const flareX = (t * 1.3 - 0.15) * width;
+                            const flareGrad = ctx.createLinearGradient(flareX - 160, 0, flareX + 160, height);
+                            flareGrad.addColorStop(0, 'rgba(56, 189, 248, 0)');
+                            flareGrad.addColorStop(0.5, `rgba(192, 132, 252, ${0.1 * Math.sin(t * Math.PI)})`);
+                            flareGrad.addColorStop(1, 'rgba(168, 199, 250, 0)');
+                            ctx.fillStyle = flareGrad;
+                            ctx.fillRect(0, 0, width, height);
+
+                            for (let i = 0; i < particles.length; i++) {
+                                const p = particles[i];
+                                p.x += p.speedX * p.z;
+                                p.y += p.speedY * p.z;
+                                if (p.x < 0) p.x += width;
+                                if (p.x > width) p.x -= width;
+                                if (p.y < 0) p.y += height;
+                                if (p.y > height) p.y -= height;
+                                ctx.fillStyle = `rgba(240, 246, 255, ${p.alpha * p.z})`;
+                                ctx.beginPath();
+                                ctx.arc(p.x, p.y, p.size * p.z, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+
+                            curFrame++;
+                            if (curFrame % 15 === 0) {
+                                onProgress(Math.min(95, Math.round((curFrame / totalFrames) * 100)), `Đang kết xuất khung hình 60 FPS (${curFrame}/${totalFrames})...`);
+                            }
+                        }, interval);
+                    } catch (e) {
+                        if (sourceBitmap?.close) sourceBitmap.close();
+                        if (audioContext) { try { audioContext.close(); } catch (_) {} }
+                        reject(e);
+                    }
+                });
+            }
+        };
+
         const VeoFlux60FpsEngine = {
             fetchFluxFrame: async function(prompt, width, height, seed) {
                 const encodedPrompt = encodeURIComponent(prompt.trim());
@@ -3458,330 +3376,6 @@ TRẢ VỀ JSON DUY NHẤT:
             }
         };
 
-        const Commercial60FpsEngine = {
-            loadImageSource: async function(imageUrlOrBlob, width, height, seed, fallbackPrompt = '') {
-                let targetUrl = imageUrlOrBlob;
-                if (!targetUrl && fallbackPrompt) {
-                    const clean = fallbackPrompt.replace(/\s+/g, '-').slice(0, 180);
-                    targetUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(clean)}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${seed}`;
-                }
-
-                if (targetUrl) {
-                    try {
-                        const ctrl = new AbortController();
-                        const timer = setTimeout(() => ctrl.abort(), 12000);
-                        const res = await fetch(targetUrl, { signal: ctrl.signal, mode: 'cors' });
-                        clearTimeout(timer);
-                        if (res.ok) {
-                            const blob = await res.blob();
-                            if (blob && blob.size > 200) {
-                                return await createImageBitmap(blob);
-                            }
-                        }
-                    } catch (_) {}
-
-                    try {
-                        const img = new Image();
-                        img.crossOrigin = 'anonymous';
-                        await new Promise((resolve, reject) => {
-                            const timer = setTimeout(() => reject(new Error("Timeout")), 8000);
-                            img.onload = () => { clearTimeout(timer); resolve(); };
-                            img.onerror = () => { clearTimeout(timer); reject(); };
-                            img.src = targetUrl;
-                        });
-                        return await createImageBitmap(img);
-                    } catch (_) {}
-                }
-
-                const off = document.createElement('canvas');
-                off.width = width;
-                off.height = height;
-                const ctx = off.getContext('2d');
-                const grad = ctx.createLinearGradient(0, 0, width, height);
-                grad.addColorStop(0, '#0a0f24');
-                grad.addColorStop(0.5, '#312e81');
-                grad.addColorStop(1, '#08090d');
-                ctx.fillStyle = grad;
-                ctx.fillRect(0, 0, width, height);
-
-                for (let i = 0; i < 180; i++) {
-                    ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.7 + 0.3})`;
-                    ctx.beginPath();
-                    ctx.arc(Math.random() * width, Math.random() * height, Math.random() * 2 + 0.5, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-                return await createImageBitmap(off);
-            },
-
-            renderVideo60Fps: async function({
-                sourceBitmap,
-                promptText,
-                durationSec = 5,
-                width = 1280,
-                height = 720,
-                sceneSeed = 884921,
-                audioResult = null,
-                onProgress = () => {}
-            }) {
-                const totalFrames = durationSec * 60;
-                const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
-
-                const stream = canvas.captureStream(60);
-
-                let audioContext = null;
-                if (audioResult && audioResult.interleaved) {
-                    try {
-                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                        const dest = audioContext.createMediaStreamDestination();
-                        const aBuf = audioContext.createBuffer(2, audioResult.interleaved.length / 2, audioResult.sampleRate || 48000);
-                        const lCh = aBuf.getChannelData(0);
-                        const rCh = aBuf.getChannelData(1);
-                        for (let i = 0; i < lCh.length; i++) {
-                            lCh[i] = audioResult.interleaved[i * 2];
-                            rCh[i] = audioResult.interleaved[i * 2 + 1];
-                        }
-                        const bSrc = audioContext.createBufferSource();
-                        bSrc.buffer = aBuf;
-                        bSrc.connect(dest);
-                        bSrc.start();
-                        const aTrack = dest.stream.getAudioTracks()[0];
-                        if (aTrack) stream.addTrack(aTrack);
-                    } catch (_) {}
-                }
-
-                return new Promise((resolve, reject) => {
-                    try {
-                        const candidateTypes = [
-                            'video/mp4;codecs=avc1,mp4a.40.2',
-                            'video/mp4',
-                            'video/webm;codecs=vp9,opus',
-                            'video/webm'
-                        ];
-                        let chosenMime = candidateTypes.find(t => {
-                            try { return MediaRecorder.isTypeSupported(t); } catch (_) { return false; }
-                        }) || '';
-                        if (!chosenMime) {
-                            chosenMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
-                        }
-
-                        const recorder = new MediaRecorder(stream, chosenMime ? {
-                            mimeType: chosenMime,
-                            videoBitsPerSecond: 16000000
-                        } : undefined);
-
-                        const chunks = [];
-                        recorder.ondataavailable = (e) => {
-                            if (e.data && e.data.size > 0) chunks.push(e.data);
-                        };
-
-                        recorder.onstop = () => {
-                            if (audioContext) { try { audioContext.close(); } catch (_) {} }
-                            const blob = new Blob(chunks, { type: chosenMime });
-                            blob.arrayBuffer().then(buf => {
-                                if (sourceBitmap?.close) sourceBitmap.close();
-                                resolve({ buffer: buf, mimeType: chosenMime, ext: chosenMime.includes('mp4') ? 'mp4' : 'webm' });
-                            });
-                        };
-
-                        const particles = [];
-                        for (let i = 0; i < 60; i++) {
-                            particles.push({
-                                x: Math.random() * width,
-                                y: Math.random() * height,
-                                z: Math.random() * 0.8 + 0.2,
-                                size: Math.random() * 2 + 0.8,
-                                alpha: Math.random() * 0.4 + 0.15,
-                                speedX: (Math.random() - 0.5) * 1.2,
-                                speedY: (Math.random() - 0.6) * 0.8
-                            });
-                        }
-
-                        recorder.start();
-                        let curFrame = 0;
-                        const interval = 1000 / 60;
-
-                        const timer = setInterval(() => {
-                            if (curFrame >= totalFrames) {
-                                clearInterval(timer);
-                                recorder.stop();
-                                return;
-                            }
-                            const t = curFrame / totalFrames;
-                            ctx.save();
-                            ctx.fillStyle = '#08090d';
-                            ctx.fillRect(0, 0, width, height);
-
-                            const zoom = 1.0 + (t * 0.14);
-                            const panX = Math.sin(t * Math.PI) * (width * 0.02);
-                            const panY = Math.cos(t * Math.PI * 0.5) * (height * 0.015);
-                            const tilt = Math.sin(t * Math.PI * 2) * 0.003;
-
-                            ctx.translate(width / 2 + panX, height / 2 + panY);
-                            ctx.rotate(tilt);
-                            ctx.scale(zoom, zoom);
-                            if (sourceBitmap) {
-                                ctx.drawImage(sourceBitmap, -width / 2, -height / 2, width, height);
-                            }
-                            ctx.restore();
-
-                            const flareX = (t * 1.3 - 0.15) * width;
-                            const flareGrad = ctx.createLinearGradient(flareX - 160, 0, flareX + 160, height);
-                            flareGrad.addColorStop(0, 'rgba(56, 189, 248, 0)');
-                            flareGrad.addColorStop(0.5, `rgba(192, 132, 252, ${0.1 * Math.sin(t * Math.PI)})`);
-                            flareGrad.addColorStop(1, 'rgba(168, 199, 250, 0)');
-                            ctx.fillStyle = flareGrad;
-                            ctx.fillRect(0, 0, width, height);
-
-                            for (let i = 0; i < particles.length; i++) {
-                                const p = particles[i];
-                                p.x += p.speedX * p.z;
-                                p.y += p.speedY * p.z;
-                                if (p.x < 0) p.x += width;
-                                if (p.x > width) p.x -= width;
-                                if (p.y < 0) p.y += height;
-                                if (p.y > height) p.y -= height;
-                                ctx.fillStyle = `rgba(240, 246, 255, ${p.alpha * p.z})`;
-                                ctx.beginPath();
-                                ctx.arc(p.x, p.y, p.size * p.z, 0, Math.PI * 2);
-                                ctx.fill();
-                            }
-
-                            curFrame++;
-                            if (curFrame % 15 === 0) {
-                                onProgress(Math.min(95, Math.round((curFrame / totalFrames) * 100)), `Đang kết xuất khung hình 60 FPS (${curFrame}/${totalFrames})...`);
-                            }
-                        }, interval);
-                    } catch (e) {
-                        if (sourceBitmap?.close) sourceBitmap.close();
-                        if (audioContext) { try { audioContext.close(); } catch (_) {} }
-                        reject(e);
-                    }
-                });
-            }
-        };
-
-        const MainThreadAudioSynthesizer = {
-            decodePcmToAudioBuffer: function(pcmBase64, sampleRate = 24000) {
-                const bin = atob(pcmBase64);
-                const bytes = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-                const count = Math.floor(bytes.length / 2);
-                const actx = new (window.AudioContext || window.webkitAudioContext)();
-                const buf = actx.createBuffer(1, count, sampleRate);
-                const cd = buf.getChannelData(0);
-                for (let i = 0; i < count; i++) {
-                    const s = dv.getInt16(i * 2, true);
-                    cd[i] = s < 0 ? s / 32768 : s / 32767;
-                }
-                actx.close();
-                return buf;
-            },
-
-            generateSystemTTSAudio: async function(text, character, apiKey) {
-                if (!apiKey || !text) return null;
-                const voicePrompt = `[PHÁT THANH RÕ RÀNG] ${text}`;
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
-                try {
-                    const res = await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ role: 'user', parts: [{ text: voicePrompt }] }],
-                            generationConfig: {
-                                responseModalities: ["AUDIO"],
-                                speechConfig: {
-                                    voiceConfig: { prebuiltVoiceConfig: { voiceName: character.geminiVoice || 'Puck'} }
-                                }
-                            },
-                            safetySettings: SAFETY_SETTINGS
-                        })
-                    });
-                    if (!res.ok) return null;
-                    const json = await res.json();
-                    const part = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData && p.inlineData.mimeType?.startsWith('audio/'));
-                    if (part?.inlineData?.data) {
-                        return this.decodePcmToAudioBuffer(part.inlineData.data, 24000);
-                    }
-                } catch (_) {}
-                return null;
-            },
-
-            synthesizeSpatialBroadcastAudio: async function(durationSec, dialogueScript, voiceCharacters, apiKey) {
-                const sampleRate = 48000;
-                const totalSamples = Math.ceil(sampleRate * durationSec);
-                const actx = new OfflineAudioContext(2, totalSamples, sampleRate);
-
-                const osc = actx.createOscillator();
-                const oscGain = actx.createGain();
-                osc.type = 'sawtooth';
-                osc.frequency.setValueAtTime(43.65, 0);
-
-                const filter = actx.createBiquadFilter();
-                filter.type = 'lowpass';
-                filter.frequency.setValueAtTime(160, 0);
-
-                oscGain.gain.setValueAtTime(0.04, 0);
-                oscGain.gain.linearRampToValueAtTime(0.07, durationSec * 0.5);
-                oscGain.gain.linearRampToValueAtTime(0.02, durationSec);
-
-                osc.connect(filter);
-                filter.connect(oscGain);
-                oscGain.connect(actx.destination);
-                osc.start(0);
-                osc.stop(durationSec);
-
-                if (dialogueScript && dialogueScript.length && apiKey) {
-                    for (const line of dialogueScript) {
-                        const char = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
-                        const lineText = line.text || line.dialogue || '';
-                        if (!char || !lineText) continue;
-
-                        const pcmBuffer = await MainThreadAudioSynthesizer.generateSystemTTSAudio(lineText, char, apiKey);
-                        if (pcmBuffer) {
-                            const st = Math.min(Math.max(Number(line.startTimeSec || line.timeSec) || 0, 0), Math.max(0, durationSec - 0.5));
-                            const voiceSource = actx.createBufferSource();
-                            voiceSource.buffer = pcmBuffer;
-
-                            const voiceGain = actx.createGain();
-                            voiceGain.gain.setValueAtTime(1.4, 0);
-
-                            voiceSource.connect(voiceGain);
-                            voiceGain.connect(actx.destination);
-                            voiceSource.start(st);
-                        }
-                    }
-                }
-
-                const rendered = await actx.startRendering();
-                const left = rendered.getChannelData(0);
-                const right = rendered.numberOfChannels > 1 ? rendered.getChannelData(1) : left;
-                const interleaved = new Float32Array(left.length * 2);
-                for (let i = 0; i < left.length; i++) {
-                    interleaved[i * 2] = left[i];
-                    interleaved[i * 2 + 1] = right[i];
-                }
-                return { interleaved, sampleRate };
-            }
-        };
-
-        window.gdeepDispatchBgTask = async function(payload) {
-            const rawKeys = localStorage.getItem('gdeep_api_keys_pool');
-            if (!rawKeys) return null;
-            const pool = JSON.parse(rawKeys);
-            const activeKey = pool.find(k => k.status === 'active')?.key || pool[0]?.key;
-            if (!activeKey) return null;
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${activeKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            return await res.json();
-        };
-
         // =========================================================================
         // KHỞI TẠO VÀ LIÊN THÔNG VUE 3 CHÍNH
         // =========================================================================
@@ -3796,7 +3390,7 @@ TRẢ VỀ JSON DUY NHẤT:
                 { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", persona: "Trợ lý Trí tuệ Đa năng G-Deep Pro" },
                 { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", persona: "Trợ lý Trí tuệ Đa năng G-Deep Flash" }
             ];
-            const FALLBACK_MODEL_CHAIN = ["gemini-3-flash-preview", "gemini-2.5-flash"];
+            const FALLBACK_MODEL_CHAIN = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
             const BACKGROUND_MODELS = { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" };
             const MAX_HISTORY_INPUT_TOKENS = 900000;
             
@@ -3925,7 +3519,7 @@ TRẢ VỀ JSON DUY NHẤT:
 
                 const uniqueMsgId = data.id || generateUUID();
 
-                return DynamicNonlinearHyperMesh.dynamicReactive(`msg_${uniqueMsgId}`, {
+                return reactive({
                     id: uniqueMsgId,
                     threadId: data.threadId || null,
                     role: data.role || 'user',
@@ -3967,40 +3561,40 @@ TRẢ VỀ JSON DUY NHẤT:
 
             const app = createApp({
                 setup() {
-                    const threads = DynamicNonlinearHyperMesh.dynamicRef('threads', []);
-                    const currentMessages = DynamicNonlinearHyperMesh.dynamicRef('currentMessages', []);
-                    const currentThreadId = DynamicNonlinearHyperMesh.dynamicRef('currentThreadId', null);
-                    const gems = DynamicNonlinearHyperMesh.dynamicRef('gems', []);
-                    const activeGemId = DynamicNonlinearHyperMesh.dynamicRef('activeGemId', (() => { try { return localStorage.getItem('gdeep_active_gem_id') || 'default'; } catch (_) { return 'default'; } })());
-                    const inputText = DynamicNonlinearHyperMesh.dynamicRef('inputText', "");
-                    const isGenerating = DynamicNonlinearHyperMesh.dynamicRef('isGenerating', false);
-                    const searchStatusText = DynamicNonlinearHyperMesh.dynamicRef('searchStatusText', "");
-                    const isSidebarOpen = DynamicNonlinearHyperMesh.dynamicRef('isSidebarOpen', false);
-                    const activeTab = DynamicNonlinearHyperMesh.dynamicRef('activeTab', 'threads');
-                    const showScrollBtn = DynamicNonlinearHyperMesh.dynamicRef('showScrollBtn', false);
-                    const messageInput = DynamicNonlinearHyperMesh.dynamicRef('messageInput', null);
-                    const chatContainer = DynamicNonlinearHyperMesh.dynamicRef('chatContainer', null);
-                    const fileInput = DynamicNonlinearHyperMesh.dynamicRef('fileInput', null);
-                    const renameInput = DynamicNonlinearHyperMesh.dynamicRef('renameInput', null);
-                    const importFileInput = DynamicNonlinearHyperMesh.dynamicRef('importFileInput', null);
-                    const importSingleThreadInput = DynamicNonlinearHyperMesh.dynamicRef('importSingleThreadInput', null);
-                    const sandboxIframe = DynamicNonlinearHyperMesh.dynamicRef('sandboxIframe', null);
-                    const sandboxKey = DynamicNonlinearHyperMesh.dynamicRef('sandboxKey', 0);
-                    const searchQuery = DynamicNonlinearHyperMesh.dynamicRef('searchQuery', "");
-                    const isOnline = DynamicNonlinearHyperMesh.dynamicRef('isOnline', typeof navigator !== 'undefined' ? navigator.onLine : true);
-                    const isDraggingFile = DynamicNonlinearHyperMesh.dynamicRef('isDraggingFile', false);
-                    const isInputExpanded = DynamicNonlinearHyperMesh.dynamicRef('isInputExpanded', false);
-                    const disablePagination = DynamicNonlinearHyperMesh.dynamicRef('disablePagination', false);
+                    const threads = ref([]);
+                    const currentMessages = ref([]);
+                    const currentThreadId = ref(null);
+                    const gems = ref([]);
+                    const activeGemId = ref((() => { try { return localStorage.getItem('gdeep_active_gem_id') || 'default'; } catch (_) { return 'default'; } })());
+                    const inputText = ref("");
+                    const isGenerating = ref(false);
+                    const searchStatusText = ref("");
+                    const isSidebarOpen = ref(false);
+                    const activeTab = ref('threads');
+                    const showScrollBtn = ref(false);
+                    const messageInput = ref(null);
+                    const chatContainer = ref(null);
+                    const fileInput = ref(null);
+                    const renameInput = ref(null);
+                    const importFileInput = ref(null);
+                    const importSingleThreadInput = ref(null);
+                    const sandboxIframe = ref(null);
+                    const sandboxKey = ref(0);
+                    const searchQuery = ref("");
+                    const isOnline = ref(typeof navigator !== 'undefined' ? navigator.onLine : true);
+                    const isDraggingFile = ref(false);
+                    const isInputExpanded = ref(false);
+                    const disablePagination = ref(false);
 
-                    const dragCounter = DynamicNonlinearHyperMesh.dynamicVar('dragCounter', 0);
-                    const isProcessingOfflineQueue = DynamicNonlinearHyperMesh.dynamicVar('isProcessingOfflineQueue', false);
-                    const lastLongPressTimestamp = DynamicNonlinearHyperMesh.dynamicVar('lastLongPressTimestamp', 0);
+                    let dragCounter = 0;
+                    let isProcessingOfflineQueue = false;
+                    let lastLongPressTimestamp = 0;
 
-                    const apiKeyPool = DynamicNonlinearHyperMesh.dynamicRef('apiKeyPool', (() => {
+                    const apiKeyPool = ref((() => {
                         try { const s = localStorage.getItem('gdeep_api_keys_pool'); if (s) return JSON.parse(s); } catch (_) {}
                         return [];
                     })());
-                    const rawApiKeysInput = DynamicNonlinearHyperMesh.dynamicRef('rawApiKeysInput', (() => { try { return apiKeyPool.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
+                    const rawApiKeysInput = ref((() => { try { return apiKeyPool.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
                     const apiKeyCount = computed(() => apiKeyPool.value.length);
 
                     const parseKeysFromText = function(rawText, minLen = 20) {
@@ -4075,11 +3669,11 @@ TRẢ VỀ JSON DUY NHẤT:
                         return true;
                     };
 
-                    const serperApiKeys = DynamicNonlinearHyperMesh.dynamicRef('serperApiKeys', (() => {
+                    const serperApiKeys = ref((() => {
                         try { const s = localStorage.getItem('gdeep_serper_keys_pool'); if (s) return JSON.parse(s); } catch (_) {}
                         return [];
                     })());
-                    const rawSerperKeysInput = DynamicNonlinearHyperMesh.dynamicRef('rawSerperKeysInput', (() => { try { return serperApiKeys.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
+                    const rawSerperKeysInput = ref((() => { try { return serperApiKeys.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
                     const serperKeyCount = computed(() => serperApiKeys.value.length);
 
                     const saveSerperKeyPoolFromInput = function() {
@@ -4125,22 +3719,22 @@ TRẢ VỀ JSON DUY NHẤT:
                         return true;
                     };
 
-                    const enableCodeExecution = DynamicNonlinearHyperMesh.dynamicRef('enableCodeExecution', (() => { try { return localStorage.getItem('gdeep_code_exec') === 'true'; } catch (_) { return false; } })());
-                    const enableDeepThinking = DynamicNonlinearHyperMesh.dynamicRef('enableDeepThinking', (() => { try { return localStorage.getItem('gdeep_deep_thinking') === 'true'; } catch (_) { return false; } })());
-                    const enableGoogleSearch = DynamicNonlinearHyperMesh.dynamicRef('enableGoogleSearch', (() => { try { return localStorage.getItem('gdeep_google_search') === 'true'; } catch (_) { return false; } })());
-                    const enableImageGen = DynamicNonlinearHyperMesh.dynamicRef('enableImageGen', (() => { try { return localStorage.getItem('gdeep_image_gen') === 'true'; } catch (_) { return false; } })());
-                    const enableCinemaStudio = DynamicNonlinearHyperMesh.dynamicRef('enableCinemaStudio', (() => { try { return localStorage.getItem('gdeep_cinema_studio') === 'true'; } catch (_) { return false; } })());
+                    const enableCodeExecution = ref((() => { try { return localStorage.getItem('gdeep_code_exec') === 'true'; } catch (_) { return false; } })());
+                    const enableDeepThinking = ref((() => { try { return localStorage.getItem('gdeep_deep_thinking') === 'true'; } catch (_) { return false; } })());
+                    const enableGoogleSearch = ref((() => { try { return localStorage.getItem('gdeep_google_search') === 'true'; } catch (_) { return false; } })());
+                    const enableImageGen = ref((() => { try { return localStorage.getItem('gdeep_image_gen') === 'true'; } catch (_) { return false; } })());
+                    const enableCinemaStudio = ref((() => { try { return localStorage.getItem('gdeep_cinema_studio') === 'true'; } catch (_) { return false; } })());
 
-                    const cinemaStudioTab = DynamicNonlinearHyperMesh.dynamicRef('cinemaStudioTab', 'timeline');
+                    const cinemaStudioTab = ref('timeline');
 
-                    const imageConfig = DynamicNonlinearHyperMesh.dynamicReactive('imageConfig', {
+                    const imageConfig = reactive({
                         aspectRatio: "1:1",
                         style: "photorealistic",
                         keepCharacter: false,
                         characterSeed: 123456
                     });
 
-                    const cinemaConfig = DynamicNonlinearHyperMesh.dynamicReactive('cinemaConfig', {
+                    const cinemaConfig = reactive({
                         aspectRatio: "16:9",
                         duration: 5,
                         style: "cinematic",
@@ -4148,15 +3742,15 @@ TRẢ VỀ JSON DUY NHẤT:
                         characterSeed: 884921
                     });
 
-                    const cinemaVoiceCharacters = DynamicNonlinearHyperMesh.dynamicRef('cinemaVoiceCharacters', [
+                    const cinemaVoiceCharacters = ref([
                         { id: 1, name: 'Nhân vật 1', gender: 'male', geminiVoice: 'Puck' },
                         { id: 2, name: 'Nhân vật 2', gender: 'female', geminiVoice: 'Kore' }
                     ]);
 
-                    const userTimelineCues = DynamicNonlinearHyperMesh.dynamicRef('userTimelineCues', [
+                    const userTimelineCues = ref([
                         { id: 1, speaker: 'Nhân vật 1', startTimeSec: 1.0, text: 'Xác nhận tiến độ phân hệ Cinema 60 FPS.' }
                     ]);
-                    const timelineCursorPercent = DynamicNonlinearHyperMesh.dynamicRef('timelineCursorPercent', 0);
+                    const timelineCursorPercent = ref(0);
 
                     const getCharacterBadgeColor = function(speakerName) {
                         const idx = cinemaVoiceCharacters.value.findIndex(c => c.name === speakerName);
@@ -4282,53 +3876,53 @@ TRẢ VỀ JSON DUY NHẤT:
                         return true;
                     };
 
-                    const showInputMenu = DynamicNonlinearHyperMesh.dynamicRef('showInputMenu', false);
-                    const isListening = DynamicNonlinearHyperMesh.dynamicRef('isListening', false);
-                    const models = DynamicNonlinearHyperMesh.dynamicRef('models', MODELS);
-                    const currentModelIndex = DynamicNonlinearHyperMesh.dynamicRef('currentModelIndex', 0);
-                    const currentModel = computed(() => (models.value && models.value[currentModelIndex.value]) || (models.value && models.value[0]) || { name: 'Ultra', id: 'gemini-3.8-flash' });
-                    const accentColors = DynamicNonlinearHyperMesh.dynamicRef('accentColors', ACCENT_COLORS);
-                    const selectedAccent = DynamicNonlinearHyperMesh.dynamicRef('selectedAccent', (() => { try { return localStorage.getItem('gdeep_accent_color') || ACCENT_COLORS[0].color; } catch (_) { return ACCENT_COLORS[0].color; } })());
+                    const showInputMenu = ref(false);
+                    const isListening = ref(false);
+                    const models = ref(MODELS);
+                    const currentModelIndex = ref(0);
+                    const currentModel = computed(() => (models.value && models.value[currentModelIndex.value]) || (models.value && models.value[0]) || { name: 'Ultra', id: 'gemini-2.5-flash' });
+                    const accentColors = ref(ACCENT_COLORS);
+                    const selectedAccent = ref((() => { try { return localStorage.getItem('gdeep_accent_color') || ACCENT_COLORS[0].color; } catch (_) { return ACCENT_COLORS[0].color; } })());
                     const currentAccentGradient = computed(() => accentColors.value.find(c => c.color === selectedAccent.value)?.gradient || ACCENT_COLORS[0].gradient);
-                    const availableVoices = DynamicNonlinearHyperMesh.dynamicRef('availableVoices', []);
-                    const selectedVoiceName = DynamicNonlinearHyperMesh.dynamicRef('selectedVoiceName', (() => { try { return localStorage.getItem('gdeep_voice_name') || ''; } catch (_) { return ''; } })());
-                    const showGemModal = DynamicNonlinearHyperMesh.dynamicRef('showGemModal', false);
-                    const editingGemId = DynamicNonlinearHyperMesh.dynamicRef('editingGemId', null);
-                    const gemForm = DynamicNonlinearHyperMesh.dynamicReactive('gemForm', { name: '', description: '', instruction: '', showPreview: false });
-                    const showRenameModal = DynamicNonlinearHyperMesh.dynamicRef('showRenameModal', false);
-                    const renameThreadTarget = DynamicNonlinearHyperMesh.dynamicRef('renameThreadTarget', null);
-                    const renameTitle = DynamicNonlinearHyperMesh.dynamicRef('renameTitle', '');
-                    const showConfirmModal = DynamicNonlinearHyperMesh.dynamicRef('showConfirmModal', false);
-                    const confirmMessage = DynamicNonlinearHyperMesh.dynamicRef('confirmMessage', '');
+                    const availableVoices = ref([]);
+                    const selectedVoiceName = ref((() => { try { return localStorage.getItem('gdeep_voice_name') || ''; } catch (_) { return ''; } })());
+                    const showGemModal = ref(false);
+                    const editingGemId = ref(null);
+                    const gemForm = reactive({ name: '', description: '', instruction: '', showPreview: false });
+                    const showRenameModal = ref(false);
+                    const renameThreadTarget = ref(null);
+                    const renameTitle = ref('');
+                    const showConfirmModal = ref(false);
+                    const confirmMessage = ref('');
                     
-                    const confirmActionCallback = DynamicNonlinearHyperMesh.dynamicVar('confirmActionCallback', null);
-                    const showCmdPalette = DynamicNonlinearHyperMesh.dynamicRef('showCmdPalette', false);
-                    const cmdQuery = DynamicNonlinearHyperMesh.dynamicRef('cmdQuery', '');
-                    const cmdInput = DynamicNonlinearHyperMesh.dynamicRef('cmdInput', null);
-                    const fullTextSearchResults = DynamicNonlinearHyperMesh.dynamicRef('fullTextSearchResults', []);
-                    const searchDebounceTimer = DynamicNonlinearHyperMesh.dynamicVar('searchDebounceTimer', null);
-                    const sandboxModal = DynamicNonlinearHyperMesh.dynamicReactive('sandboxModal', { show: false, code: '' });
-                    const sandboxViewport = DynamicNonlinearHyperMesh.dynamicRef('sandboxViewport', 'desktop');
-                    const lightbox = DynamicNonlinearHyperMesh.dynamicReactive('lightbox', { show: false, url: '' });
-                    const pendingAttachments = DynamicNonlinearHyperMesh.dynamicRef('pendingAttachments', []);
-                    const currentStreamingMsg = DynamicNonlinearHyperMesh.dynamicRef('currentStreamingMsg', null);
+                    let confirmActionCallback = null;
+                    const showCmdPalette = ref(false);
+                    const cmdQuery = ref('');
+                    const cmdInput = ref(null);
+                    const fullTextSearchResults = ref([]);
+                    let searchDebounceTimer = null;
+                    const sandboxModal = reactive({ show: false, code: '' });
+                    const sandboxViewport = ref('desktop');
+                    const lightbox = reactive({ show: false, url: '' });
+                    const pendingAttachments = ref([]);
+                    const currentStreamingMsg = ref(null);
                     
-                    const abortController = DynamicNonlinearHyperMesh.dynamicVar('abortController', null);
-                    const touchStartX = DynamicNonlinearHyperMesh.dynamicVar('touchStartX', 0);
-                    const touchStartY = DynamicNonlinearHyperMesh.dynamicVar('touchStartY', 0);
-                    const userIsScrolledUp = DynamicNonlinearHyperMesh.dynamicVar('userIsScrolledUp', false);
-                    const speechRecognition = DynamicNonlinearHyperMesh.dynamicVar('speechRecognition', null);
-                    const baseVoiceText = DynamicNonlinearHyperMesh.dynamicVar('baseVoiceText', "");
-                    const isSpeaking = DynamicNonlinearHyperMesh.dynamicRef('isSpeaking', false);
-                    const currentSpeechToken = DynamicNonlinearHyperMesh.dynamicVar('currentSpeechToken', 0);
-                    const activeDbQueryLock = DynamicNonlinearHyperMesh.dynamicVar('activeDbQueryLock', 0);
-                    const activeRequestToken = DynamicNonlinearHyperMesh.dynamicVar('activeRequestToken', 0);
+                    let abortController = null;
+                    let touchStartX = 0;
+                    let touchStartY = 0;
+                    let userIsScrolledUp = false;
+                    let speechRecognition = null;
+                    let baseVoiceText = "";
+                    const isSpeaking = ref(false);
+                    let currentSpeechToken = 0;
+                    let activeDbQueryLock = 0;
+                    let activeRequestToken = 0;
                     
-                    const renderLoopActive = DynamicNonlinearHyperMesh.dynamicVar('renderLoopActive', false);
-                    const renderRafId = DynamicNonlinearHyperMesh.dynamicVar('renderRafId', null);
-                    const textareaResizeRaf = DynamicNonlinearHyperMesh.dynamicVar('textareaResizeRaf', null);
+                    let renderLoopActive = false;
+                    let renderRafId = null;
+                    let textareaResizeRaf = null;
 
-                    const modelRPDExhausted = DynamicNonlinearHyperMesh.dynamicReactive('modelRPDExhausted', {});
+                    const modelRPDExhausted = reactive({});
                     MODELS.forEach(m => { modelRPDExhausted[m.id] = false; });
 
                     const currentActiveGemObj = computed(() => gems.value.find(g => g.id === activeGemId.value) || gems.value[0] || { id: 'default', name: 'Mặc định', instruction: '' });
@@ -4364,7 +3958,7 @@ TRẢ VỀ JSON DUY NHẤT:
                     const scrollToBottom = function(force = false) {
                         if (!chatContainer.value) return false;
                         requestAnimationFrame(() => {
-                            if (chatContainer.value && (force || !userIsScrolledUp.value)) {
+                            if (chatContainer.value && (force || !userIsScrolledUp)) {
                                 chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
                             }
                         });
@@ -4374,14 +3968,14 @@ TRẢ VỀ JSON DUY NHẤT:
                     const checkScroll = function() {
                         if (!chatContainer.value) return false;
                         const { scrollTop, scrollHeight, clientHeight } = chatContainer.value;
-                        userIsScrolledUp.value = (scrollHeight - scrollTop - clientHeight) > 120;
-                        showScrollBtn.value = userIsScrolledUp.value;
+                        userIsScrolledUp = (scrollHeight - scrollTop - clientHeight) > 120;
+                        showScrollBtn.value = userIsScrolledUp;
                         return true;
                     };
 
                     const resizeTextarea = function() {
-                        if (textareaResizeRaf.value) cancelAnimationFrame(textareaResizeRaf.value);
-                        textareaResizeRaf.value = requestAnimationFrame(() => {
+                        if (textareaResizeRaf) cancelAnimationFrame(textareaResizeRaf);
+                        textareaResizeRaf = requestAnimationFrame(() => {
                             if (!messageInput.value) return;
                             messageInput.value.style.height = 'auto';
                             const newHeight = Math.min(Math.max(messageInput.value.scrollHeight, 38), 160);
@@ -4413,14 +4007,14 @@ TRẢ VỀ JSON DUY NHẤT:
                     };
 
                     const cancelGeneration = function() {
-                        if (abortController.value) {
-                            try { abortController.value.abort(); } catch (_) {}
-                            abortController.value = null;
+                        if (abortController) {
+                            try { abortController.abort(); } catch (_) {}
+                            abortController = null;
                         }
                         isGenerating.value = false;
                         searchStatusText.value = "";
-                        renderLoopActive.value = false;
-                        if (renderRafId.value) { cancelAnimationFrame(renderRafId.value); renderRafId.value = null; }
+                        renderLoopActive = false;
+                        if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
                         triggerHaptic('heavy');
                         return true;
                     };
@@ -4496,12 +4090,36 @@ TRẢ VỀ JSON DUY NHẤT:
                         }
                     };
 
-                    const animateImageToVideo = MeshEngine.createAutonomousNode({
-                        id: 'animateImageToVideo',
-                        purpose: 'Đạo diễn và kết xuất video 60 FPS kết hợp Visual DNA và âm thanh hòa âm không gian',
-                        returns: 'boolean',
-                        dependencies: ['createMessageRecord', 'scheduleDbSave', 'scrollToBottom']
-                    }, async function(msg = null, customPrompt = '', explicitSourceImage = null) {
+                    const dispatchBackgroundTaskWithFallback = async function(payload) {
+                        const keyObj = getNextHealthyApiKey();
+                        if (!keyObj) return null;
+                        const candidateModels = [
+                            BACKGROUND_MODELS.FAST,
+                            BACKGROUND_MODELS.LITE
+                        ].filter(Boolean);
+
+                        for (const targetModel of candidateModels) {
+                            try {
+                                const bodyPayload = { ...payload, safetySettings: SAFETY_SETTINGS };
+                                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${keyObj.key}`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(bodyPayload)
+                                });
+                                if (res.ok) { 
+                                    markApiKeySuccess(keyObj); 
+                                    return await res.json(); 
+                                }
+                                if (res.status === 401 || res.status === 403) {
+                                    markApiKeyFailure(keyObj);
+                                    break;
+                                }
+                            } catch (_) {}
+                        }
+                        return null;
+                    };
+
+                    const animateImageToVideo = async function(msg = null, customPrompt = '', explicitSourceImage = null) {
                         if (isGenerating.value) return false;
                         isGenerating.value = true;
                         triggerHaptic('heavy');
@@ -4589,7 +4207,7 @@ TRẢ VỀ JSON DUY NHẤT:
                             isGenerating.value = false;
                             searchStatusText.value = "";
                         }
-                    });
+                    };
 
                     const animateCurrentLightboxImage = function() {
                         const currentUrl = lightbox.url;
@@ -4675,14 +4293,9 @@ TRẢ VỀ JSON DUY NHẤT:
                         return gems.value;
                     };
 
-                    const loadThread = MeshEngine.createAutonomousNode({
-                        id: 'loadThread',
-                        purpose: 'Tải toàn bộ lịch sử tin nhắn của một luồng hội thoại từ Dexie/LocalStorage',
-                        returns: 'boolean',
-                        dependencies: ['flushAllPendingDbWrites', 'createMessageRecord', 'cleanForDb', 'scrollToBottom']
-                    }, async function(id) {
+                    const loadThread = async function(id) {
                         if (!id) return false;
-                        const currentLock = ++activeDbQueryLock.value;
+                        const currentLock = ++activeDbQueryLock;
                         if (isGenerating.value) cancelGeneration();
                         await flushAllPendingDbWrites();
                         if (window.speechSynthesis) { window.speechSynthesis.cancel(); isSpeaking.value = false; }
@@ -4708,7 +4321,7 @@ TRẢ VỀ JSON DUY NHẤT:
                             } catch (_) {}
                         }
 
-                        if (currentLock !== activeDbQueryLock.value) return false;
+                        if (currentLock !== activeDbQueryLock) return false;
                         currentMessages.value = rawMsgs.map(m => createMessageRecord({
                             ...m,
                             htmlContent: m.role === 'system_execution' ? getExecutionLogsHtml(m) : compileMarkdownSync(m.content, true)
@@ -4717,7 +4330,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         if (window.innerWidth < 768) isSidebarOpen.value = false;
                         nextTick(() => { scrollToBottom(true); renderMermaidDiagrams(); });
                         return true;
-                    });
+                    };
 
                     const loadThreadsForActiveGem = async function() {
                         await loadThreads();
@@ -4738,12 +4351,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         return true;
                     };
 
-                    const createNewThread = MeshEngine.createAutonomousNode({
-                        id: 'createNewThread',
-                        purpose: 'Khởi tạo một phiên hội thoại mới và lưu vết vào cơ sở dữ liệu',
-                        returns: 'string',
-                        dependencies: ['generateUUID', 'getMonotonicTimestamp', 'saveThreadToLocalStorageBackup']
-                    }, async function() {
+                    const createNewThread = async function() {
                         if (isGenerating.value) cancelGeneration();
                         await flushAllPendingDbWrites();
                         const newId = generateUUID();
@@ -4764,7 +4372,7 @@ TRẢ VỀ JSON DUY NHẤT:
                             try { await db.threads.put(cleanForDb(newThread)); } catch (_) {}
                         }
                         return newId;
-                    });
+                    };
 
                     const switchGemTab = async function(gemId) {
                         const exec = async () => {
@@ -4907,7 +4515,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         triggerHaptic('heavy');
                         const targetId = (typeof id === 'object' && id?.value) ? id.value : id;
                         confirmMessage.value = type === 'thread' ? "Xóa hội thoại này?" : "Xóa hồ sơ này?";
-                        confirmActionCallback.value = async () => {
+                        confirmActionCallback = async () => {
                             if (type === 'thread') {
                                 threads.value = threads.value.filter(t => t.id !== targetId);
                                 try { localStorage.removeItem(`gdeep_msg_backup_${targetId}`); } catch (_) {}
@@ -4939,14 +4547,14 @@ TRẢ VỀ JSON DUY NHẤT:
                     };
 
                     const executeConfirm = async function() {
-                        if (confirmActionCallback.value) await confirmActionCallback.value();
+                        if (confirmActionCallback) await confirmActionCallback();
                         showConfirmModal.value = false;
                         return true;
                     };
 
                     const closeConfirmModal = function() {
                         showConfirmModal.value = false;
-                        confirmActionCallback.value = null;
+                        confirmActionCallback = null;
                         return true;
                     };
 
@@ -5204,7 +4812,7 @@ TRẢ VỀ JSON DUY NHẤT:
 
                     const handleDragEnter = function(e) {
                         if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
-                            dragCounter.value++;
+                            dragCounter++;
                             isDraggingFile.value = true;
                             return true;
                         }
@@ -5217,21 +4825,21 @@ TRẢ VỀ JSON DUY NHẤT:
                     };
 
                     const handleDragLeave = function() {
-                        dragCounter.value--;
-                        if (dragCounter.value <= 0) { dragCounter.value = 0; isDraggingFile.value = false; }
+                        dragCounter--;
+                        if (dragCounter <= 0) { dragCounter = 0; isDraggingFile.value = false; }
                         return true;
                     };
 
                     const handleFileDrop = function(e) {
                         isDraggingFile.value = false;
-                        dragCounter.value = 0;
+                        dragCounter = 0;
                         if (!e.dataTransfer?.files?.length) return false;
                         handleRealFileUpload({ target: { files: Array.from(e.dataTransfer.files), value: '' } });
                         return true;
                     };
 
                     const resetDragState = function() {
-                        dragCounter.value = 0;
+                        dragCounter = 0;
                         isDraggingFile.value = false;
                         return true;
                     };
@@ -5545,19 +5153,19 @@ TRẢ VỀ JSON DUY NHẤT:
                         if (window.speechSynthesis.paused) window.speechSynthesis.resume();
 
                         if (isSpeaking.value) {
-                            currentSpeechToken.value++;
+                            currentSpeechToken++;
                             window.speechSynthesis.cancel();
                             activeUtterances.length = 0;
                             isSpeaking.value = false;
                             return true;
                         }
 
-                        if (isListening.value && speechRecognition.value) {
-                            try { speechRecognition.value.stop(); } catch (_) {}
+                        if (isListening.value && speechRecognition) {
+                            try { speechRecognition.stop(); } catch (_) {}
                             isListening.value = false;
                         }
 
-                        const thisToken = ++currentSpeechToken.value;
+                        const thisToken = ++currentSpeechToken;
                         const clean = text.replace(/<[^>]*>?/gm, '').replace(/```[\s\S]*?```\n?/g, 'Khối dữ liệu. ').replace(/[*#_~`]/g, '');
                         const rawChunks = clean.match(/[^.!?\n]+[.!?\n]+(\s|$)|.+/g) || [clean];
                         const chunks = [];
@@ -5575,7 +5183,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         let idx = 0;
                         isSpeaking.value = true;
                         const next = () => {
-                            if (idx >= chunks.length || !isSpeaking.value || thisToken !== currentSpeechToken.value) {
+                            if (idx >= chunks.length || !isSpeaking.value || thisToken !== currentSpeechToken) {
                                 isSpeaking.value = false;
                                 activeUtterances.length = 0;
                                 return;
@@ -5588,12 +5196,12 @@ TRẢ VỀ JSON DUY NHẤT:
                             ut.onend = () => {
                                 const p = activeUtterances.indexOf(ut);
                                 if (p > -1) activeUtterances.splice(p, 1);
-                                if (thisToken === currentSpeechToken.value && isSpeaking.value) next();
+                                if (thisToken === currentSpeechToken && isSpeaking.value) next();
                             };
                             ut.onerror = (e) => {
                                 const p = activeUtterances.indexOf(ut);
                                 if (p > -1) activeUtterances.splice(p, 1);
-                                if (e.error !== 'interrupted' && e.error !== 'canceled' && thisToken === currentSpeechToken.value && isSpeaking.value) next();
+                                if (e.error !== 'interrupted' && e.error !== 'canceled' && thisToken === currentSpeechToken && isSpeaking.value) next();
                             };
                             window.speechSynthesis.speak(ut);
                         };
@@ -5605,38 +5213,38 @@ TRẢ VỀ JSON DUY NHẤT:
                         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
                         if (!SR) { notify("Trình duyệt không hỗ trợ nhận diện giọng nói", true); return false; }
                         if (isListening.value) {
-                            if (speechRecognition.value) try { speechRecognition.value.stop(); } catch (_) {}
+                            if (speechRecognition) try { speechRecognition.stop(); } catch (_) {}
                             isListening.value = false;
-                            speechRecognition.value = null;
+                            speechRecognition = null;
                             return true;
                         }
                         if (isSpeaking.value) speakText('');
-                        baseVoiceText.value = inputText.value ? inputText.value.trim() + " " : "";
+                        baseVoiceText = inputText.value ? inputText.value.trim() + " " : "";
                         try {
-                            speechRecognition.value = new SR();
-                            speechRecognition.value.lang = 'vi-VN';
-                            speechRecognition.value.interimResults = true;
-                            speechRecognition.value.onstart = () => { isListening.value = true; triggerHaptic('light'); notify("Đang ghi nhận giọng nói..."); };
-                            speechRecognition.value.onresult = (e) => {
+                            speechRecognition = new SR();
+                            speechRecognition.lang = 'vi-VN';
+                            speechRecognition.interimResults = true;
+                            speechRecognition.onstart = () => { isListening.value = true; triggerHaptic('light'); notify("Đang ghi nhận giọng nói..."); };
+                            speechRecognition.onresult = (e) => {
                                 let finalTranscript = '', interimTranscript = '';
                                 for (let i = e.resultIndex; i < e.results.length; i++) {
                                     if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript;
                                     else interimTranscript += e.results[i][0].transcript;
                                 }
-                                baseVoiceText.value += finalTranscript;
-                                inputText.value = baseVoiceText.value + interimTranscript;
+                                baseVoiceText += finalTranscript;
+                                inputText.value = baseVoiceText + interimTranscript;
                                 resizeTextarea();
                             };
-                            speechRecognition.value.onerror = () => {
+                            speechRecognition.onerror = () => {
                                 isListening.value = false;
-                                speechRecognition.value = null;
+                                speechRecognition = null;
                             };
-                            speechRecognition.value.onend = () => { isListening.value = false; speechRecognition.value = null; };
-                            speechRecognition.value.start();
+                            speechRecognition.onend = () => { isListening.value = false; speechRecognition = null; };
+                            speechRecognition.start();
                             return true;
                         } catch (e) {
                             isListening.value = false;
-                            speechRecognition.value = null;
+                            speechRecognition = null;
                             return false;
                         }
                     };
@@ -5685,7 +5293,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         cancelLongPress(msg);
                         msg.longPressTimer = setTimeout(() => {
                             msg.isLongPressTriggered = true;
-                            lastLongPressTimestamp.value = Date.now();
+                            lastLongPressTimestamp = Date.now();
                             msg.showActions = !msg.showActions;
                             triggerHaptic('heavy');
                         }, 380);
@@ -5759,7 +5367,7 @@ TRẢ VỀ JSON DUY NHẤT:
                     const handleUserMsgContextMenu = function(msg, e) {
                         if (!msg.isEditing) {
                             e.preventDefault();
-                            if (Date.now() - lastLongPressTimestamp.value < 400) return false;
+                            if (Date.now() - lastLongPressTimestamp < 400) return false;
                             msg.showActions = !msg.showActions;
                             triggerHaptic('light');
                             return true;
@@ -5769,7 +5377,7 @@ TRẢ VỀ JSON DUY NHẤT:
 
                     const handleUserMsgClick = function(msg, e) {
                         if (msg.isEditing) return false;
-                        if (Date.now() - lastLongPressTimestamp.value < 400 || msg.isLongPressTriggered) {
+                        if (Date.now() - lastLongPressTimestamp < 400 || msg.isLongPressTriggered) {
                             msg.isLongPressTriggered = false;
                             return false;
                         }
@@ -5783,8 +5391,8 @@ TRẢ VỀ JSON DUY NHẤT:
 
                     const handleTouchStart = function(e) {
                         if (e.touches?.length === 1) {
-                            touchStartX.value = e.touches[0].clientX;
-                            touchStartY.value = e.touches[0].clientY;
+                            touchStartX = e.touches[0].clientX;
+                            touchStartY = e.touches[0].clientY;
                             return true;
                         }
                         return false;
@@ -5792,8 +5400,8 @@ TRẢ VỀ JSON DUY NHẤT:
 
                     const handleTouchMove = function(e) {
                         if (e.touches?.length === 1) {
-                            const diffX = e.touches[0].clientX - touchStartX.value;
-                            const diffY = Math.abs(e.touches[0].clientY - touchStartY.value);
+                            const diffX = e.touches[0].clientX - touchStartX;
+                            const diffY = Math.abs(e.touches[0].clientY - touchStartY);
                             if (diffX < -40 && diffY < 50 && e.cancelable) {
                                 e.preventDefault();
                                 return true;
@@ -5804,8 +5412,8 @@ TRẢ VỀ JSON DUY NHẤT:
 
                     const handleTouchEnd = function(e) {
                         if (e.changedTouches?.length > 0) {
-                            const diffX = e.changedTouches[0].clientX - touchStartX.value;
-                            const diffY = Math.abs(e.changedTouches[0].clientY - touchStartY.value);
+                            const diffX = e.changedTouches[0].clientX - touchStartX;
+                            const diffY = Math.abs(e.changedTouches[0].clientY - touchStartY);
                             if (diffX < -60 && diffY < 100) {
                                 isSidebarOpen.value = false;
                                 return true;
@@ -5815,8 +5423,8 @@ TRẢ VỀ JSON DUY NHẤT:
                     };
 
                     const handleTouchCancel = function() {
-                        touchStartX.value = 0;
-                        touchStartY.value = 0;
+                        touchStartX = 0;
+                        touchStartY = 0;
                         return true;
                     };
 
@@ -5928,10 +5536,10 @@ TRẢ VỀ JSON DUY NHẤT:
                     };
 
                     const processOfflineQueue = async function() {
-                        if (isProcessingOfflineQueue.value || !isOnline.value || !db) return false;
+                        if (isProcessingOfflineQueue || !isOnline.value || !db) return false;
                         try {
                             if ((await db.offlineQueue.count()) === 0) return false;
-                            isProcessingOfflineQueue.value = true;
+                            isProcessingOfflineQueue = true;
                             const queued = await db.offlineQueue.orderBy('createdAt').toArray();
                             for (const item of queued) {
                                 if (!isOnline.value) break;
@@ -5945,7 +5553,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         } catch (e) {
                             return false;
                         } finally {
-                            isProcessingOfflineQueue.value = false;
+                            isProcessingOfflineQueue = false;
                         }
                     };
 
@@ -6090,12 +5698,7 @@ TRẢ VỀ JSON DUY NHẤT:
                         return sanitizeHistoryForGemini(rawHistory, false);
                     };
 
-                    const performSerperSearch = MeshEngine.createAutonomousNode({
-                        id: 'performSerperSearch',
-                        purpose: 'Truy vấn dữ liệu thời gian thực từ Google Serper API',
-                        returns: 'object',
-                        dependencies: ['getNextHealthySerperKey', 'markSerperKeyFailure', 'markSerperKeySuccess']
-                    }, async function(query) {
+                    const performSerperSearch = async function(query) {
                         if (!query || !serperApiKeys.value.length) return null;
                         const keyObj = getNextHealthySerperKey();
                         if (!keyObj) return null;
@@ -6113,43 +5716,9 @@ TRẢ VỀ JSON DUY NHẤT:
                             markSerperKeyFailure(keyObj);
                             return null;
                         }
-                    });
-
-                    const dispatchBackgroundTaskWithFallback = async function(payload) {
-                        const keyObj = getNextHealthyApiKey();
-                        if (!keyObj) return null;
-                        const candidateModels = [
-                            BACKGROUND_MODELS.FAST,
-                            BACKGROUND_MODELS.LITE
-                        ].filter(Boolean);
-
-                        for (const targetModel of candidateModels) {
-                            try {
-                                const bodyPayload = { ...payload, safetySettings: SAFETY_SETTINGS };
-                                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${keyObj.key}`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(bodyPayload)
-                                });
-                                if (res.ok) { 
-                                    markApiKeySuccess(keyObj); 
-                                    return await res.json(); 
-                                }
-                                if (res.status === 401 || res.status === 403) {
-                                    markApiKeyFailure(keyObj);
-                                    break;
-                                }
-                            } catch (_) {}
-                        }
-                        return null;
                     };
 
-                    const autoNameThread = MeshEngine.createAutonomousNode({
-                        id: 'autoNameThread',
-                        purpose: 'Phân tích ngữ nghĩa nội dung câu hỏi đầu tiên để đặt tiêu đề súc tích',
-                        returns: 'boolean',
-                        dependencies: ['dispatchBackgroundTaskWithFallback', 'saveThreadToLocalStorageBackup']
-                    }, async function(firstPrompt, threadId) {
+                    const autoNameThread = async function(firstPrompt, threadId) {
                         try {
                             const cur = threads.value.find(t => t.id === threadId);
                             if (!cur) return false;
@@ -6194,14 +5763,9 @@ TRẢ VỀ JSON DUY NHẤT:
                         } catch (err) {
                             return false;
                         }
-                    });
+                    };
 
-                    const fetchStreamWithFaultTolerance = MeshEngine.createAutonomousNode({
-                        id: 'fetchStreamWithFaultTolerance',
-                        purpose: 'Truyền phát luồng SSE chịu lỗi cao và tự động xoay vòng Model/Khóa khi có lỗi 429/400',
-                        returns: 'boolean',
-                        dependencies: ['getNextHealthyApiKey', 'sanitizeHistoryForGemini', 'readSSEStream']
-                    }, async function(payload, activeModelId, onChunk, signal) {
+                    const fetchStreamWithFaultTolerance = async function(payload, activeModelId, onChunk, signal) {
                         let attempts = 0;
                         const maxAttempts = Math.max(apiKeyPool.value.length * 3, 8);
                         let currentKey = getNextHealthyApiKey();
@@ -6275,14 +5839,9 @@ TRẢ VỀ JSON DUY NHẤT:
                         }
 
                         throw new Error(`Đã thử lại ${attempts} lần nhưng không thể kết nối tới mô hình AI.`);
-                    });
+                    };
 
-                    const sendMessage = MeshEngine.createAutonomousNode({
-                        id: 'sendMessage',
-                        purpose: 'Điều phối toàn bộ quy trình tiếp nhận, suy luận, thực thi Python và trả lời người dùng',
-                        returns: 'boolean',
-                        dependencies: ['buildCleanHistory', 'buildTurnParts', 'fetchStreamWithFaultTolerance', 'scheduleDbSave', 'UrlGroundingEngine']
-                    }, async function(isRegenerate = false, existingBotMsgTarget = null) {
+                    const sendMessage = async function(isRegenerate = false, existingBotMsgTarget = null) {
                         if (isGenerating.value && !isRegenerate) return false;
 
                         if (enableCinemaStudio.value && !isRegenerate && (inputText.value.trim() || pendingAttachments.value.length > 0)) {
@@ -6335,15 +5894,15 @@ TRẢ VỀ JSON DUY NHẤT:
                             if (lastUser) { text = lastUser.content || ''; attachments = lastUser.attachments || []; }
                         } else if (!text && !attachments.length) return false;
 
-                        if (isListening.value && speechRecognition.value) {
-                            try { speechRecognition.value.stop(); } catch (_) {}
+                        if (isListening.value && speechRecognition) {
+                            try { speechRecognition.stop(); } catch (_) {}
                             isListening.value = false;
-                            speechRecognition.value = null;
+                            speechRecognition = null;
                         }
                         showInputMenu.value = false;
 
-                        if (abortController.value) { try { abortController.value.abort(); } catch (_) {} abortController.value = null; }
-                        const thisRequestToken = ++activeRequestToken.value;
+                        if (abortController) { try { abortController.abort(); } catch (_) {} abortController = null; }
+                        const thisRequestToken = ++activeRequestToken;
                         isGenerating.value = true;
                         searchStatusText.value = enableImageGen.value ? "Hệ thống thị giác đang thiết kế thông số ảnh..." : `G-Deep ${currentModel.value.name}: Đang kết nối xử lý...`;
                         triggerHaptic('light');
@@ -6618,7 +6177,7 @@ Yêu cầu bắt buộc:
                             }
 
                             scrollToBottom();
-                            abortController.value = new AbortController();
+                            abortController = new AbortController();
                             currentStreamingMsg.value = botMsg;
 
                             let lastRenderedLength = 0, lastRenderTime = 0;
@@ -6626,12 +6185,12 @@ Yêu cầu bắt buộc:
                             const MIN_RENDER_INTERVAL_MS = 60;
 
                             const startRenderLoop = () => {
-                                if (renderLoopActive.value) return;
-                                renderLoopActive.value = true;
+                                if (renderLoopActive) return;
+                                renderLoopActive = true;
                                 const loop = () => {
                                     if (!isGenerating.value && (!botMsg || !botMsg.isContinuing)) { 
-                                        renderLoopActive.value = false; 
-                                        renderRafId.value = null; 
+                                        renderLoopActive = false; 
+                                        renderRafId = null; 
                                         return; 
                                     }
                                     const now = performance.now();
@@ -6642,19 +6201,19 @@ Yêu cầu bắt buộc:
                                             const thisSeq = ++globalStreamSeq;
                                             botMsg.lastRenderSeq = thisSeq;
                                             botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
-                                            if (!userIsScrolledUp.value) scrollToBottom();
+                                            if (!userIsScrolledUp) scrollToBottom();
                                             lastRenderedLength = rawMarkdownBuffer.length;
                                         }
                                         if (thoughtMsg?.isThinking) {
                                             thoughtMsg.htmlContent = compileMarkdownSync(thoughtMsg.content, false);
-                                            if (!userIsScrolledUp.value) scrollToBottom();
+                                            if (!userIsScrolledUp) scrollToBottom();
                                         }
                                         const elapsed = performance.now() - startTime;
                                         lastRenderTime = now + Math.max(0, elapsed - FRAME_BUDGET_MS);
                                     }
-                                    renderRafId.value = requestAnimationFrame(loop);
+                                    renderRafId = requestAnimationFrame(loop);
                                 };
-                                renderRafId.value = requestAnimationFrame(loop);
+                                renderRafId = requestAnimationFrame(loop);
                             };
 
                             let isFirstContinuationChunk = false;
@@ -6664,7 +6223,7 @@ Yêu cầu bắt buộc:
                                     if (reason === 'PROHIBITED_CONTENT' || reason === 'SAFETY' || reason === 'BLOCKLIST') {
                                         rawMarkdownBuffer += `\n\n*[Nội dung bị hạn chế: ${reason}]*`;
                                         isGenerating.value = false;
-                                        abortController.value?.abort();
+                                        abortController?.abort();
                                         return;
                                     }
                                 }
@@ -6677,7 +6236,7 @@ Yêu cầu bắt buộc:
                                 if (finishReason === 'PROHIBITED_CONTENT' || finishReason === 'SAFETY') {
                                     rawMarkdownBuffer += `\n\n*[Nội dung không khả dụng]*`;
                                     isGenerating.value = false;
-                                    abortController.value?.abort();
+                                    abortController?.abort();
                                     return;
                                 }
                                 
@@ -6751,7 +6310,7 @@ Yêu cầu bắt buộc:
                                     payload.generationConfig.thinkingConfig = { includeThoughts: true };
                                 }
                                 try {
-                                    return await fetchStreamWithFaultTolerance(payload, activeModelId, chunkHandler, abortController.value.signal);
+                                    return await fetchStreamWithFaultTolerance(payload, activeModelId, chunkHandler, abortController.signal);
                                 } catch (err) {
                                     return false;
                                 }
@@ -6792,7 +6351,7 @@ Yêu cầu bắt buộc:
                             let continueAttempts = 0;
                             const MAX_CONTINUE_ATTEMPTS = 25;
 
-                            while (continueNeeded && continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController.value && !abortController.value.signal.aborted) {
+                            while (continueNeeded && continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController && !abortController.signal.aborted) {
                                 continueAttempts++;
                                 botMsg.isContinuing = true;
                                 botMsg.continuationStep = continueAttempts;
@@ -6837,8 +6396,8 @@ Yêu cầu bắt buộc:
                                 else if (lastFinishReason === 'STOP' && postBoundary.isCodeOpen) continueNeeded = true;
                             }
 
-                            renderLoopActive.value = false;
-                            if (renderRafId.value) { cancelAnimationFrame(renderRafId.value); renderRafId.value = null; }
+                            renderLoopActive = false;
+                            if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
 
                             if (enableImageGen.value && !rawMarkdownBuffer.includes('![')) {
                                 const cleanPromptSlug = (text || 'photorealistic-cinematic-scene').replace(/[^a-zA-Z0-9]/g, '-').slice(0, 150);
@@ -6909,7 +6468,7 @@ Yêu cầu bắt buộc:
                                 saveThreadToLocalStorageBackup(curThread);
                             }
 
-                            if ((!abortController.value || !abortController.value.signal.aborted) && thisRequestToken === activeRequestToken.value) {
+                            if ((!abortController || !abortController.signal.aborted) && thisRequestToken === activeRequestToken) {
                                 nextTick(() => renderMermaidDiagrams());
                                 triggerHaptic('light');
                             }
@@ -6931,14 +6490,14 @@ Yêu cầu bắt buộc:
                             }
                             return false;
                         } finally {
-                            if (thisRequestToken === activeRequestToken.value) {
+                            if (thisRequestToken === activeRequestToken) {
                                 isGenerating.value = false;
                                 searchStatusText.value = "";
                                 currentStreamingMsg.value = null;
-                                abortController.value = null;
-                                renderLoopActive.value = false;
-                                if (renderRafId.value) { cancelAnimationFrame(renderRafId.value); renderRafId.value = null; }
-                                if (!userIsScrolledUp.value) scrollToBottom();
+                                abortController = null;
+                                renderLoopActive = false;
+                                if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
+                                if (!userIsScrolledUp) scrollToBottom();
                                 
                                 if (botMsg) {
                                     botMsg.content = rawMarkdownBuffer || botMsg.content || 'Chưa có nội dung.';
@@ -6956,7 +6515,7 @@ Yêu cầu bắt buộc:
                                 }
                             }
                         }
-                    });
+                    };
 
                     const manualResumeContinuation = async function(msg) {
                         if (isGenerating.value || !msg) return false;
@@ -6965,7 +6524,7 @@ Yêu cầu bắt buộc:
                         msg.isContinuing = true;
                         isGenerating.value = true;
                         currentStreamingMsg.value = msg;
-                        abortController.value = new AbortController();
+                        abortController = new AbortController();
 
                         let rawMarkdownBuffer = msg.content || '';
                         const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
@@ -6998,12 +6557,12 @@ Yêu cầu bắt buộc:
                                 if (now - lastRenderTime >= 60) {
                                     msg.content = rawMarkdownBuffer;
                                     msg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
-                                    if (!userIsScrolledUp.value) scrollToBottom();
+                                    if (!userIsScrolledUp) scrollToBottom();
                                     lastRenderTime = now;
                                 }
-                                renderRafId.value = requestAnimationFrame(loop);
+                                renderRafId = requestAnimationFrame(loop);
                             };
-                            renderRafId.value = requestAnimationFrame(loop);
+                            renderRafId = requestAnimationFrame(loop);
                         };
 
                         startManualRenderLoop();
@@ -7021,7 +6580,7 @@ Yêu cầu bắt buộc:
                                         rawMarkdownBuffer += (newText || '');
                                     }
                                 }
-                            }, abortController.value.signal);
+                            }, abortController.signal);
 
                             if (!success) throw new Error();
                             msg.content = rawMarkdownBuffer;
@@ -7040,11 +6599,11 @@ Yêu cầu bắt buộc:
                             }
                             return false;
                         } finally {
-                            if (renderRafId.value) { cancelAnimationFrame(renderRafId.value); renderRafId.value = null; }
+                            if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
                             msg.isContinuing = false;
                             isGenerating.value = false;
                             currentStreamingMsg.value = null;
-                            abortController.value = null;
+                            abortController = null;
                         }
                     };
 
@@ -7063,8 +6622,8 @@ Yêu cầu bắt buộc:
                     });
 
                     watch(cmdQuery, (query) => {
-                        if (searchDebounceTimer.value) clearTimeout(searchDebounceTimer.value);
-                        searchDebounceTimer.value = setTimeout(async () => {
+                        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+                        searchDebounceTimer = setTimeout(async () => {
                             if (!query.trim()) { fullTextSearchResults.value = []; return; }
                             const q = query.toLowerCase();
                             try {
@@ -7102,9 +6661,14 @@ Yêu cầu bắt buộc:
                                     try { skeleton.remove(); } catch (_) { skeleton.style.display = 'none'; }
                                 }, 250);
                             }
+                            const appEl = document.getElementById('app');
+                            if (appEl) {
+                                appEl.removeAttribute('v-cloak');
+                                appEl.style.opacity = '1';
+                            }
                         };
 
-                        const emergencySkeletonTimer = setTimeout(removeSkeletonSafe, 800);
+                        const emergencySkeletonTimer = setTimeout(removeSkeletonSafe, 400);
 
                         window.openArtifactSandbox = (code) => {
                             let fmt = code || '';
@@ -7123,7 +6687,7 @@ Yêu cầu bắt buộc:
                             const updateAppHeight = () => {
                                 if (resizeTimeout) cancelAnimationFrame(resizeTimeout);
                                 resizeTimeout = requestAnimationFrame(() => {
-                                    if (window.visualViewport) {
+                                    if (window.visualViewport && window.visualViewport.height > 100) {
                                         document.documentElement.style.setProperty('--app-height', `${window.visualViewport.height}px`);
                                         if (document.activeElement === messageInput.value) {
                                             scrollToBottom(true);
@@ -7219,17 +6783,17 @@ Yêu cầu bắt buộc:
                         if (docClickCleanup) docClickCleanup();
                         if (unsubscribeBus) unsubscribeBus();
 
-                        if (speechRecognition.value) { try { speechRecognition.value.stop(); } catch (_) {} speechRecognition.value = null; }
+                        if (speechRecognition) { try { speechRecognition.stop(); } catch (_) {} speechRecognition = null; }
                         if (window.speechSynthesis) {
-                            currentSpeechToken.value++;
+                            currentSpeechToken++;
                             window.speechSynthesis.cancel();
                             window.speechSynthesis.onvoiceschanged = null;
                         }
                         activeUtterances.length = 0;
 
-                        if (searchDebounceTimer.value) clearTimeout(searchDebounceTimer.value);
-                        if (renderRafId.value) cancelAnimationFrame(renderRafId.value);
-                        if (textareaResizeRaf.value) cancelAnimationFrame(textareaResizeRaf.value);
+                        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+                        if (renderRafId) cancelAnimationFrame(renderRafId);
+                        if (textareaResizeRaf) cancelAnimationFrame(textareaResizeRaf);
 
                         PythonEngine.terminate();
                         ObjectUrlRegistry.revokeAll();
@@ -7275,7 +6839,7 @@ Yêu cầu bắt buộc:
             });
 
             // =========================================================================
-            // TỪ ĐIỂN BIỂU TƯỢNG LUCIDE SVG CHUẨN XÁC VÀ TOÀN DIỆN
+            // TỪ ĐIỂN BIỂU TƯỢNG LUCIDE SVG CHUẨN XÁC VÀ TOÀN DIỆN (CHỐNG CRASH RENDER)
             // =========================================================================
             const ICON_ELEMENTS_MAP = {
                 'film': [
@@ -7560,9 +7124,8 @@ Yêu cầu bắt buộc:
             };
 
             app.component('lucide-icon', {
-                inheritAttrs: false,
                 props: {
-                    name: { type: [String, Object, Promise], required: true },
+                    name: { type: [String, Object], required: true },
                     customClass: { type: String, default: '' },
                     strokeWidth: { type: [Number, String], default: null },
                     stroke: { type: String, default: null },
@@ -7574,71 +7137,48 @@ Yêu cầu bắt buộc:
                     return () => {
                         let rawName = props.name;
                         if (rawName && typeof rawName !== 'string') {
-                            if (typeof rawName.toString === 'function' && !rawName.then) {
-                                rawName = String(rawName);
-                            } else {
-                                rawName = 'file';
-                            }
+                            rawName = String(rawName);
                         }
-                        
                         let cleanName = (typeof rawName === 'string' ? rawName : '').trim().toLowerCase();
                         cleanName = cleanName.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
                         const resolvedName = ICON_ALIASES[cleanName] || cleanName;
+                        const defs = ICON_ELEMENTS_MAP[resolvedName] || [{ tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } }];
                         
-                        const defs = ICON_ELEMENTS_MAP[resolvedName] || [
-                            { tag: 'circle', attrs: { cx: '12', cy: '12', r: '10' } }
-                        ];
+                        const innerSvgString = defs.map(d => {
+                            const attrStr = Object.entries(d.attrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ');
+                            return `<${d.tag} ${attrStr}></${d.tag}>`;
+                        }).join('');
 
-                        const childVNodes = defs.map(d => h(d.tag, { ...d.attrs }));
                         const combinedClass = [attrs.class, props.customClass].filter(Boolean).join(' ');
                         const hasExplicitClassSize = /\b(w-\d+(\.\d+)?|h-\d+(\.\d+)?|w-\[|h-\[)/.test(combinedClass);
-
-                        let calculatedStroke = '2';
-                        const explicitStroke = props.strokeWidth ?? attrs['stroke-width'] ?? attrs['strokewidth'] ?? null;
-                        if (explicitStroke !== null && explicitStroke !== undefined && explicitStroke !== '') {
-                            calculatedStroke = String(explicitStroke);
-                        }
-
-                        const explicitSize = props.size ?? attrs['size'] ?? null;
-                        const wrapperStyles = { overflow: 'visible' };
-                        if (explicitSize) {
-                            const sizeVal = typeof explicitSize === 'number' ? `${explicitSize}px` : String(explicitSize);
-                            wrapperStyles.width = sizeVal;
-                            wrapperStyles.height = sizeVal;
-                        }
-
-                        const resolvedColor = props.color && props.color !== 'currentColor' ? props.color : (props.stroke || 'currentColor');
-                        if (resolvedColor !== 'currentColor') {
-                            wrapperStyles.color = resolvedColor;
-                        }
-
-                        const resolvedFill = props.fill ?? (combinedClass.includes('fill-current') ? 'currentColor' : 'none');
+                        const calculatedStroke = props.strokeWidth || attrs['stroke-width'] || attrs['strokewidth'] || '2';
+                        const resolvedColor = (props.color && props.color !== 'currentColor') ? props.color : (props.stroke || 'currentColor');
+                        const resolvedFill = props.fill || (combinedClass.includes('fill-current') ? 'currentColor' : 'none');
 
                         const wrapperClasses = [
                             'lucide-icon-wrapper',
-                            (!hasExplicitClassSize && !explicitSize) ? 'w-4 h-4' : '',
+                            (!hasExplicitClassSize && !props.size) ? 'w-4 h-4' : '',
                             combinedClass
-                        ].filter(Boolean);
+                        ].filter(Boolean).join(' ');
 
-                        return h('span', { 
-                            class: wrapperClasses, 
-                            style: [wrapperStyles, attrs.style],
+                        const styleObj = { ...(attrs.style || {}), overflow: 'visible' };
+                        if (props.size) {
+                            const s = typeof props.size === 'number' ? `${props.size}px` : props.size;
+                            styleObj.width = s;
+                            styleObj.height = s;
+                        }
+                        if (resolvedColor !== 'currentColor') {
+                            styleObj.color = resolvedColor;
+                        }
+
+                        const fullSvgHtml = `<svg class="lucide-icon-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${resolvedFill}" stroke="${resolvedColor}" stroke-width="${calculatedStroke}" stroke-linecap="round" stroke-linejoin="round" preserveAspectRatio="xMidYMid meet" style="overflow:visible;">${innerSvgString}</svg>`;
+
+                        return h('span', {
+                            class: wrapperClasses,
+                            style: styleObj,
+                            innerHTML: fullSvgHtml,
                             'aria-hidden': attrs['aria-label'] ? undefined : 'true'
-                        }, [
-                            h('svg', {
-                                class: 'lucide-icon-svg',
-                                xmlns: 'http://www.w3.org/2000/svg',
-                                viewBox: '0 0 24 24',
-                                fill: resolvedFill,
-                                stroke: resolvedColor,
-                                'stroke-width': calculatedStroke,
-                                'stroke-linecap': 'round',
-                                'stroke-linejoin': 'round',
-                                preserveAspectRatio: 'xMidYMid meet',
-                                'shape-rendering': 'geometricPrecision',
-                                style: { overflow: 'visible' }
-                            }, childVNodes)
-                        ]);
+                        });
                     };
                 }
             });
