@@ -8,98 +8,252 @@
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <title>G-Deep Ultra - Nền tảng Trí tuệ Nhân tạo Hợp nhất</title>
 
-<!-- ======================================================================= -->
-    <!-- TẦNG 0: L0 META-HYPERVISOR - HỆ THỐNG TỰ CHẨN ĐOÁN VÀ VÁ LỖI KHỞI ĐỘNG -->
+    <!-- ======================================================================= -->
+    <!-- TẦNG 0: L0 META-HYPERVISOR - HỆ THỐNG TỰ CHẨN ĐOÁN & VÁ LỖI NÂNG CẤP     -->
+    <!-- ĐÃ TÍCH HỢP CIRCUIT BREAKER CHỐNG VÒNG LẶP & IN-SITU LIVE HOT-PATCHING  -->
     <!-- ======================================================================= -->
     <script id="l0-hypervisor">
         (function() {
+            'use strict';
+
+            // 1. CIRCUIT BREAKER & BOOT CYCLE TRACKER
+            const BOOT_KEY = 'GDEEP_L0_BOOT_CYCLE';
+            let bootState = { attempts: 0, lastBoot: 0, safeMode: false };
+            try {
+                const raw = sessionStorage.getItem(BOOT_KEY);
+                if (raw) bootState = JSON.parse(raw);
+            } catch(e) {}
+
+            const now = Date.now();
+            if (now - (bootState.lastBoot || 0) < 12000) {
+                bootState.attempts = (bootState.attempts || 0) + 1;
+            } else {
+                bootState.attempts = 1;
+            }
+            bootState.lastBoot = now;
+            
+            // Nếu phát hiện vòng lặp reload > 3 lần liên tiếp -> Bật Safe Mode & Chặn reload hoàn toàn
+            if (bootState.attempts >= 3) {
+                bootState.safeMode = true;
+                console.warn(`[L0 Hypervisor] Phát hiện chu kỳ reload bất thường (${bootState.attempts} lần). Circuit Breaker đã kích hoạt! Chuyển sang In-Situ Safe Mode.`);
+            }
+            try { sessionStorage.setItem(BOOT_KEY, JSON.stringify(bootState)); } catch(e) {}
+
+            // 2. THỰC THI KHẨN CẤP BẢN VÁ (HOTPATCH) AN TOÀN TRONG RAM
             const hotPatch = localStorage.getItem('GDEEP_BOOT_HOTPATCH');
             if (hotPatch) {
-                console.warn("[L0 Hypervisor] Đang tiêm bản vá khẩn cấp vào RAM...");
-                try { 
-                    const script = document.createElement('script');
-                    script.textContent = hotPatch;
-                    document.documentElement.appendChild(script);
+                console.warn("[L0 Hypervisor] Đang tiêm kháng thể (Hotpatch) vào RAM...");
+                try {
+                    const runHotpatch = function() {
+                        try {
+                            const patchFn = new Function(hotPatch);
+                            patchFn();
+                        } catch(err) {
+                            console.error("[L0 Hypervisor] Lỗi thực thi hotpatch:", err);
+                        }
+                    };
+                    if (document.body) runHotpatch();
+                    else document.addEventListener('DOMContentLoaded', runHotpatch, { once: true });
                 } catch(e) {}
                 localStorage.removeItem('GDEEP_BOOT_HOTPATCH');
             }
 
             let isHypervisorEngaged = false;
+            let hudElement = null;
 
+            // 3. CYBER-DIAGNOSTICS HUD TỨC THÌ
+            function renderDiagnosticsHUD(reason, logs = []) {
+                if (hudElement) return;
+                hudElement = document.createElement('div');
+                hudElement.id = 'l0-diagnostics-hud';
+                hudElement.style.cssText = `
+                    position: fixed; inset: 0; background: rgba(8, 9, 13, 0.96); backdrop-filter: blur(20px);
+                    z-index: 100000; color: #f2f4f8; font-family: 'JetBrains Mono', monospace, sans-serif;
+                    padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
+                    box-sizing: border-box; overflow: auto;
+                `;
+
+                hudElement.innerHTML = `
+                    <div style="max-width: 760px; margin: 0 auto; width: 100%;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; margin-bottom: 16px;">
+                            <div style="display:flex; align-items:center; gap: 10px;">
+                                <span style="width:10px; height:10px; border-radius:50%; background:#ef4444; box-shadow:0 0 10px #ef4444; display:inline-block;"></span>
+                                <strong style="color:#ffffff; font-size:15px; letter-spacing:0.5px;">L0 META-HYPERVISOR DIAGNOSTICS</strong>
+                            </div>
+                            <span style="font-size:11px; background:rgba(239,68,68,0.15); color:#f87171; padding:3px 8px; border-radius:6px;">SAFE-MODE ENGAGED</span>
+                        </div>
+                        <div style="background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.06); border-radius:12px; padding:14px; font-size:12px; line-height:1.6; margin-bottom: 16px; color:#9aa2b1;">
+                            <div style="color:#f87171; font-weight:bold; margin-bottom:4px;">NGUYÊN NHÂN SỰ CỐ:</div>
+                            <div style="color:#f2f4f8; word-break:break-word;">${reason}</div>
+                        </div>
+                        <div id="l0-terminal-logs" style="background:#040507; border:1px solid rgba(255,255,255,0.05); border-radius:12px; padding:14px; font-size:11.5px; height:180px; overflow-y:auto; line-height:1.7; color:#38bdf8;">
+                            > [L0 Hypervisor] Khởi động trung tâm cứu hộ...<br>
+                            ${logs.map(l => `> ${l}<br>`).join('')}
+                        </div>
+                    </div>
+                    <div style="max-width: 760px; margin: 16px auto 0 auto; width: 100%; display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end;">
+                        <button id="l0-btn-bypass" style="background:rgba(255,255,255,0.08); hover:bg-white/20; color:#fff; border:none; padding:10px 16px; border-radius:10px; font-size:12px; cursor:pointer; font-weight:600;">Bỏ Qua & Mở Giao Diện</button>
+                        <button id="l0-btn-clean" style="background:rgba(239,68,68,0.2); color:#fca5a5; border:none; padding:10px 16px; border-radius:10px; font-size:12px; cursor:pointer; font-weight:600;">Reset Cache Dữ Liệu</button>
+                    </div>
+                `;
+
+                document.documentElement.appendChild(hudElement);
+
+                document.getElementById('l0-btn-bypass')?.addEventListener('click', () => {
+                    document.getElementById('initial-app-skeleton')?.remove();
+                    hudElement?.remove();
+                });
+                document.getElementById('l0-btn-clean')?.addEventListener('click', () => {
+                    try {
+                        localStorage.removeItem('GDEEP_BOOT_HOTPATCH');
+                        sessionStorage.clear();
+                    } catch(e) {}
+                    location.reload();
+                });
+            }
+
+            const appendLog = function(msg) {
+                console.log(`[L0 Log] ${msg}`);
+                const term = document.getElementById('l0-terminal-logs');
+                if (term) {
+                    term.innerHTML += `> ${msg}<br>`;
+                    term.scrollTop = term.scrollHeight;
+                }
+            };
+
+            // 4. BỘ LỌC LỖI NGOẠI LỆ AN TOÀN (Bỏ qua lỗi vô hại để không kích hoạt nhầm)
+            function isBenignError(msg) {
+                if (!msg) return true;
+                const benignList = [
+                    'ResizeObserver loop', 'speechSynthesis', 'favicon.ico', 'canceled',
+                    'aborted', 'AbortError', 'Script error.', 'Extension context',
+                    'Loading chunk', 'reading \'indexOf\'', 'The operation was aborted'
+                ];
+                return benignList.some(str => msg.includes(str));
+            }
+
+            // 5. TRUNG TÂM CỨU HỘ VÀ TỰ CHỮA LÀNH
             const engageRescueMode = async function(crashReason) {
                 if (isHypervisorEngaged) return;
                 isHypervisorEngaged = true;
 
-                const logger = document.getElementById('l0-logs');
-                const log = (msg) => { if(logger) logger.innerHTML += `> ${msg}<br>`; console.log(msg); };
+                renderDiagnosticsHUD(crashReason);
 
-                const poolStr = localStorage.getItem('gdeep_api_keys_pool');
-                if (!poolStr) {
-                    log("<span style='color:#fbbf24'>Không tìm thấy API Key. Hủy bỏ tự chữa lành. Đang ép mở UI...</span>");
-                    setTimeout(() => { localStorage.setItem('GDEEP_BOOT_HOTPATCH', 'document.getElementById("initial-app-skeleton")?.remove();'); location.reload(); }, 2000);
+                // Nếu đang trong chu kỳ lặp reload hoặc SafeMode -> TUYỆT ĐỐI KHÔNG RELOAD, CHỮA LÀNH TRỰC TIẾP
+                if (bootState.safeMode) {
+                    appendLog("<span style='color:#fbbf24'>Circuit Breaker bảo vệ: Vô hiệu hóa reload để tránh lặp vô hạn.</span>");
+                    appendLog("Đang cưỡng chế gỡ bỏ lớp che Skeleton và khởi động App...");
+                    setTimeout(() => {
+                        const sk = document.getElementById('initial-app-skeleton');
+                        if (sk) sk.remove();
+                        hudElement?.remove();
+                    }, 1200);
                     return;
                 }
 
                 let apiKey = "";
-                try { apiKey = JSON.parse(poolStr)[0].key; } catch(e) {}
-                if(!apiKey) return;
+                try {
+                    const poolStr = localStorage.getItem('gdeep_api_keys_pool');
+                    if (poolStr) {
+                        const parsed = JSON.parse(poolStr);
+                        apiKey = parsed.find(k => k.status === 'active')?.key || parsed[0]?.key || "";
+                    }
+                } catch(e) {}
 
-                log("Đã xác thực API Key. Đang gửi báo cáo bệnh án lên Bộ Não Trung Tâm...");
+                if (!apiKey) {
+                    appendLog("<span style='color:#fbbf24'>Không tìm thấy Gemini API Key. Bỏ qua tự chữa lành.</span>");
+                    appendLog("Mở giao diện trực tiếp cho người dùng cấu hình...");
+                    setTimeout(() => {
+                        const sk = document.getElementById('initial-app-skeleton');
+                        if (sk) sk.remove();
+                        hudElement?.remove();
+                    }, 1200);
+                    return;
+                }
 
-                const prompt = `[CẤP CỨU L0: SỤP ĐỔ BOOT-TIME ỨNG DỤNG WEB]
-Nền tảng G-Deep Ultra vừa bị sập ngay lúc khởi động (Màn hình đen).
-Lỗi ghi nhận được: "${crashReason}"
+                appendLog("Đã xác thực API Key. Đang gửi báo cáo bệnh án lên Gemini...");
 
-Bạn là trình giám sát L0 Meta-Hypervisor. Hãy viết MỘT ĐOẠN JAVASCRIPT KHẮC PHỤC (có thể là ghi đè một hàm lỗi, gỡ bỏ một thẻ HTML gây kẹt, hoặc bypass logic).
-Đoạn code này sẽ được tiêm trực tiếp vào đầu trang trong lần khởi động lại tiếp theo.
+                const prompt = `[CẤP CỨU L0 META-HYPERVISOR: SỤP ĐỔ KHỞI ĐỘNG]
+Ứng dụng Web Vue 3 gặp lỗi khởi động: "${crashReason}".
+Hãy viết DUY NHẤT 1 đoạn mã Javascript khắc phục sự cố (chạy an toàn, gỡ bỏ phần tử kẹt, hoặc bypass logic).
 Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải thích.`;
 
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
-                    });
+                const fallbackModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
+                let fixedCode = "";
 
-                    const data = await res.json();
-                    const rawCode = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                    const codeMatch = rawCode.match(/```(?:javascript|js)?([\s\S]*?)```/i);
-                    const fixedCode = codeMatch ? codeMatch[1].trim() : rawCode.trim();
+                for (const model of fallbackModels) {
+                    try {
+                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+                        });
+                        if (!res.ok) continue;
+                        const data = await res.json();
+                        const rawCode = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                        const match = rawCode.match(/```(?:javascript|js)?([\s\S]*?)```/i);
+                        fixedCode = match ? match[1].trim() : rawCode.trim();
+                        if (fixedCode) break;
+                    } catch(e) {}
+                }
 
-                    if (fixedCode) {
-                        log("<span style='color:#38bdf8'>Nhận được Kháng thể (Patch). Đang lưu vào tế bào và Tái Khởi Động...</span>");
+                if (fixedCode) {
+                    appendLog("<span style='color:#34d399'>Nhận được Kháng thể. Đang tiêm trực tiếp vào RAM (In-Situ Patch)...</span>");
+                    try {
+                        const patchFn = new Function(fixedCode);
+                        patchFn();
+                        appendLog("<span style='color:#38bdf8'>Vá thành công. Đang mở giao diện...</span>");
+                    } catch(err) {
+                        appendLog("<span style='color:#f87171'>Không thể nạp trực tiếp. Lưu dự phòng...</span>");
                         localStorage.setItem('GDEEP_BOOT_HOTPATCH', fixedCode);
-                        setTimeout(() => location.reload(), 1500);
-                    } else {
-                        throw new Error("Không nhận được mã vá hợp lệ");
                     }
-                } catch (e) {
-                    log("<span style='color:#f87171'>Phẫu thuật thất bại: " + e.message + ". Cưỡng chế mở giao diện...</span>");
-                    setTimeout(() => { localStorage.setItem('GDEEP_BOOT_HOTPATCH', 'document.getElementById("initial-app-skeleton")?.remove();'); location.reload(); }, 2000);
+                    setTimeout(() => {
+                        const sk = document.getElementById('initial-app-skeleton');
+                        if (sk) sk.remove();
+                        hudElement?.remove();
+                    }, 1000);
+                } else {
+                    appendLog("<span style='color:#f87171'>Không thể tạo kháng thể AI. Cưỡng chế mở giao diện...</span>");
+                    setTimeout(() => {
+                        const sk = document.getElementById('initial-app-skeleton');
+                        if (sk) sk.remove();
+                        hudElement?.remove();
+                    }, 1200);
                 }
             };
 
+            // 6. WATCHDOG THÔNG MINH - Đặt ngưỡng 3800ms để đủ thời gian cho CDN tải
             const bootWatchdog = setTimeout(() => {
-                if (document.getElementById('initial-app-skeleton')) {
-                    engageRescueMode("Timeout: Giao diện (Vue) bị đóng băng quá 2.5 giây do vòng lặp hoặc nghẽn mạng.");
+                const sk = document.getElementById('initial-app-skeleton');
+                if (sk && sk.isConnected && window.getComputedStyle(sk).display !== 'none') {
+                    engageRescueMode("Timeout: Giao diện chưa hoàn tất nạp sau 3.8s do nghẽn CDN hoặc vòng lặp logic.");
                 }
-            }, 2500);
+            }, 3800);
 
             window.addEventListener('error', function(e) {
-                if (!isHypervisorEngaged && e.message) {
+                if (!isHypervisorEngaged && e.message && !isBenignError(e.message)) {
                     clearTimeout(bootWatchdog);
-                    engageRescueMode(`Fatal Error: ${e.message} tại ${e.filename}:${e.lineno}`);
+                    engageRescueMode(`Fatal Error: ${e.message} tại ${e.filename || 'bundle'}:${e.lineno || 0}`);
                 }
             }, true);
 
             window.addEventListener('unhandledrejection', function(e) {
-                if (!isHypervisorEngaged && e.reason) {
+                const msg = e.reason?.message || String(e.reason || '');
+                if (!isHypervisorEngaged && msg && !isBenignError(msg)) {
                     clearTimeout(bootWatchdog);
-                    engageRescueMode(`Unhandled Promise Rejection: ${e.reason.message || e.reason}`);
+                    engageRescueMode(`Unhandled Promise Rejection: ${msg}`);
                 }
             }, true);
 
-            window.__L0_CLEAR_WATCHDOG__ = () => clearTimeout(bootWatchdog);
+            // Cung cấp hàm dập Watchdog khi Vue và UI đã sẵn sàng
+            window.__L0_CLEAR_WATCHDOG__ = function() {
+                clearTimeout(bootWatchdog);
+                try {
+                    // Reset bộ đếm boot về 0 khi app đã khởi động thành công
+                    sessionStorage.removeItem(BOOT_KEY);
+                } catch(e) {}
+                console.log("[L0 Hypervisor] Watchdog giải trừ thành công. Hệ thống vận hành bình thường.");
+            };
         })();
     </script>
     <!-- ======================================================================= -->
@@ -112,9 +266,9 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
     <script id="jit-bootloader">
     (function() {
         window.__JIT_LOGS__ = [];
-        window.addEventListener('error', async function(e) {
+        window.addEventListener('error', function(e) {
             if (e.message && (e.message.includes('SyntaxError') || e.message.includes('Assignment to constant'))) {
-                console.warn("[JIT Guardian] Phát hiện lỗi cấu trúc trước/khi nạp:", e.message);
+                console.warn("[JIT Guardian] Phát hiện lỗi cấu trúc:", e.message);
                 window.__JIT_LOGS__.push({ type: 'CRITICAL_BOOT', error: e.message, lineno: e.lineno });
                 var sk = document.getElementById('initial-app-skeleton');
                 if (sk) sk.remove();
@@ -201,7 +355,7 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
             flex-direction: column;
             justify-content: space-between;
             pointer-events: none;
-            transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            transition: opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1);
         }
 
         .user-prompt-container, .ai-response-canvas, .thought-box, .execution-box, .search-box {
@@ -684,15 +838,6 @@ Trả về DUY NHẤT code bên trong \`\`\`javascript ... \`\`\`. Không giải
             <div class="max-w-3xl mx-auto h-12 bg-[#161924] rounded-full animate-pulse"></div>
         </div>
     </div>
-    <script>
-    setTimeout(function() {
-        var sk = document.getElementById('initial-app-skeleton');
-        if (sk) {
-            sk.style.opacity = '0';
-            setTimeout(function() { sk.remove(); }, 300);
-        }
-    }, 1500);
-    </script>
 
     <!-- MAIN VUE VIEWPORT -->
     <div id="app" v-cloak class="app-viewport select-none bg-background"
@@ -3602,7 +3747,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
             generateSystemTTSAudio: async function(text, character, apiKey) {
                 if (!apiKey || !text) return null;
                 const voicePrompt = `[CLEAR BROADCAST] ${text}`;
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
                 try {
                     const res = await fetch(url, {
                         method: 'POST',
@@ -3692,7 +3837,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
             const pool = JSON.parse(rawKeys);
             const activeKey = pool.find(k => k.status === 'active')?.key || pool[0]?.key;
             if (!activeKey) return null;
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${activeKey}`, {
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${activeKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -3714,7 +3859,7 @@ HÃY SOẠN BẢN THIẾT KẾ KỊCH BẢN SIÊU CHI TIẾT DƯỚI ĐỊNH D�
                 { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", persona: "Trợ lý Trí tuệ Đa năng G-Deep Pro" },
                 { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", persona: "Trợ lý Trí tuệ Đa năng G-Deep Flash" }
             ];
-            const FALLBACK_MODEL_CHAIN = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash"];
+            const FALLBACK_MODEL_CHAIN = ["gemini-3-flash-preview", "gemini-2.5-flash"];
             const BACKGROUND_MODELS = { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" };
             const MAX_HISTORY_INPUT_TOKENS = 900000;
             
@@ -6884,6 +7029,11 @@ Yêu cầu bắt buộc:
                     let unsubscribeBus = null, visualViewportCleanup = null, docClickCleanup = null;
 
                     onMounted(async () => {
+                        // KÍCH HOẠT GIẢI TRỪ WATCHDOG CỦA L0 HYPERVISOR VÀ RESET BOOT CYCLE
+                        if (typeof window.__L0_CLEAR_WATCHDOG__ === 'function') {
+                            window.__L0_CLEAR_WATCHDOG__();
+                        }
+
                         const removeSkeletonSafe = () => {
                             const skeleton = document.getElementById('initial-app-skeleton');
                             if (skeleton && skeleton.style.display !== 'none') {
@@ -7067,10 +7217,6 @@ Yêu cầu bắt buộc:
 
             // =========================================================================
             // TỪ ĐIỂN BIỂU TƯỢNG LUCIDE SVG CHUẨN XÁC VÀ TOÀN DIỆN
-            // ĐÃ KHẮC PHỤC TRIỆT ĐỂ:
-            // 1. Toàn bộ đường path hình học chuẩn xác 100% SVG W3C Specs (copy, globe, external-link, image...).
-            // 2. Không cắt cụt viền (no-clipping), bảo toàn độ sắc nét và tọa độ nguyên bản.
-            // 3. Hỗ trợ bí danh aliases và tự động nhận dạng chuỗi kebab-case / camelCase.
             // =========================================================================
             const ICON_ELEMENTS_MAP = {
                 'film': [
@@ -7310,7 +7456,6 @@ Yêu cầu bắt buộc:
                 ]
             };
 
-            // Hệ thống phân giải bí danh Aliases cho Lucide Icons
             const ICON_ALIASES = {
                 'trash': 'trash-2',
                 'trash2': 'trash-2',
@@ -7355,7 +7500,6 @@ Yêu cầu bắt buộc:
                 'git_fork': 'git-fork'
             };
 
-            // COMPONENT LUCIDE-ICON TOÀN DIỆN, BẢO TOÀN NÉT VẼ TẠI MỌI CẠNH
             app.component('lucide-icon', {
                 props: {
                     name: { type: [String, Object, Promise], required: true },
@@ -7386,35 +7530,28 @@ Yêu cầu bắt buộc:
                         ];
 
                         const childVNodes = defs.map(d => h(d.tag, { ...d.attrs }));
-
                         const combinedClass = [attrs.class, props.customClass].filter(Boolean).join(' ');
                         const hasExplicitClassSize = /\b(w-\d+(\.\d+)?|h-\d+(\.\d+)?|w-\[|h-\[)/.test(combinedClass);
 
-                        // Phân giải tham số stroke-width đa biến thể
                         let calculatedStroke = '2';
                         const explicitStroke = props.strokeWidth ?? attrs['stroke-width'] ?? attrs['strokewidth'] ?? null;
                         if (explicitStroke !== null && explicitStroke !== undefined && explicitStroke !== '') {
                             calculatedStroke = String(explicitStroke);
                         }
 
-                        // Phân giải kích thước size trực tiếp
                         const explicitSize = props.size ?? attrs['size'] ?? null;
-                        const wrapperStyles = {
-                            overflow: 'visible'
-                        };
+                        const wrapperStyles = { overflow: 'visible' };
                         if (explicitSize) {
                             const sizeVal = typeof explicitSize === 'number' ? `${explicitSize}px` : String(explicitSize);
                             wrapperStyles.width = sizeVal;
                             wrapperStyles.height = sizeVal;
                         }
 
-                        // Phân giải màu sắc
                         const resolvedColor = props.color && props.color !== 'currentColor' ? props.color : (props.stroke || 'currentColor');
                         if (resolvedColor !== 'currentColor') {
                             wrapperStyles.color = resolvedColor;
                         }
 
-                        // Phân giải tham số fill (hỗ trợ nút dừng fill-current)
                         const resolvedFill = props.fill ?? (combinedClass.includes('fill-current') ? 'currentColor' : 'none');
 
                         const wrapperClasses = [
