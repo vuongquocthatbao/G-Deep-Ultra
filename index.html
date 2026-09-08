@@ -1579,7 +1579,7 @@
                     <section class="max-h-[360px] overflow-y-auto p-2 space-y-1 custom-scrollbar">
                         <div v-if="!cmdQuery.trim()" class="space-y-1">
                             <button type="button" @click="executeCmd('new')" class="btn-instant w-full p-2.5 rounded-xl hover:bg-white/5 text-xs text-white flex items-center justify-between text-left">
-                                <span class="flex items-center gap-2"><lucide-icon name="plus" class="w-4 h-4 text-emerald-400"></lucide-icon> Phiên trò chuyện mới</span>
+                                <span class="flex items-center gap-2"><lucide-icon name="plus" class="w-4 h-4 text-emerald-400"></lucude-icon> Phiên trò chuyện mới</span>
                             </button>
                             <button type="button" @click="executeCmd('export')" class="btn-instant w-full p-2.5 rounded-xl hover:bg-white/5 text-xs text-white flex items-center justify-between text-left">
                                 <span class="flex items-center gap-2"><lucide-icon name="download" class="w-4 h-4" :style="{ color: selectedAccent }"></lucide-icon> Xuất toàn bộ dữ liệu</span>
@@ -2545,7 +2545,7 @@
                     return `\n\n${token}\n\n`;
                 });
 
-                working = working.replace(/\\begin\{([a-z0-9*]+)\}([\s\S]+?)\\end\{\1\}/gi, (fullMatch) => {
+                working = working.replace(/\\begin\{([a-z0-9*]+)\}\s*([\s\S]+?)\s*\\end\{\1\}/gi, (fullMatch, env, expr) => {
                     const token = `\uE000MATH_D_${mathCounter++}\uE001`;
                     const cleanFull = (fullMatch || '').trim();
                     try { mathMap[token] = katexInst.renderToString(cleanFull, { displayMode: true, throwOnError: false }) || ''; }
@@ -2573,7 +2573,7 @@
                 try {
                     html = markedInst.parse(working) || '';
                 } catch (e) {
-                    html = `<div class='text-red-400 p-2 text-xs border border-red-500/30 bg-red-500/10 rounded mb-2'>Lỗi: ${escapeHTML(e.message)}</div>${escapeHTML(working)}`;
+                    html = '<div class="text-red-400 p-2 text-xs border border-red-500/30 bg-red-500/10 rounded mb-2">Lỗi: ' + escapeHTML(e.message) + '</div>' + escapeHTML(working);
                 }
             } else {
                 html = escapeHTML(working);
@@ -2690,28 +2690,33 @@
         };
 
         function getExecutionLogsText(msg) {
-            if (!msg?.rawExecutionParts?.length) return '';
+            if (!msg || !msg.rawExecutionParts || !msg.rawExecutionParts.length) return '';
+            const FENCE = '\x60\x60\x60';
             return msg.rawExecutionParts.map(part => {
-                const partContent = part.content !== undefined && part.content !== null ? String(part.content) : '';
-                if (part.type === 'code') return `MÃ NGUỒN:\n\`\`\`python\n${partContent}\n\`\`\``;
+                const partContent = (part && part.content !== undefined && part.content !== null) ? String(part.content) : '';
+                if (part.type === 'code') {
+                    return 'MÃ NGUỒN:\n' + FENCE + 'python\n' + partContent + '\n' + FENCE;
+                }
                 const isSuccess = (part.outcome === "COMPLETED" || part.outcome === "OUTCOME_OK");
-                return `${isSuccess ? "KẾT QUẢ:" : part.outcome === "RUNNING" ? "ĐANG THỰC THI..." : "LỖI:"}\n\`\`\`text\n${partContent}\n\`\`\``;
+                const label = isSuccess ? "KẾT QUẢ:" : (part.outcome === "RUNNING" ? "ĐANG THỰC THI..." : "LỖI:");
+                return label + '\n' + FENCE + 'text\n' + partContent + '\n' + FENCE;
             }).join('\n\n');
         }
 
         function getExecutionLogsHtml(msg) {
-            if (!msg?.rawExecutionParts?.length) return '';
+            if (!msg || !msg.rawExecutionParts || !msg.rawExecutionParts.length) return '';
             const html = msg.rawExecutionParts.map((part, index) => {
                 const divider = index > 0 ? '<hr style="border-color:rgba(255,255,255,0.06);margin:6px 0;" aria-hidden="true">' : '';
-                const partContent = part.content !== undefined && part.content !== null ? String(part.content) : '';
+                const partContent = (part && part.content !== undefined && part.content !== null) ? String(part.content) : '';
                 if (part.type === 'code') {
                     let code = escapeHTML(partContent);
                     try { if (window.hljs) code = window.hljs.highlight(partContent, { language: 'python' }).value; } catch (_) {}
-                    return `${divider}<div style="color:#fbbf24;font-weight:bold;font-size:11px;">MÃ PYTHON</div><pre style="color:#a8f0e6;background:#090a0e;padding:8px;border-radius:6px;overflow-x:auto;">${code}</pre>`;
+                    return divider + '<div style="color:#fbbf24;font-weight:bold;font-size:11px;">MÃ PYTHON</div><pre style="color:#a8f0e6;background:#090a0e;padding:8px;border-radius:6px;overflow-x:auto;">' + code + '</pre>';
                 }
                 const isSuccess = (part.outcome === "COMPLETED" || part.outcome === "OUTCOME_OK");
-                const color = isSuccess ? '#34d399' : part.outcome === "RUNNING" ? '#fbbf24' : '#f87171';
-                return `${divider}<div style="color:${color};font-weight:bold;font-size:11px;">${isSuccess ? "HOÀN TẤT" : part.outcome === "RUNNING" ? "ĐANG TÍNH TOÁN..." : "LỖI"}</div><pre style="color:#d1d5db;background:#090a0e;padding:8px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;">${escapeHTML(partContent)}</pre>`;
+                const color = isSuccess ? '#34d399' : (part.outcome === "RUNNING" ? '#fbbf24' : '#f87171');
+                const label = isSuccess ? "HOÀN TẤT" : (part.outcome === "RUNNING" ? "ĐANG TÍNH TOÁN..." : "LỖI");
+                return divider + '<div style="color:' + color + ';font-weight:bold;font-size:11px;">' + label + '</div><pre style="color:#d1d5db;background:#090a0e;padding:8px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;">' + escapeHTML(partContent) + '</pre>';
             }).join('');
             return window.DOMPurify ? window.DOMPurify.sanitize(html, DOMPURIFY_CONFIG) : html;
         }
@@ -2745,7 +2750,7 @@
                         if (strayEl) strayEl.remove();
                         if (container.isConnected) {
                             container.setAttribute('data-rendered', 'error');
-                            container.innerHTML = `<div class="text-red-400 text-xs p-2 border border-red-500/30 rounded bg-red-500/10">Lỗi kết xuất sơ đồ</div>`;
+                            container.innerHTML = '<div class="text-red-400 text-xs p-2 border border-red-500/30 rounded bg-red-500/10">Lỗi kết xuất sơ đồ</div>';
                         }
                     }
                 }
@@ -3071,7 +3076,7 @@
             async analyzeFilmSetDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn) {
                 const directorPrompt = `[HỆ THỐNG ĐẠO DIỄN PHIM TRƯỜNG ĐIỆN ẢNH 60 FPS]
 Bạn là Đạo diễn trường quay Hollywood. Cảnh quay cần tạo: "${userPrompt}"
-Thời lượng: ${durationSec}s | Phong cách: ${style} | Mã hạt giống diễn viên: #${seed}
+Thời lượng: ${durationSec}s | Phong cách: MATH_I_0{seed}
 
 YÊU CẦU QUAN TRỌNG:
 Đây là video quay trực tiếp tại phim trường, KHÔNG PHẢI ghép ảnh tĩnh.
@@ -3184,7 +3189,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
             async buildSoundTrackAndEnvelope(dialogueScript, voiceCharacters, durationSec, apiKey) {
                 const sampleRate = 48000;
                 const totalSamples = Math.ceil(sampleRate * durationSec);
-                const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+                const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
                 const offlineCtx = new OfflineCtx(2, totalSamples, sampleRate);
 
                 const ambBuf = offlineCtx.createBuffer(2, totalSamples, sampleRate);
@@ -3242,79 +3247,6 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
 
                 const masterAudioBuffer = await offlineCtx.startRendering();
                 return { masterAudioBuffer, speechEnvelope };
-            },
-
-            async mixMasterAudioTrack(dialogueScript, voiceCharacters, durationSec, musicParams, apiKey) {
-                const sampleRate = 48000;
-                const totalSamples = Math.ceil(sampleRate * durationSec);
-                const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-                const offlineCtx = new OfflineCtx(2, totalSamples, sampleRate);
-
-                const mood = musicParams?.mood || 'neutral';
-                const instrumentation = musicParams?.instrumentation || ['synth_pad'];
-                const intensity = musicParams?.intensity || 'medium';
-
-                const baseFreq = 60;
-                const moodFreqMap = {
-                    'mysterious': [baseFreq * 0.9, baseFreq * 1.1, baseFreq * 1.3],
-                    'epic': [baseFreq * 0.8, baseFreq * 1.2, baseFreq * 1.5],
-                    'calm': [baseFreq * 1.0, baseFreq * 1.05, baseFreq * 1.1],
-                    'neutral': [baseFreq, baseFreq * 1.2, baseFreq * 1.4]
-                };
-                const currentFrequencies = moodFreqMap[mood] || moodFreqMap['neutral'];
-
-                currentFrequencies.forEach((freq) => {
-                    const osc = offlineCtx.createOscillator();
-                    const gain = offlineCtx.createGain();
-                    const filter = offlineCtx.createBiquadFilter();
-
-                    osc.type = 'sine';
-                    if (instrumentation.includes('synth_pad') || instrumentation.includes('strings')) {
-                        osc.type = 'sawtooth';
-                    } else if (instrumentation.includes('piano')) {
-                        osc.type = 'triangle';
-                    }
-
-                    osc.frequency.setValueAtTime(freq, 0);
-                    
-                    const startGain = (intensity === 'low') ? 0.01 : (intensity === 'high' ? 0.04 : 0.02);
-                    const endGain = startGain * 0.5;
-                    gain.gain.setValueAtTime(startGain, 0);
-                    gain.gain.linearRampToValueAtTime(endGain, durationSec);
-
-                    filter.type = 'lowpass';
-                    filter.frequency.setValueAtTime(mood === 'mysterious' ? 800 : (mood === 'epic' ? 2000 : 1200), 0);
-                    filter.Q.setValueAtTime(mood === 'epic' ? 1.5 : 0.5, 0);
-
-                    osc.connect(filter);
-                    filter.connect(gain);
-                    gain.connect(offlineCtx.destination);
-                    osc.start(0);
-                    osc.stop(durationSec);
-                });
-
-                if (Array.isArray(dialogueScript) && dialogueScript.length > 0 && apiKey) {
-                    for (const line of dialogueScript) {
-                        const targetChar = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
-                        if (targetChar && line.text) {
-                            const charAudioBuffer = await this.generateGeminiTTSAudio(line.text, targetChar, apiKey);
-                            if (charAudioBuffer) {
-                                const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), durationSec - 0.5);
-                                const source = offlineCtx.createBufferSource();
-                                source.buffer = charAudioBuffer;
-
-                                const voiceGain = offlineCtx.createGain();
-                                voiceGain.gain.setValueAtTime(1.2, 0);
-
-                                source.connect(voiceGain);
-                                voiceGain.connect(offlineCtx.destination);
-                                source.start(startTime);
-                            }
-                        }
-                    }
-                }
-
-                return await offlineCtx.startRendering();
             },
 
             async renderUniversal60FPSVideo({ sourceVideoBlob, baseKeyframeImg, speechEnvelope, masterAudioBuffer, width, height, durationSec, onProgress }) {
@@ -3536,7 +3468,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
             const MODELS = [
                 { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra", persona: "G-Deep Ultra" },
                 { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", persona: "G-Deep Pro" },
-                { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", persona: "G-Deep Lite" }
+                { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", persona: "G-Deep Flash" }
             ];
             const FALLBACK_MODEL_CHAIN = ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash"];
             const BACKGROUND_MODELS = { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" };
@@ -3840,7 +3772,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         const map = new Map(serperApiKeys.value.map(k => [k.key, k]));
                         const pool = parsed.map(k => map.get(k) || { key: k, status: 'active', failCount: 0, successCount: 0, lastUsed: 0, cooldownUntil: 0 });
                         serperApiKeys.value = pool;
-                        try { localStorage.setItem('gdeep_serper_keys_pool', JSON.stringify(toRaw(serperApiKeys.value))); } catch (_) {}
+                        try { localStorage.setItem('gdeep_serper_keys_pool', JSON.stringify(toRaw(all))); } catch (_) {}
                         notify(pool.length ? `Đã lưu ${pool.length} khóa tra cứu.` : "Danh sách trống.", !pool.length);
                     };
 
@@ -5972,7 +5904,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 systemPrompt += `\n[CHẾ ĐỘ TẠO ẢNH]
 1. Tự động dịch và phát triển ý tưởng thành câu prompt tiếng Anh chi tiết: Chủ thể, ánh sáng, góc máy. Phong cách: ${imageConfig.style}.
 2. Xuất ảnh theo cú pháp Markdown:
-![Hình ảnh minh họa](https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_ENCODED}?width=${w}&height=${h}&model=flux-realism&nologo=true&seed=${randomSeed})
+![Hình ảnh minh họa](https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_ENCODED}?width=MATH_I_1{h}&model=flux-realism&nologo=true&seed=${randomSeed})
 3. Bên dưới ảnh, ghi ngắn gọn 2-3 dòng miêu tả bối cảnh.`;
                             }
 
@@ -6502,7 +6434,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                             try {
                                 let allMsgs = [];
                                 if (db) {
-                                    allMsgs = (await db.messages.toArray()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                                    allMsgs = (await db.messages.toArray()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
                                 }
                                 if (!allMsgs.length) {
                                     threads.value.forEach(t => {
