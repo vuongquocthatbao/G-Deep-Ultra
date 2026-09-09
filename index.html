@@ -624,7 +624,6 @@
             </div>
 
             <div class="flex items-center gap-2 min-w-0">
-                <!-- TOKEN CONTEXT BADGE -->
                 <div class="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surfaceElevated border border-white/5 text-[10.5px] font-mono shadow-sm">
                     <span class="w-1.5 h-1.5 rounded-full" :class="isMemoryRetrievalActive ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'"></span>
                     <span class="text-textMuted font-medium">Ngữ cảnh:</span>
@@ -1442,7 +1441,6 @@
                                     <button type="button" @click="showInputMenu = false" class="btn-instant action-btn-sm hover:text-white"><lucide-icon name="x" class="w-3.5 h-3.5"></lucide-icon></button>
                                 </header>
                                 
-                                <!-- CREATIVE -->
                                 <div class="px-2 pt-0.5 text-[9px] font-bold uppercase tracking-wider text-purple-300/80">Sáng Tạo Đa Phương Tiện</div>
                                 <div class="w-full min-0 space-y-0.5">
                                     <button type="button" @click="toggleCinemaStudio()" class="btn-instant flex items-center justify-between w-full min-w-0 p-2 rounded-xl hover:bg-white/10 text-white text-[12px] font-medium text-left">
@@ -1470,7 +1468,6 @@
                                     </button>
                                 </div>
 
-                                <!-- REASONING -->
                                 <div class="px-2 pt-1 text-[9px] font-bold uppercase tracking-wider text-indigo-300/80">Suy Luận & Tính Toán</div>
                                 <div class="w-full min-w-0 space-y-0.5">
                                     <button type="button" @click="toggleDeepThinking()" class="btn-instant flex items-center justify-between w-full min-w-0 p-2 rounded-xl hover:bg-white/10 text-white text-[12px] font-medium text-left">
@@ -1498,7 +1495,6 @@
                                     </button>
                                 </div>
 
-                                <!-- KNOWLEDGE -->
                                 <div class="px-2 pt-1 text-[9px] font-bold uppercase tracking-wider text-sky-300/80">Tri Thức Trực Tuyến</div>
                                 <div class="w-full min-w-0 space-y-0.5">
                                     <button type="button" @click="toggleGoogleSearch()" class="btn-instant flex items-center justify-between w-full min-w-0 p-2 rounded-xl hover:bg-white/10 text-white text-[12px] font-medium text-left">
@@ -1514,7 +1510,6 @@
                                     </button>
                                 </div>
 
-                                <!-- FILES & AUDIO -->
                                 <div class="px-2 pt-1 text-[9px] font-bold uppercase tracking-wider text-textMuted">Tệp & Âm Thanh</div>
                                 <div class="w-full min-w-0 space-y-0.5">
                                     <button type="button" @click="triggerFileUpload(); showInputMenu = false" class="btn-instant flex items-center gap-2.5 w-full min-w-0 p-2 rounded-xl hover:bg-white/10 text-white text-[12px] font-medium text-left">
@@ -3303,106 +3298,20 @@
                 return null;
             },
 
-            // Hòa âm đa kênh với âm học thích ứng theo kịch bản (không dùng hợp âm tĩnh)
-            async mixAudioTracksWithDucking(dialogueLines, voiceCharacters, durationSec, apiKey, acousticParams) {
-                const sampleRate = 48000;
-                const totalSamples = Math.ceil(sampleRate * durationSec);
-                const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
-                const ctx = new OfflineCtx(2, totalSamples, sampleRate);
-
-                const speechEnvelope = new Float32Array(Math.round(durationSec * 24));
-                const dialogueGainNode = ctx.createGain();
-                dialogueGainNode.gain.setValueAtTime(1.0, 0);
-                dialogueGainNode.connect(ctx.destination);
-
-                const ambientGainNode = ctx.createGain();
-                ambientGainNode.gain.setValueAtTime(0.5, 0);
-                ambientGainNode.connect(ctx.destination);
-
-                // Thu âm từng câu thoại
-                if (Array.isArray(dialogueLines) && dialogueLines.length > 0 && apiKey) {
-                    for (const line of dialogueLines) {
-                        const targetChar = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
-                        if (targetChar && line.text) {
-                            const charBuffer = await this.generateDialogueSpeech(line.text, targetChar, apiKey);
-                            if (charBuffer) {
-                                const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), durationSec - 0.5);
-                                const source = ctx.createBufferSource();
-                                source.buffer = charBuffer;
-                                source.connect(dialogueGainNode);
-                                source.start(startTime);
-
-                                const lineEnd = Math.min(durationSec, startTime + charBuffer.duration);
-                                ambientGainNode.gain.linearRampToValueAtTime(0.12, startTime);
-                                ambientGainNode.gain.setValueAtTime(0.12, lineEnd);
-                                ambientGainNode.gain.linearRampToValueAtTime(0.5, Math.min(durationSec, lineEnd + 0.6));
-
-                                const cData = charBuffer.getChannelData(0);
-                                const startFrame = Math.floor(startTime * 24);
-                                const frameCount = Math.floor(charBuffer.duration * 24);
-                                const samplesPerFrame = Math.floor(charBuffer.sampleRate / 24);
-
-                                for (let f = 0; f < frameCount; f++) {
-                                    const globalF = startFrame + f;
-                                    if (globalF >= speechEnvelope.length) break;
-                                    let sum = 0;
-                                    const sampleStart = f * samplesPerFrame;
-                                    for (let s = 0; s < samplesPerFrame && (sampleStart + s) < cData.length; s++) {
-                                        sum += Math.abs(cData[sampleStart + s]);
-                                    }
-                                    speechEnvelope[globalF] = Math.max(speechEnvelope[globalF], sum / samplesPerFrame);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Kiến tạo âm thanh bối cảnh thời gian thực từ thông số đạo diễn
-                const baseResonance = Number(acousticParams?.resonance) || 320;
-                const bufferSize = ctx.sampleRate * 2;
-                const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-                const output = noiseBuffer.getChannelData(0);
-                for (let i = 0; i < bufferSize; i++) {
-                    output[i] = Math.random() * 2 - 1;
-                }
-
-                const whiteNoise = ctx.createBufferSource();
-                whiteNoise.buffer = noiseBuffer;
-                whiteNoise.loop = true;
-
-                const filter = ctx.createBiquadFilter();
-                filter.type = 'bandpass';
-                filter.frequency.setValueAtTime(baseResonance, 0);
-                filter.Q.setValueAtTime(4.0, 0);
-
-                whiteNoise.connect(filter);
-                filter.connect(ambientGainNode);
-                whiteNoise.start(0);
-
-                const mixedMasterBuffer = await ctx.startRendering();
-                return { mixedMasterBuffer, speechEnvelope };
-            },
-
             // Lập kịch bản và đạo diễn bối cảnh
             async planCinematicDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn, isFromImage = false) {
-                const directingPrompt = `[ĐẠO DIỄN VÀ THIẾT KẾ BỐI CẢNH ĐIỆN ẢNH]
-Yêu cầu: "${userPrompt}"
-Thời lượng: ${durationSec} giây | Phong cách: ${style} | Chế độ khởi tạo: ${isFromImage ? 'Từ hình ảnh có sẵn' : 'Từ văn bản thuần túy'}
+                const directingPrompt = `[DIRECTOR & CINEMATOGRAPHER]
+Scene Request: "${userPrompt}"
+Target duration: ${durationSec}s | Style: ${style} | Mode: ${isFromImage ? 'Image-to-Video' : 'Text-to-Video'}
 
-Thiết lập kịch bản và thông số:
-1. DIỆN MẠO NHÂN VẬT: Trang phục, chi tiết ngoại hình, đường nét khuôn mặt.
-2. CHUYỂN ĐỘNG MÁY QUAY: Quỹ đạo máy quay chuyển động mượt mà.
-3. DIỄN XUẤT VÀ CỬ ĐỘNG: Nhịp thở, hướng ánh mắt, vi biểu cảm cơ mặt.
-4. THÔNG SỐ ÂM HỌC BỐI CẢNH: Tần số cộng hưởng không gian (từ 150 đến 850).
-5. MÔ TẢ TRUYỀN TẢI TIẾNG ANH: Đặc tả góc máy, ánh sáng điện ảnh, độ phân giải sắc nét.
+Generate a professional visual video prompt in English.
+Specify smooth camera motion, volumetric cinematic lighting, photorealistic textures, dynamic character presence.
 
-TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
+RETURN ONLY JSON:
 {
-  "actor_dna": "Chi tiết nhân vật chính",
-  "camera_motion": "Quỹ đạo chuyển động máy quay",
-  "kinematics": "Chuyển động cơ thể và nhịp thở",
-  "acoustic_resonance": 380,
-  "base_prompt_en": "Cinematic film still, photorealistic, 8k resolution, volumetric studio lighting"
+  "camera_motion": "Slow cinematic dolly forward",
+  "kinematics": "Natural fluid motion and realistic depth of field",
+  "base_prompt_en": "Cinematic master shot, photorealistic, 8k resolution, elegant studio volumetric lighting"
 }`;
 
                 try {
@@ -3414,77 +3323,150 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                     return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
                 } catch (_) {
                     return {
-                        actor_dna: "Cinematic human character, authentic presence and expressions",
                         camera_motion: "Slow dolly forward",
-                        kinematics: "Subtle continuous breathing and expressive gaze",
-                        acoustic_resonance: 340,
+                        kinematics: "Natural fluid motion and realistic depth of field",
                         base_prompt_en: `Cinematic footage of ${userPrompt}, elegant dynamic lighting, ultra detailed 8k`
                     };
                 }
             },
 
-            // Khởi tạo các khung hình then chốt (áp dụng cho cả văn bản và hình ảnh)
-            async synthesizeMasterFrames({ basePromptEn, actorDna, width, height, durationSec, baseSeed = 884921, directImageInput = null, onStatus }) {
-                const masterItems = [];
+            // Tạo luồng video bằng mô hình sinh video
+            async generateDiffusionVideo({ prompt, directImageInput, durationSec, aspectRatio, apiKey, onStatus }) {
+                if (!apiKey) return null;
 
-                // Nếu có ảnh đầu vào, ảnh đó chính là khung hình then chốt ban đầu
+                const models = [
+                    "veo-3.1-generate-preview",
+                    "veo-3.1-fast-generate-preview",
+                    "veo-3.0-generate-001",
+                    "veo-2.0-generate-001"
+                ];
+
+                const durationInt = Math.min(Math.max(durationSec, 4), 8);
+                const aspect = (aspectRatio === '9:16') ? '9:16' : '16:9';
+
+                let imagePayload = null;
                 if (directImageInput) {
-                    onStatus("Đang giải mã và căn chỉnh hình ảnh gốc...");
-                    const sourceBmp = await resolveSourceToBitmap(directImageInput);
-                    if (sourceBmp) {
-                        masterItems.push(sourceBmp);
-                    }
-                }
-
-                const requiredFrames = directImageInput ? Math.max(2, Math.round(durationSec / 3)) : Math.max(3, Math.round(durationSec / 2));
-                let attempts = 0;
-
-                while (masterItems.length < requiredFrames && attempts < 12) {
-                    attempts++;
-                    const frameIdx = masterItems.length + 1;
-                    onStatus(`Đang tạo khung hình bối cảnh ${frameIdx}/${requiredFrames}...`);
-
-                    const prompt = `Cinematic sequential frame ${frameIdx} of ${requiredFrames}. ${basePromptEn}, ${actorDna}. Continuous motion, film set lighting, high dynamic range, masterwork.`;
-                    const currentSeed = Number(baseSeed) + frameIdx * 7;
-
                     try {
-                        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${currentSeed}`;
-                        const res = await fetch(url);
-                        if (!res.ok) throw new Error("Máy chủ xử lý hình ảnh đang bận");
-                        const blob = await res.blob();
-                        if (!blob || blob.size < 4000) throw new Error("Chất lượng tệp chưa đạt yêu cầu");
-
-                        const bmp = await resolveSourceToBitmap(blob);
+                        const bmp = await resolveSourceToBitmap(directImageInput);
                         if (bmp) {
-                            masterItems.push(bmp);
+                            const c = document.createElement('canvas');
+                            c.width = bmp.width;
+                            c.height = bmp.height;
+                            c.getContext('2d').drawImage(bmp, 0, 0);
+                            const b64 = cleanBase64Data(c.toDataURL('image/jpeg', 0.9));
+                            imagePayload = { bytesBase64Encoded: b64, mimeType: 'image/jpeg' };
                         }
-                    } catch (e) {
-                        await new Promise(r => setTimeout(r, 1200));
-                    }
+                    } catch (_) {}
                 }
 
-                if (masterItems.length === 0) {
-                    throw new Error("Không thể khởi tạo khung hình hợp lệ từ hệ thống");
-                }
+                for (const model of models) {
+                    try {
+                        onStatus("Đang gửi yêu cầu tới mô hình tạo video...");
+                        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predictLongRunning?key=${apiKey}`;
+                        
+                        const instance = { prompt };
+                        if (imagePayload) instance.image = imagePayload;
 
-                return masterItems;
+                        const payload = {
+                            instances: [instance],
+                            parameters: {
+                                aspectRatio: aspect,
+                                durationSeconds: durationInt,
+                                sampleCount: 1
+                            }
+                        };
+
+                        const initRes = await fetch(url, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (!initRes.ok) continue;
+                        const initData = await initRes.json();
+                        const operationName = initData.name;
+                        if (!operationName) continue;
+
+                        onStatus("Mô hình đang tính toán các trường chuyển động...");
+                        let pollCount = 0;
+                        while (pollCount < 45) {
+                            pollCount++;
+                            await new Promise(r => setTimeout(r, 4000));
+                            onStatus(`Đang kết xuất chuyển động: ${Math.min(95, pollCount * 3)}%...`);
+
+                            const pollUrl = `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${apiKey}`;
+                            const pollRes = await fetch(pollUrl);
+                            if (!pollRes.ok) break;
+                            const pollData = await pollRes.json();
+
+                            if (pollData.done) {
+                                const videoUri = pollData.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
+                                if (videoUri) {
+                                    onStatus("Đang tải tệp video thành phẩm...");
+                                    const dlRes = await fetch(videoUri, { headers: { 'x-goog-api-key': apiKey } });
+                                    if (dlRes.ok) {
+                                        return await dlRes.blob();
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    } catch (_) {}
+                }
+                return null;
             },
 
-            // Kết xuất chuyển động mượt mà và khẩu hình tự nhiên
-            async renderMotionAndLipSync({ masterFrames, speechEnvelope, durationSec, width, height, cameraMotion = 'dolly', onProgress }) {
+            // Thu âm lời thoại của nhân vật theo kịch bản
+            async buildSpeechAudioBuffer(dialogueLines, voiceCharacters, durationSec, apiKey) {
+                if (!Array.isArray(dialogueLines) || !dialogueLines.length || !apiKey) return null;
+
+                const sampleRate = 48000;
+                const totalSamples = Math.ceil(sampleRate * durationSec);
+                const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
+                const ctx = new OfflineCtx(2, totalSamples, sampleRate);
+                let hasDialogue = false;
+
+                for (const line of dialogueLines) {
+                    const targetChar = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
+                    if (targetChar && line.text) {
+                        const charBuffer = await this.generateDialogueSpeech(line.text, targetChar, apiKey);
+                        if (charBuffer) {
+                            hasDialogue = true;
+                            const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), Math.max(0, durationSec - 0.5));
+                            const source = ctx.createBufferSource();
+                            source.buffer = charBuffer;
+                            source.connect(ctx.destination);
+                            source.start(startTime);
+                        }
+                    }
+                }
+
+                if (!hasDialogue) return null;
+                return await ctx.startRendering();
+            },
+
+            // Khởi tạo khung hình gốc duy nhất từ văn bản khi cần chuyển động phối cảnh
+            async generateSingleMasterVisual(prompt, width, height, seed, onStatus) {
+                onStatus("Đang kiến tạo khung hình điện ảnh trung tâm...");
+                const cleanPrompt = encodeURIComponent(`Cinematic film still, 8k, photorealistic, volumetric studio lighting, ${prompt}`);
+                const url = `https://image.pollinations.ai/prompt/${cleanPrompt}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${seed}`;
+                
+                try {
+                    const res = await fetch(url);
+                    if (!res.ok) throw new Error("Máy chủ hình ảnh đang bận");
+                    const blob = await res.blob();
+                    return await resolveSourceToBitmap(blob);
+                } catch (_) {
+                    return null;
+                }
+            },
+
+            // Chuyển động phối cảnh camera 3D từ một khung hình duy nhất
+            async renderCameraKinematics({ sourceBitmap, durationSec, width, height, cameraMotion = 'dolly', onProgress }) {
+                if (!sourceBitmap) throw new Error("Không tìm thấy dữ liệu khung hình gốc");
+
                 const totalFrames = Math.round(durationSec * 24);
                 const renderedCanvases = [];
-
-                // Đảm bảo toàn bộ khung hình then chốt là đối tượng hình ảnh hợp lệ
-                const validBitmaps = [];
-                for (const item of masterFrames) {
-                    const bmp = await resolveSourceToBitmap(item);
-                    if (bmp) validBitmaps.push(bmp);
-                }
-
-                if (validBitmaps.length === 0) {
-                    throw new Error("Dữ liệu hình ảnh không hợp lệ để kết xuất");
-                }
 
                 const canvas = document.createElement('canvas');
                 canvas.width = width;
@@ -3492,75 +3474,35 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                 const ctx = canvas.getContext('2d', { alpha: false });
 
                 for (let f = 0; f < totalFrames; f++) {
-                    const globalProgress = f / Math.max(1, totalFrames - 1);
-                    const envelopeVal = speechEnvelope ? (speechEnvelope[Math.min(f, speechEnvelope.length - 1)] || 0) : 0;
+                    const t = f / Math.max(1, totalFrames - 1);
+                    const ease = t * t * (3.0 - 2.0 * t);
 
-                    const segmentProgress = globalProgress * (validBitmaps.length - 1);
-                    const fromIdx = Math.min(Math.floor(segmentProgress), validBitmaps.length - 1);
-                    const toIdx = Math.min(fromIdx + 1, validBitmaps.length - 1);
-                    const localT = segmentProgress - fromIdx;
-                    const easeT = localT * localT * (3.0 - 2.0 * localT);
+                    let zoom = 1.0 + ease * 0.08;
+                    let panX = (ease - 0.5) * (width * 0.035);
+                    let panY = Math.sin(ease * Math.PI) * (height * 0.015);
 
-                    const fromBmp = validBitmaps[fromIdx];
-                    const toBmp = validBitmaps[toIdx];
-
-                    // Quỹ đạo máy quay
-                    let zoom = 1.0 + globalProgress * 0.04;
-                    let panX = Math.sin(globalProgress * Math.PI) * (width * 0.015);
-                    let panY = Math.cos(globalProgress * Math.PI * 0.5) * (height * 0.01);
-
-                    if (cameraMotion.includes('pan')) {
-                        panX = (globalProgress - 0.5) * (width * 0.05);
+                    if (cameraMotion === 'pan') {
+                        panX = (ease - 0.5) * (width * 0.06);
+                        panY = 0;
+                    } else if (cameraMotion === 'dolly') {
+                        zoom = 1.0 + ease * 0.12;
+                        panX = 0;
+                        panY = (ease - 0.5) * (height * 0.025);
                     }
-
-                    // Nhịp thở tự nhiên
-                    const breathY = Math.sin(globalProgress * Math.PI * 4.0) * 2.0;
 
                     ctx.save();
                     ctx.fillStyle = '#08090d';
                     ctx.fillRect(0, 0, width, height);
 
-                    ctx.translate(width / 2 + panX, height / 2 + panY + breathY);
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.imageSmoothingQuality = 'high';
+
+                    ctx.translate(width / 2 + panX, height / 2 + panY);
                     ctx.scale(zoom, zoom);
                     ctx.translate(-width / 2, -height / 2);
 
-                    // Kiểm tra an toàn trước khi vẽ
-                    if (fromBmp && (fromBmp instanceof ImageBitmap || fromBmp instanceof HTMLCanvasElement || fromBmp instanceof HTMLImageElement)) {
-                        ctx.globalAlpha = 1.0;
-                        ctx.drawImage(fromBmp, 0, 0, width, height);
-                    }
-
-                    if (toBmp && toBmp !== fromBmp && easeT > 0.001 && (toBmp instanceof ImageBitmap || toBmp instanceof HTMLCanvasElement || toBmp instanceof HTMLImageElement)) {
-                        ctx.globalAlpha = easeT;
-                        ctx.drawImage(toBmp, 0, 0, width, height);
-                    }
+                    ctx.drawImage(sourceBitmap, 0, 0, width, height);
                     ctx.restore();
-
-                    // Diễn hoạt cơ môi ăn khớp với âm thanh
-                    if (envelopeVal > 0.01) {
-                        const mouthAperture = Math.min(1.0, envelopeVal * 10.0);
-                        const mouthW = width * 0.11;
-                        const mouthH = (height * 0.035) * mouthAperture;
-                        const mouthX = width * 0.5 + panX * 0.5 - (mouthW / 2);
-                        const mouthY = height * 0.58 + panY * 0.5 + breathY;
-
-                        ctx.save();
-                        ctx.fillStyle = 'rgba(12, 12, 16, 0.4)';
-                        ctx.beginPath();
-                        ctx.ellipse(mouthX + mouthW / 2, mouthY + mouthH / 2, mouthW * 0.38, Math.max(1, mouthH * 0.55), 0, 0, Math.PI * 2);
-                        ctx.fill();
-                        ctx.restore();
-                    }
-
-                    // Chớp mắt vi biểu cảm
-                    const isBlink = (f % 68) >= 0 && (f % 68) <= 2;
-                    if (isBlink) {
-                        ctx.save();
-                        ctx.fillStyle = 'rgba(18, 18, 22, 0.22)';
-                        const eyeY = height * 0.38 + panY * 0.5 + breathY;
-                        ctx.fillRect(width * 0.36, eyeY, width * 0.28, height * 0.012);
-                        ctx.restore();
-                    }
 
                     const frameCanvas = document.createElement('canvas');
                     frameCanvas.width = width;
@@ -3573,15 +3515,10 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                     }
                 }
 
-                // Giải phóng bộ nhớ đệm hình ảnh
-                validBitmaps.forEach(b => {
-                    if (b instanceof ImageBitmap && b.close) b.close();
-                });
-
                 return renderedCanvases;
             },
 
-            // Đóng gói tệp video MP4
+            // Đóng gói luồng video MP4 và ghép âm thanh lời thoại
             async renderUniversalMP4({ videoFrames, audioBuffer, width, height, onProgress }) {
                 width = Math.floor(width / 2) * 2;
                 height = Math.floor(height / 2) * 2;
@@ -4458,7 +4395,7 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                         updateInputTokensDisplay();
                     };
 
-                    // Thực thi sản xuất phim điện ảnh hợp nhất
+                    // Thực thi sản xuất phim điện ảnh nguyên bản
                     const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
                         if (isGenerating.value) return;
                         isGenerating.value = true;
@@ -4490,49 +4427,68 @@ TRẢ VỀ ĐỊNH DẠNG JSON DUY NHẤT:
                                 isFromImage
                             );
 
-                            searchStatusText.value = "Đang thu âm lời thoại và không gian âm thanh...";
-                            const { mixedMasterBuffer, speechEnvelope } = await AICinemaEngine.mixAudioTracksWithDucking(
+                            searchStatusText.value = "Đang thu âm lời thoại theo diễn xuất...";
+                            const speechAudioBuffer = await AICinemaEngine.buildSpeechAudioBuffer(
                                 userTimelineCues.value,
                                 cinemaVoiceCharacters.value,
                                 durationSec,
-                                healthyKey,
-                                { resonance: directingPlan.acoustic_resonance }
+                                healthyKey
                             );
 
-                            searchStatusText.value = isFromImage
-                                ? "Đang đồng bộ phối cảnh từ hình ảnh..."
-                                : "Đang tạo hình nhân vật và không gian cảnh quay...";
+                            let finalVideoBlob = null;
 
-                            const masterFrames = await AICinemaEngine.synthesizeMasterFrames({
-                                basePromptEn: directingPlan.base_prompt_en,
-                                actorDna: directingPlan.actor_dna,
-                                width,
-                                height,
-                                durationSec,
-                                baseSeed: videoSeed,
+                            // Kết xuất video chuyển động nguyên bản
+                            finalVideoBlob = await AICinemaEngine.generateDiffusionVideo({
+                                prompt: directingPlan.base_prompt_en,
                                 directImageInput,
+                                durationSec,
+                                aspectRatio,
+                                apiKey: healthyKey,
                                 onStatus: (st) => { searchStatusText.value = st; }
                             });
 
-                            searchStatusText.value = "Đang mô phỏng chuyển động và biểu cảm...";
-                            const videoFrames = await AICinemaEngine.renderMotionAndLipSync({
-                                masterFrames,
-                                speechEnvelope,
-                                durationSec,
-                                width,
-                                height,
-                                cameraMotion: cinemaConfig.cameraMotion || 'dolly',
-                                onProgress: (pct) => { searchStatusText.value = `Đang kết xuất chuyển động: ${pct}%...`; }
-                            });
+                            // Dự phòng kết xuất chuyển động phối cảnh camera 3D sạch
+                            if (!finalVideoBlob) {
+                                searchStatusText.value = isFromImage
+                                    ? "Đang nạp phối cảnh hình ảnh gốc..."
+                                    : "Đang kiến tạo khung hình trung tâm...";
 
-                            searchStatusText.value = "Đang hòa âm và xuất bản tác phẩm...";
-                            const finalVideoBlob = await AICinemaEngine.renderUniversalMP4({
-                                videoFrames,
-                                audioBuffer: mixedMasterBuffer,
-                                width,
-                                height,
-                                onProgress: (pct) => { searchStatusText.value = `Đang đóng gói video: ${pct}%...`; }
-                            });
+                                let sourceBitmap = null;
+                                if (directImageInput) {
+                                    sourceBitmap = await resolveSourceToBitmap(directImageInput);
+                                } else {
+                                    sourceBitmap = await AICinemaEngine.generateSingleMasterVisual(
+                                        directingPlan.base_prompt_en,
+                                        width,
+                                        height,
+                                        videoSeed,
+                                        (st) => { searchStatusText.value = st; }
+                                    );
+                                }
+
+                                if (!sourceBitmap) {
+                                    throw new Error("Không thể khởi tạo khung hình hợp lệ cho tác phẩm");
+                                }
+
+                                searchStatusText.value = "Đang mô phỏng quỹ đạo chuyển động camera...";
+                                const videoFrames = await AICinemaEngine.renderCameraKinematics({
+                                    sourceBitmap,
+                                    durationSec,
+                                    width,
+                                    height,
+                                    cameraMotion: cinemaConfig.cameraMotion || 'dolly',
+                                    onProgress: (pct) => { searchStatusText.value = `Đang kết xuất chuyển động: ${pct}%...`; }
+                                });
+
+                                searchStatusText.value = "Đang đồng bộ thoại và đóng gói video...";
+                                finalVideoBlob = await AICinemaEngine.renderUniversalMP4({
+                                    videoFrames,
+                                    audioBuffer: speechAudioBuffer,
+                                    width,
+                                    height,
+                                    onProgress: (pct) => { searchStatusText.value = `Đang đóng gói video: ${pct}%...`; }
+                                });
+                            }
 
                             if (finalVideoBlob) {
                                 const videoUrl = ObjectUrlRegistry.create(finalVideoBlob);
