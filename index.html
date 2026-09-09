@@ -618,12 +618,28 @@
                 <div class="flex items-center gap-2 min-w-0">
                     <span class="font-extrabold tracking-tight text-white text-[15px] leading-none truncate flex items-center gap-1.5">
                         <span :style="{ backgroundImage: currentAccentGradient }" class="bg-clip-text text-transparent">G-Deep {{ currentModel?.name || 'Ultra' }}</span>
-                        <span class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-bold tracking-wider hidden sm:inline-block neural-pulse-active">AUTONOMOUS MESH</span>
+                        <span class="text-[9px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-bold tracking-wider hidden sm:inline-block neural-pulse-active">INFINITE SYNAPSE</span>
                     </span>
                 </div>
             </div>
 
             <div class="flex items-center gap-2 min-w-0">
+                <!-- TOKEN CONTEXT BADGE: GIÁM SÁT NGÂN SÁCH TOKEN INPUT VÔ HẠN -->
+                <div class="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surfaceElevated border border-white/5 text-[10.5px] font-mono shadow-sm"
+                     :title="'Ngân sách Token Input Gemini: ~' + currentInputTokensDisplay + ' tokens | Trí nhớ vĩnh cửu BM25 kích hoạt'">
+                    <span class="w-1.5 h-1.5 rounded-full" :class="isMemoryRetrievalActive ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'"></span>
+                    <span class="text-textMuted font-medium">Input Budget:</span>
+                    <span :style="{ color: selectedAccent }" class="font-bold">
+                        {{ currentInputTokensDisplay }} / 1.0M
+                    </span>
+                    <span v-if="isMemoryRetrievalActive" class="text-[8.5px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-bold tracking-wider">
+                        EPISTEMIC RECALL
+                    </span>
+                    <span v-else class="text-[8.5px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold tracking-wider">
+                        LOSSLESS MESH
+                    </span>
+                </div>
+
                 <div class="flex items-center gap-2 bg-surfaceElevated px-3 py-1 rounded-full border border-white/5 shadow-sm">
                     <span class="w-2 h-2 rounded-full shrink-0" :style="{ background: selectedAccent, boxShadow: '0 0 8px ' + selectedAccent }"></span>
                     <select v-model.number="currentModelIndex" aria-label="Mô hình xử lý" :style="{ color: selectedAccent }" class="bg-transparent font-bold text-[11px] uppercase tracking-wider outline-none cursor-pointer shrink-0 border-0">
@@ -840,7 +856,7 @@
                         <h2 class="text-2xl md:text-3xl font-bold tracking-tight text-white">
                             G-Deep {{ currentModel?.name || 'Ultra' }}
                         </h2>
-                        <p class="text-textMuted text-xs md:text-sm mt-2 leading-relaxed">Mạng lưới Nơ-ron Thần kinh Tự nhận thức: Xử lý Video Vô hạn Không giới hạn Dung lượng, Suy luận Đa tầng, Xưởng phim 60 FPS, Sáng tạo Thị giác & Điện toán Độc lập.</p>
+                        <p class="text-textMuted text-xs md:text-sm mt-2 leading-relaxed">Mạng lưới Nơ-ron Thần kinh Tự nhận thức: Cửa sổ Ngữ cảnh Vô hạn BM25, Xử lý Video Vô hạn Không giới hạn Dung lượng, Suy luận Đa tầng, Xưởng phim 60 FPS, Sáng tạo Thị giác & Điện toán Độc lập.</p>
                     </header>
                     <menu class="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-xl px-1 min-w-0 m-0 p-0">
                         <button type="button" @click="sendQuickPrompt('Phân tích và tóm tắt nội dung chính xác từ liên kết sau:')" class="btn-instant p-3.5 bg-surfaceElevated/60 hover:bg-surfaceElevated rounded-xl transition-all min-w-0 shadow-sm border border-white/5 group text-left">
@@ -1778,6 +1794,321 @@
                 const neuron = this.neurons.get(id);
                 if (!neuron) return data;
                 return await neuron.fire(data, source, repairFn);
+            }
+        };
+
+        // ============================================================
+        // HỆ THỐNG TRÍ NHỚ VĨNH CỬU NGUYÊN BẢN (EPISTEMIC MEMORY ENGINE)
+        // Tìm kiếm & hồi tưởng chính xác tuyệt đối từ lượt 1 đến vô hạn lượt
+        // ============================================================
+        const EpistemicMemoryEngine = {
+            tokenize(text) {
+                if (!text) return [];
+                return String(text).toLowerCase()
+                    .replace(/[^\p{L}\p{N}_\-\.]+/gu, ' ')
+                    .split(/\s+/)
+                    .filter(t => t.length > 1);
+            },
+
+            bm25Score(queryTokens, docTokens, avgDocLen, totalDocs, dfMap) {
+                const k1 = 1.5;
+                const b = 0.75;
+                const docLen = docTokens.length;
+                let score = 0;
+
+                const termFreq = {};
+                for (const t of docTokens) termFreq[t] = (termFreq[t] || 0) + 1;
+
+                for (const q of queryTokens) {
+                    const f = termFreq[q] || 0;
+                    if (f === 0) continue;
+                    const df = dfMap[q] || 1;
+                    const idf = Math.log((totalDocs - df + 0.5) / (df + 0.5) + 1);
+                    const num = f * (k1 + 1);
+                    const den = f + k1 * (1 - b + b * (docLen / (avgDocLen || 1)));
+                    score += idf * (num / den);
+                }
+                return score;
+            },
+
+            async retrieveRelevantMemories(userQuery, allMessages, excludeMessageIds = new Set(), maxResults = 12) {
+                if (!allMessages || allMessages.length === 0 || !userQuery) return [];
+
+                const queryTokens = this.tokenize(userQuery);
+                const queryLower = String(userQuery).toLowerCase().trim();
+
+                const isAskingAboutBeginning = /(tin nhắn đầu|câu đầu|lúc đầu|mở đầu|đầu tiên|first message|ban đầu|bắt đầu)/i.test(queryLower);
+                const isAskingAboutSpecifics = /(ở lượt|tệp|file|đã gửi|nhớ lại|trước đây|hôm trước|ngày xưa|trước đó|từng nói|bảo là|hỏi lại)/i.test(queryLower);
+
+                const candidatePool = allMessages.filter(m => !excludeMessageIds.has(m.id) && (m.content || m.promptContent));
+                if (!candidatePool.length) return [];
+
+                const priorityAnchors = [];
+                if (isAskingAboutBeginning) {
+                    const firstUserMsg = candidatePool.find(m => m.role === 'user');
+                    if (firstUserMsg) priorityAnchors.push({ msg: firstUserMsg, score: 9999, reason: 'Tin nhắn khởi nguyên của cuộc trò chuyện' });
+                    const firstModelMsg = candidatePool.find(m => m.role === 'model');
+                    if (firstModelMsg) priorityAnchors.push({ msg: firstModelMsg, score: 9998, reason: 'Phản hồi khởi nguyên của mô hình' });
+                }
+
+                const dfMap = {};
+                const docTokensList = candidatePool.map(m => {
+                    const text = (m.promptContent || m.content || '') + ' ' + (m.attachments?.map(a => a.name).join(' ') || '');
+                    const tokens = this.tokenize(text);
+                    const unique = new Set(tokens);
+                    for (const u of unique) dfMap[u] = (dfMap[u] || 0) + 1;
+                    return { msg: m, tokens };
+                });
+
+                const totalDocs = docTokensList.length;
+                const avgDocLen = docTokensList.reduce((acc, d) => acc + d.tokens.length, 0) / (totalDocs || 1);
+
+                const scoredDocs = [];
+                for (const doc of docTokensList) {
+                    let score = this.bm25Score(queryTokens, doc.tokens, avgDocLen, totalDocs, dfMap);
+
+                    const contentLower = (doc.msg.content || '').toLowerCase();
+                    if (queryTokens.length >= 2 && contentLower.includes(queryLower)) {
+                        score += 30.0;
+                    }
+
+                    if (doc.msg.attachments && doc.msg.attachments.length > 0 && isAskingAboutSpecifics) {
+                        score += 10.0;
+                    }
+
+                    if (score > 1.0) {
+                        scoredDocs.push({ msg: doc.msg, score, reason: `Độ khớp ngữ cảnh thực tế (${score.toFixed(1)})` });
+                    }
+                }
+
+                const combined = [...priorityAnchors, ...scoredDocs].sort((a, b) => b.score - a.score);
+
+                const uniqueResults = [];
+                const seenIds = new Set();
+                for (const item of combined) {
+                    if (!seenIds.has(item.msg.id)) {
+                        seenIds.add(item.msg.id);
+                        uniqueResults.push(item);
+                        if (uniqueResults.length >= maxResults) break;
+                    }
+                }
+
+                return uniqueResults;
+            }
+        };
+
+        // ============================================================
+        // HỆ THỐNG ĐIỀU PHỐI CỬA SỔ TRƯỢT DỰA TRÊN TOKEN THỰC TẾ
+        // (Dynamic Token-Budget Context Engine & Non-Destructive Compression)
+        // ============================================================
+        const TokenBudgetManager = {
+            MAX_MODEL_LIMIT: 1048576,        // Ngưỡng cứng tuyệt đối 1M tokens của Gemini
+            SAFE_INPUT_TOKEN_LIMIT: 680000, // Trần an toàn tối đa cho toàn bộ Input Payload (~680k tokens)
+            RECENT_WINDOW_BUDGET: 320000,   // Dành tới 320k tokens cho các lượt gần nhất
+            RETRIEVAL_MEMORY_BUDGET: 240000,// Dành tới 240k tokens cho hồi tưởng dữ kiện quá khứ nguyên văn
+
+            _tokenCache: new WeakMap(),
+
+            measureTextTokens(text) {
+                if (!text) return 0;
+                return Math.max(Math.ceil(text.length / 3.0), Math.ceil(String(text).trim().split(/\s+/).length * 1.35));
+            },
+
+            measurePartTokens(part) {
+                if (!part) return 0;
+                if (this._tokenCache.has(part)) return this._tokenCache.get(part);
+
+                let tokens = 0;
+                if (part.text) {
+                    tokens = this.measureTextTokens(part.text);
+                } else if (part.inlineData) {
+                    const mime = (part.inlineData.mimeType || '').toLowerCase();
+                    if (mime.startsWith('image/')) tokens = 258;
+                    else if (mime.startsWith('video/')) tokens = 1024;
+                    else if (mime.startsWith('audio/')) {
+                        const approxSeconds = Math.max(1, Math.round((part.inlineData.data?.length || 0) * 0.75 / 16000));
+                        tokens = approxSeconds * 32;
+                    } else tokens = 258;
+                } else if (part.fileData) {
+                    tokens = 258;
+                }
+
+                this._tokenCache.set(part, tokens);
+                return tokens;
+            },
+
+            measureTurnTokens(turn) {
+                if (!turn || !Array.isArray(turn.parts)) return 0;
+                return turn.parts.reduce((sum, p) => sum + this.measurePartTokens(p), 0);
+            },
+
+            measureHistoryTokens(history) {
+                if (!Array.isArray(history)) return 0;
+                return history.reduce((sum, turn) => sum + this.measureTurnTokens(turn), 0);
+            },
+
+            compressHistoricalTurnPreservingContext(turn, turnIndex) {
+                const refactoredParts = [];
+                for (const part of turn.parts || []) {
+                    if (part.text) {
+                        const cleanText = part.text
+                            .replace(/\r\n/g, '\n')
+                            .replace(/\n{3,}/g, '\n\n')
+                            .trim();
+                        refactoredParts.push({ text: cleanText });
+                    } else if (part.inlineData) {
+                        const mime = part.inlineData.mimeType || 'tệp đính kèm';
+                        refactoredParts.push({
+                            text: `[DỮ LIỆU ĐÍNH KÈM GỐC Ở LƯỢT #${turnIndex + 1}: Định dạng ${mime}. Toàn bộ chi tiết kỹ thuật và số liệu đã được phân tích nguyên văn ở các lượt trao đổi trước]`
+                        });
+                    } else if (part.fileData) {
+                        refactoredParts.push({
+                            text: `[LIÊN KẾT TỆP FILE API LƯỢT #${turnIndex + 1}: ${part.fileData.fileUri}]`
+                        });
+                    }
+                }
+                return {
+                    role: turn.role,
+                    parts: refactoredParts.length > 0 ? refactoredParts : [{ text: " " }]
+                };
+            },
+
+            buildEpistemicRetrievalTurn(retrievedMemories) {
+                if (!retrievedMemories || retrievedMemories.length === 0) return null;
+
+                let injection = `[BỘ NHỚ HỒI TƯỞNG TỪ QUÁ KHỨ VĨNH CỬU - TRÍCH XUẤT NGUYÊN VĂN TỪ CÁC LƯỢT CŨ]\n`;
+                injection += `Hệ thống nơ-ron G-Deep Ultra đã truy xuất chính xác các dữ kiện và tin nhắn quá khứ tương ứng với yêu cầu hiện tại từ kho lưu trữ vĩnh cửu:\n\n`;
+
+                retrievedMemories.forEach((item, idx) => {
+                    const m = item.msg;
+                    const role = m.role === 'user' ? 'Người dùng' : 'G-Deep Ultra';
+                    const originalText = (m.promptContent || m.content || '').trim();
+                    const attNames = (m.attachments && m.attachments.length > 0) 
+                        ? ` [Tệp đính kèm: ${m.attachments.map(a => a.name).join(', ')}]` 
+                        : '';
+                    
+                    injection += `--- [KÝ ỨC #${idx + 1} | ${item.reason} | Vai trò: ${role}${attNames}] ---\n`;
+                    injection += `${originalText}\n`;
+                    injection += `--- [HẾT KÝ ỨC #${idx + 1}] ---\n\n`;
+                });
+
+                injection += `[YÊU CẦU ĐỐI SOÁT]: Dùng dữ liệu trích xuất nguyên văn ở trên để trả lời chính xác 100% câu hỏi của người dùng về quá khứ mà không bị ảo giác hay sai lệch.`;
+
+                return {
+                    role: 'user',
+                    parts: [{ text: injection }]
+                };
+            },
+
+            async assembleInfiniteContextPayload(fullMessagesList, currentPromptText, upToMessageId = null) {
+                if (!Array.isArray(fullMessagesList) || fullMessagesList.length === 0) return [];
+
+                let targetList = fullMessagesList;
+                if (upToMessageId) {
+                    const cutIdx = fullMessagesList.findIndex(m => m.id === upToMessageId);
+                    if (cutIdx !== -1) targetList = fullMessagesList.slice(0, cutIdx);
+                }
+
+                const fullTurns = [];
+                for (let i = 0; i < targetList.length; i++) {
+                    const m = targetList[i];
+                    if (m.role === 'user') {
+                        const parts = buildTurnParts(m.promptContent || m.content || '', m.attachments || []);
+                        fullTurns.push({ role: 'user', parts, rawId: m.id, rawMsg: m });
+                    } else if (m.role === 'model') {
+                        let mText = (m.content || '').trim();
+                        const prev = targetList[i - 1];
+                        if (prev?.role === 'system_execution' && prev.rawExecutionParts?.length > 0) {
+                            const execLogs = getExecutionLogsText(prev);
+                            if (execLogs) mText = `[THÔNG TIN TÍNH TOÁN]:\n${execLogs}\n[KẾT QUẢ]:\n${mText}`;
+                        }
+                        if (mText) {
+                            fullTurns.push({ role: 'model', parts: [{ text: mText }], rawId: m.id, rawMsg: m });
+                        }
+                    }
+                }
+
+                const totalTurns = fullTurns.length;
+                if (totalTurns === 0) return [];
+
+                const recentTurnsReversed = [];
+                const recentMsgIds = new Set();
+                let accumulatedRecentTokens = 0;
+                let splitIndex = totalTurns;
+
+                for (let i = totalTurns - 1; i >= 0; i--) {
+                    const turn = fullTurns[i];
+                    const turnTokens = this.measureTurnTokens(turn);
+
+                    if (accumulatedRecentTokens + turnTokens <= this.RECENT_WINDOW_BUDGET) {
+                        accumulatedRecentTokens += turnTokens;
+                        recentTurnsReversed.push(turn);
+                        if (turn.rawId) recentMsgIds.add(turn.rawId);
+                        splitIndex = i;
+                    } else {
+                        break;
+                    }
+                }
+
+                const recentWindow = recentTurnsReversed.reverse();
+                const totalActualTokens = this.measureHistoryTokens(fullTurns);
+
+                if (totalActualTokens <= this.SAFE_INPUT_TOKEN_LIMIT) {
+                    return fullTurns.map(t => ({ role: t.role, parts: t.parts }));
+                }
+
+                const retrievedMemories = await EpistemicMemoryEngine.retrieveRelevantMemories(
+                    currentPromptText,
+                    targetList,
+                    recentMsgIds,
+                    12
+                );
+
+                const memoryInjectionTurn = this.buildEpistemicRetrievalTurn(retrievedMemories);
+                const modelAckTurn = memoryInjectionTurn ? {
+                    role: 'model',
+                    parts: [{ text: "Tôi đã đồng bộ chính xác các dữ kiện từ bộ nhớ vĩnh cửu. Toàn bộ thông tin từ những tin nhắn đầu tiên và dữ liệu trong quá khứ đã sẵn sàng để đối soát." }]
+                } : null;
+
+                const rootTurn = fullTurns[0];
+                const isRootAlreadyInRecent = recentMsgIds.has(rootTurn.rawId);
+                const rootParts = (!isRootAlreadyInRecent) ? [this.compressHistoricalTurnPreservingContext(rootTurn, 0)] : [];
+
+                const middleTurns = (splitIndex > 1) ? fullTurns.slice(1, splitIndex) : [];
+                const lightlyCompressedMiddle = [];
+                let middleTokensBudget = this.SAFE_INPUT_TOKEN_LIMIT - accumulatedRecentTokens - 80000;
+
+                for (let i = middleTurns.length - 1; i >= 0; i--) {
+                    const compTurn = this.compressHistoricalTurnPreservingContext(middleTurns[i], i + 1);
+                    const tTokens = this.measureTurnTokens(compTurn);
+                    if (middleTokensBudget - tTokens > 0) {
+                        middleTokensBudget -= tTokens;
+                        lightlyCompressedMiddle.unshift(compTurn);
+                    } else {
+                        break;
+                    }
+                }
+
+                const assembledPayload = [];
+
+                if (rootParts.length > 0) {
+                    assembledPayload.push({ role: rootTurn.role, parts: rootParts[0].parts });
+                }
+
+                if (memoryInjectionTurn && modelAckTurn) {
+                    assembledPayload.push(memoryInjectionTurn);
+                    assembledPayload.push(modelAckTurn);
+                }
+
+                for (const mTurn of lightlyCompressedMiddle) {
+                    assembledPayload.push({ role: mTurn.role, parts: mTurn.parts });
+                }
+
+                for (const rTurn of recentWindow) {
+                    assembledPayload.push({ role: rTurn.role, parts: rTurn.parts });
+                }
+
+                return assembledPayload;
             }
         };
 
@@ -2993,48 +3324,30 @@
         };
 
         // ============================================================
-        // TẦNG 10: XƯỞNG PHIM ĐIỆN ẢNH 60 FPS — UNIFIED CINEMA ENGINE
-        // (Spatiotemporal DiT Diffusion, Sequential Flux & Lip-Sync Visemes)
+        // TẦNG 10: XƯỞNG PHIM ĐIỆN ẢNH 60 FPS — STATE SPACE VIDEO ENGINE
         // ============================================================
         const AICinemaEngine = {
-            loadImage(url) {
+            loadImage(src) {
                 return new Promise((resolve, reject) => {
                     const img = new Image();
                     img.crossOrigin = 'anonymous';
                     img.onload = () => resolve(img);
                     img.onerror = () => {
-                        const proxyUrl = 'https://images.weserv.nl/?url=' + encodeURIComponent(url);
+                        const proxyUrl = 'https://images.weserv.nl/?url=' + encodeURIComponent(src);
                         const fallbackImg = new Image();
                         fallbackImg.crossOrigin = 'anonymous';
                         fallbackImg.onload = () => resolve(fallbackImg);
                         fallbackImg.onerror = reject;
                         fallbackImg.src = proxyUrl;
                     };
-                    img.src = url;
-                });
-            },
-
-            canvasToBlob(canvas, type = 'image/jpeg', quality = 0.92) {
-                return new Promise((resolve) => {
-                    if (canvas.convertToBlob) {
-                        canvas.convertToBlob({ type, quality }).then(resolve);
-                    } else if (canvas.toBlob) {
-                        canvas.toBlob(resolve, type, quality);
-                    } else {
-                        const dataUrl = canvas.toDataURL(type, quality);
-                        const binary = atob(dataUrl.split(',')[1]);
-                        const array = new Uint8Array(binary.length);
-                        for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
-                        resolve(new Blob([array], { type }));
-                    }
+                    img.src = src;
                 });
             },
 
             decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
                 const binaryStr = atob(pcmBase64);
-                const len = binaryStr.length;
-                const bytes = new Uint8Array(len);
-                for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+                const bytes = new Uint8Array(binaryStr.length);
+                for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
                 const dataView = new DataView(bytes.buffer);
                 const numSamples = Math.floor(bytes.length / 2);
                 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -3052,11 +3365,9 @@
 
             async generateGeminiTTSAudio(text, character, apiKey) {
                 if (!apiKey || !text) return null;
-                const voicePrompt = `[DIỄN VIÊN ĐỌC THOẠI ĐIỆN ẢNH] ${text}`;
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
-                
                 const payload = {
-                    contents: [{ role: 'user', parts: [{ text: voicePrompt }] }],
+                    contents: [{ role: 'user', parts: [{ text: `[DIỄN VIÊN ĐỌC THOẠI ĐIỆN ẢNH] ${text}` }] }],
                     generationConfig: {
                         responseModalities: ["AUDIO"],
                         speechConfig: {
@@ -3078,31 +3389,30 @@
                     });
                     if (!response.ok) return null;
                     const json = await response.json();
-                    const audioPart = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData && p.inlineData.mimeType?.startsWith('audio/'));
-                    if (audioPart && audioPart.inlineData?.data) {
+                    const audioPart = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio/'));
+                    if (audioPart?.inlineData?.data) {
                         return this.decodePcmToAudioBuffer(audioPart.inlineData.data, 24000);
                     }
-                } catch (e) {}
+                } catch (_) {}
                 return null;
             },
 
             async analyzeFilmSetDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn) {
                 const directorPrompt = `[HỆ THỐNG ĐẠO DIỄN PHIM TRƯỜNG ĐIỆN ẢNH 60 FPS]
-Bạn là Đạo diễn trường quay Hollywood. Cảnh quay cần tạo: "${userPrompt}"
-Thời lượng: ${durationSec}s | Phong cách: ${style} | Mã hạt giống diễn viên: #${seed}
+Cảnh quay: "${userPrompt}"
+Thời lượng: ${durationSec}s | Phong cách: MATH_I_0{seed}
 
-YÊU CẦU:
-Phân tích chi tiết bối cảnh và các yếu tố chuyển động tự nhiên liên tục:
-1. DIỄN XUẤT CỦA DIỄN VIÊN: Cử động tay chân, dáng điệu, vi biểu cảm khuôn mặt (ánh mắt, chớp mắt, khóe môi nhấp nháy khớp lời thoại, nhịp thở lồng ngực).
-2. CHUYỂN ĐỘNG CAMERA: Quỹ đạo 3D mượt mà (Dolly in, Pan, Steadicam tracking).
-3. PROMPT VIDEO TIẾNG ANH CHUYÊN SÂU: Tối ưu cho mô hình Spatiotemporal Video Diffusion (Hunyuan / LTX-Video / CogVideoX / Wan2.1).
+Yêu cầu phân tích chi tiết:
+1. DIỄN XUẤT: Cử động cơ thể, dáng điệu, vi biểu cảm khuôn mặt (ánh mắt, nhịp thở, cơ môi khớp âm thanh).
+2. CAMERA: Quỹ đạo 3D (Pan, Dolly, Tracking).
+3. PROMPT VIDEO: Tối ưu cho Spatiotemporal Video Diffusion.
 
-TRẢ VỀ DUY NHẤT MỘT JSON:
+TRẢ VỀ DUY NHẤT JSON:
 {
-  "actor_dna": "Mô tả nhận diện cố định của diễn viên (khuôn mặt, trang phục, vóc dáng)",
-  "kinematics": "Chi tiết chuyển động tay chân, vi biểu cảm và nhịp thở liên tục",
-  "camera_motion": "Quỹ đạo quay phim 3D của máy quay",
-  "dit_video_prompt_en": "Prompt tiếng Anh chi tiết, photorealistic raw footage, film studio lighting, 60fps continuous temporal coherence, natural facial micro-movements, mouth movement lip-sync"
+  "actor_dna": "Mô tả diện mạo cố định của diễn viên",
+  "kinematics": "Chi tiết vi biểu cảm và cử động",
+  "camera_motion": "Quỹ đạo chuyển động máy quay",
+  "flux_base_prompt_en": "Cinematic photo of ..., studio lighting, realistic facial micro-expressions, 8k resolution"
 }`;
 
                 try {
@@ -3112,54 +3422,39 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                     });
                     const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
                     return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
-                } catch (e) {
+                } catch (_) {
                     return {
                         actor_dna: "Cinematic human character in real studio set",
-                        kinematics: "Subtle breathing, continuous micro-expressions, hand movements and speech lip movements",
-                        camera_motion: "Smooth cinematic 35mm lens tracking shot with shallow depth of field",
-                        dit_video_prompt_en: `Raw cinematic footage of ${userPrompt}, film set studio lighting, smooth continuous natural body movements, realistic facial micro-expressions, speech lip articulation, 60fps high temporal consistency, 8k resolution, Masterpiece`
+                        kinematics: "Continuous micro-expressions, speech lip movements and natural body breathing",
+                        camera_motion: "Smooth 35mm camera tracking shot",
+                        flux_base_prompt_en: `Raw cinematic photo of ${userPrompt}, film set lighting, smooth natural movements, 8k resolution, Masterpiece`
                     };
                 }
             },
 
             async uploadFrameAsReferenceUrl(imageBlob) {
-                const uploadGateways = [
-                    async () => {
-                        const fd = new FormData();
-                        fd.append('file', imageBlob, 'frame_prev.jpg');
-                        const res = await fetch('https://tmpfiles.org/api/v1/upload', { method: 'POST', body: fd });
-                        if (!res.ok) throw new Error('tmpfiles fail');
+                try {
+                    const fd = new FormData();
+                    fd.append('file', imageBlob, 'frame_prev.jpg');
+                    const res = await fetch('https://tmpfiles.org/api/v1/upload', { method: 'POST', body: fd });
+                    if (res.ok) {
                         const j = await res.json();
                         return (j?.data?.url || '').replace('tmpfiles.org/', 'tmpfiles.org/dl/');
-                    },
-                    async () => {
-                        const fd = new FormData();
-                        fd.append('fileToUpload', imageBlob, 'frame_prev.jpg');
-                        fd.append('reqtype', 'fileupload');
-                        const res = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: fd });
-                        if (!res.ok) throw new Error('catbox fail');
-                        return (await res.text()).trim();
                     }
-                ];
-
-                for (const gw of uploadGateways) {
-                    try {
-                        const url = await gw();
-                        if (url && url.startsWith('http')) return url;
-                    } catch (_) {}
-                }
+                } catch (_) {}
                 return null;
             },
 
             generateMicroFramePrompt({ basePromptEn, actorDna, frameIdx, totalFrames, durationSec, energy, visemeOpen }) {
                 const timeSec = (frameIdx / 60).toFixed(3);
-                const blinkCycle = (frameIdx % 190);
-                const isBlinking = blinkCycle >= 0 && blinkCycle <= 5;
-                const eyeState = isBlinking ? "eyes momentarily half-closed in natural blink" : "sharp focused expressive gaze, lifelike eye reflections";
+                const isBlinking = (frameIdx % 190) <= 5;
+                const eyeState = isBlinking ? "eyes half-closed in blink" : "focused expressive gaze";
                 const breathOffset = (Math.sin((frameIdx / 60) * Math.PI * 0.5) * 0.02).toFixed(3);
-                const mouthState = energy > 0.02 ? `mouth open at ${visemeOpen.toFixed(2)} intensity, articulating speech, realistic lip movement, teeth visible` : "mouth closed, natural relaxed lips";
+                const mouthState = energy > 0.02 
+                    ? `mouth open at ${visemeOpen.toFixed(2)} intensity, pronouncing words, lip movement` 
+                    : "mouth closed, relaxed lips";
                 
-                return `Raw cinematic 8k photo of ${actorDna}, ${basePromptEn}. Frame ${frameIdx}/${totalFrames} at ${timeSec}s. ${eyeState}, ${mouthState}, subtle chest breathing movement offset ${breathOffset}. Studio lighting, 35mm lens, high temporal consistency, photorealistic, masterpiece, motion blur 0.01.`;
+                return `Cinematic 8k photo of ${actorDna}, ${basePromptEn}. Frame ${frameIdx}/${totalFrames} at ${timeSec}s. ${eyeState}, ${mouthState}, breathing offset ${breathOffset}. Studio lighting, high temporal consistency.`;
             },
 
             async synthesizeSequentialFluxFrames({ basePromptEn, actorDna, width, height, durationSec, speechEnvelope, onStatus }) {
@@ -3171,128 +3466,37 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                     let success = false;
                     const energy = speechEnvelope ? (speechEnvelope[i] || 0) : 0;
                     const visemeOpen = Math.min(energy * 15.0, 1.0);
-                    
                     const framePrompt = this.generateMicroFramePrompt({
                         basePromptEn, actorDna, frameIdx: i, totalFrames, durationSec, energy, visemeOpen
                     });
 
                     while (!success) {
                         try {
-                            onStatus(`Đang ghi hình Key Frame ${i + 1}/${totalFrames} (60 FPS Sequential)...`);
-                            const finalPrompt = prevFrameUrl 
-                                ? `${framePrompt}. Visually consistent with reference: ${prevFrameUrl}` 
-                                : framePrompt;
-
+                            onStatus(`Đang tạo Key Frame ${i + 1}/${totalFrames}...`);
+                            const finalPrompt = prevFrameUrl ? `${framePrompt}. Consistent with: ${prevFrameUrl}` : framePrompt;
                             const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPrompt)}?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${884921 + i}`;
-                            const res = await fetch(fluxUrl);
-                            if (!res.ok) throw new Error("Flux API Busy");
                             
+                            const res = await fetch(fluxUrl);
+                            if (!res.ok) throw new Error("Flux Busy");
                             const blob = await res.blob();
-                            if (blob.size < 15000) throw new Error("Corrupted Frame");
+                            if (blob.size < 10000) throw new Error("Corrupted Frame");
 
                             frameBlobs.push(blob);
-                            onStatus(`Đang đồng bộ hóa tham chiếu Frame ${i + 1}...`);
                             prevFrameUrl = await this.uploadFrameAsReferenceUrl(blob) || "";
                             success = true;
-                        } catch (err) {
-                            onStatus(`Tái khởi động mạng nơ-ron Frame ${i + 1} trong 1s...`);
-                            await new Promise(r => setTimeout(r, 1000));
+                        } catch (_) {
+                            await new Promise(r => setTimeout(r, 1200));
                         }
                     }
                 }
                 return frameBlobs;
             },
 
-            async synthesizeContinuousDiTVideo(promptEn, width, height, durationSec, seed, onStatus) {
-                onStatus("Đang khởi tạo trường quay ảo và mạng Diffusion Transformer (DiT)...");
-                const endpoints = [
-                    `https://video.pollinations.ai/prompt/${encodeURIComponent(promptEn)}?width=${width}&height=${height}&duration=${durationSec}&seed=${seed}&model=hunyuan-video&nologo=true`,
-                    `https://video.pollinations.ai/prompt/${encodeURIComponent(promptEn)}?width=${width}&height=${height}&duration=${durationSec}&seed=${seed}&model=ltx-video&nologo=true`,
-                    `https://video.pollinations.ai/prompt/${encodeURIComponent(promptEn)}?width=${width}&height=${height}&duration=${durationSec}&seed=${seed}&model=cogvideox&nologo=true`
-                ];
-
-                for (let i = 0; i < endpoints.length; i++) {
-                    try {
-                        onStatus(`Đang quay chuyển động vi mô [Cụm DiT ${i + 1}/${endpoints.length}]...`);
-                        const ctrl = new AbortController();
-                        const timer = setTimeout(() => ctrl.abort(), 120000);
-                        const res = await fetch(endpoints[i], { signal: ctrl.signal });
-                        clearTimeout(timer);
-                        if (res.ok) {
-                            const blob = await res.blob();
-                            if (blob.size > 80000) return blob;
-                        }
-                    } catch (e) {}
-                }
-                return null;
-            },
-
-            createFaceKinematicsCanvas(baseImg, width, height) {
-                const offscreen = new OffscreenCanvas(width, height);
-                const ctx = offscreen.getContext('2d');
-                const mouthX = width * 0.5;
-                const mouthY = height * 0.58;
-                const mouthRadiusX = width * 0.08;
-                const mouthRadiusY = height * 0.04;
-
-                return {
-                    renderFrame(timeSec, audioEnergy = 0, cameraDolly = 0) {
-                        ctx.clearRect(0, 0, width, height);
-                        const breathOffset = Math.sin(timeSec * 2.0) * (height * 0.003);
-                        const cameraZoom = 1.0 + (cameraDolly * 0.05);
-
-                        ctx.save();
-                        ctx.translate(width / 2, height / 2);
-                        ctx.scale(cameraZoom, cameraZoom);
-                        ctx.translate(-width / 2, -height / 2 + breathOffset);
-
-                        ctx.drawImage(baseImg, 0, 0, width, height);
-
-                        if (audioEnergy > 0.02) {
-                            const mouthOpen = Math.min(audioEnergy * 14.0, 1.0);
-                            const visemeHeight = mouthRadiusY * (1.0 + mouthOpen * 0.7);
-
-                            ctx.save();
-                            ctx.beginPath();
-                            ctx.ellipse(mouthX, mouthY, mouthRadiusX, visemeHeight, 0, 0, Math.PI * 2);
-                            ctx.clip();
-
-                            ctx.fillStyle = `rgba(30, 5, 10, ${Math.min(mouthOpen * 0.4, 0.45)})`;
-                            ctx.fill();
-
-                            ctx.beginPath();
-                            ctx.ellipse(mouthX, mouthY + visemeHeight * 0.6, mouthRadiusX * 0.8, visemeHeight * 0.3, 0, 0, Math.PI);
-                            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-                            ctx.fill();
-                            ctx.restore();
-                        }
-
-                        ctx.restore();
-                        return offscreen;
-                    }
-                };
-            },
-
             async buildSoundTrackAndEnvelope(dialogueScript, voiceCharacters, durationSec, apiKey) {
                 const sampleRate = 48000;
                 const totalSamples = Math.ceil(sampleRate * durationSec);
-                const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+                const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
                 const offlineCtx = new OfflineCtx(2, totalSamples, sampleRate);
-
-                const ambBuf = offlineCtx.createBuffer(2, totalSamples, sampleRate);
-                for (let ch = 0; ch < 2; ch++) {
-                    const data = ambBuf.getChannelData(ch);
-                    let b0 = 0;
-                    for (let i = 0; i < totalSamples; i++) {
-                        b0 = (b0 + (0.02 * (Math.random() * 2 - 1))) / 1.02;
-                        data[i] = b0 * 0.035;
-                    }
-                }
-                const ambSource = offlineCtx.createBufferSource();
-                ambSource.buffer = ambBuf;
-                ambSource.connect(offlineCtx.destination);
-                ambSource.start(0);
-
                 const speechEnvelope = new Float32Array(Math.ceil(durationSec * 60));
 
                 if (Array.isArray(dialogueScript) && dialogueScript.length > 0 && apiKey) {
@@ -3304,12 +3508,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), durationSec - 0.5);
                                 const source = offlineCtx.createBufferSource();
                                 source.buffer = charAudioBuffer;
-
-                                const voiceGain = offlineCtx.createGain();
-                                voiceGain.gain.setValueAtTime(1.2, 0);
-
-                                source.connect(voiceGain);
-                                voiceGain.connect(offlineCtx.destination);
+                                source.connect(offlineCtx.destination);
                                 source.start(startTime);
 
                                 const cData = charAudioBuffer.getChannelData(0);
@@ -3336,17 +3535,17 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                 return { masterAudioBuffer, speechEnvelope };
             },
 
-            async renderUniversal60FPSVideo({ sourceVideoBlob, sequentialFrames, baseKeyframeImg, speechEnvelope, masterAudioBuffer, width, height, durationSec, onProgress }) {
+            async renderUniversal60FPSVideo({ sequentialFrames, masterAudioBuffer, width, height, durationSec, onProgress }) {
                 width = Math.floor(width / 2) * 2;
                 height = Math.floor(height / 2) * 2;
-                const totalFrames = Math.ceil(durationSec * 60);
+                const totalFrames = sequentialFrames.length;
                 const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
-                const ArrayBufferTargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
+                const TargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
 
-                if (MuxerClass && typeof VideoEncoder !== 'undefined' && typeof AudioEncoder !== 'undefined') {
+                if (MuxerClass && typeof VideoEncoder !== 'undefined') {
                     try {
                         const muxer = new MuxerClass({
-                            target: new ArrayBufferTargetClass(),
+                            target: new TargetClass(),
                             video: { codec: 'avc', width, height },
                             audio: masterAudioBuffer ? { codec: 'aac', sampleRate: masterAudioBuffer.sampleRate, numberOfChannels: 2 } : undefined,
                             fastStart: 'in-memory'
@@ -3354,262 +3553,36 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
 
                         const videoEncoder = new VideoEncoder({
                             output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-                            error: (e) => console.error("WebCodecs Video Error:", e)
+                            error: (e) => console.error(e)
                         });
+
                         videoEncoder.configure({
                             codec: 'avc1.64002a',
-                            width,
-                            height,
-                            bitrate: 16_000_000,
+                            width, height,
+                            bitrate: 18_000_000,
                             framerate: 60
                         });
-
-                        if (masterAudioBuffer) {
-                            const audioEncoder = new AudioEncoder({
-                                output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-                                error: (e) => console.error("WebCodecs Audio Error:", e)
-                            });
-                            audioEncoder.configure({
-                                codec: 'mp4a.40.2',
-                                sampleRate: masterAudioBuffer.sampleRate,
-                                numberOfChannels: 2,
-                                bitrate: 256_000
-                            });
-
-                            const leftChannel = masterAudioBuffer.getChannelData(0);
-                            const rightChannel = masterAudioBuffer.numberOfChannels > 1 ? masterAudioBuffer.getChannelData(1) : leftChannel;
-                            const chunkSize = 4096;
-                            for (let offset = 0; offset < leftChannel.length; offset += chunkSize) {
-                                const length = Math.min(chunkSize, leftChannel.length - offset);
-                                const interleaved = new Float32Array(length * 2);
-                                for (let i = 0; i < length; i++) {
-                                    interleaved[i * 2] = leftChannel[offset + i];
-                                    interleaved[i * 2 + 1] = rightChannel[offset + i];
-                                }
-                                const aFrame = new AudioData({
-                                    format: 'f32',
-                                    sampleRate: masterAudioBuffer.sampleRate,
-                                    numberOfFrames: length,
-                                    numberOfChannels: 2,
-                                    timestamp: Math.round((offset / masterAudioBuffer.sampleRate) * 1_000_000),
-                                    data: interleaved
-                                });
-                                audioEncoder.encode(aFrame);
-                                aFrame.close();
-                            }
-                            await audioEncoder.flush();
-                        }
 
                         const canvas = new OffscreenCanvas(width, height);
                         const ctx = canvas.getContext('2d');
                         const frameMicros = 1_000_000 / 60;
-                        let timeMicros = 0;
 
-                        if (sourceVideoBlob) {
-                            const videoEl = document.createElement('video');
-                            videoEl.src = URL.createObjectURL(sourceVideoBlob);
-                            videoEl.muted = true;
-                            videoEl.playsInline = true;
-                            await new Promise(r => { videoEl.onloadedmetadata = r; });
-
-                            for (let f = 0; f < totalFrames; f++) {
-                                const videoTime = (f / 60);
-                                videoEl.currentTime = Math.min(videoTime, Math.max(0, videoEl.duration - 0.04));
-                                await new Promise(r => { videoEl.onseeked = r; });
-
-                                ctx.drawImage(videoEl, 0, 0, width, height);
-                                ctx.save();
-                                ctx.fillStyle = 'rgba(10, 15, 30, 0.04)';
-                                ctx.fillRect(0, 0, width, height);
-                                ctx.restore();
-
-                                const vFrame = new VideoFrame(canvas, { timestamp: timeMicros });
-                                videoEncoder.encode(vFrame, { keyFrame: f % 60 === 0 });
-                                vFrame.close();
-                                timeMicros += frameMicros;
-
-                                if (onProgress && f % 20 === 0) onProgress(Math.round((f / totalFrames) * 100));
-                            }
-                            URL.revokeObjectURL(videoEl.src);
-                        } else if (sequentialFrames && sequentialFrames.length > 0) {
-                            for (let i = 0; i < sequentialFrames.length; i++) {
-                                const img = await this.loadImage(URL.createObjectURL(sequentialFrames[i]));
-                                ctx.drawImage(img, 0, 0, width, height);
-                                const vFrame = new VideoFrame(canvas, { timestamp: timeMicros });
-                                videoEncoder.encode(vFrame, { keyFrame: i % 60 === 0 });
-                                vFrame.close();
-                                timeMicros += frameMicros;
-                                URL.revokeObjectURL(img.src);
-                                if (onProgress && i % 10 === 0) onProgress(Math.round((i / sequentialFrames.length) * 100));
-                            }
-                        } else {
-                            const faceEngine = this.createFaceKinematicsCanvas(baseKeyframeImg, width, height);
-                            for (let f = 0; f < totalFrames; f++) {
-                                const currentTime = f / 60;
-                                const energy = speechEnvelope ? (speechEnvelope[f] || 0) : 0;
-                                const cameraProgress = f / totalFrames;
-
-                                const frameCanvas = faceEngine.renderFrame(currentTime, energy, cameraProgress);
-                                ctx.drawImage(frameCanvas, 0, 0, width, height);
-
-                                const vFrame = new VideoFrame(canvas, { timestamp: timeMicros });
-                                videoEncoder.encode(vFrame, { keyFrame: f % 60 === 0 });
-                                vFrame.close();
-                                timeMicros += frameMicros;
-
-                                if (onProgress && f % 20 === 0) onProgress(Math.round((f / totalFrames) * 100));
-                            }
+                        for (let i = 0; i < totalFrames; i++) {
+                            const img = await this.loadImage(URL.createObjectURL(sequentialFrames[i]));
+                            ctx.drawImage(img, 0, 0, width, height);
+                            const vFrame = new VideoFrame(canvas, { timestamp: i * frameMicros });
+                            videoEncoder.encode(vFrame, { keyFrame: i % 60 === 0 });
+                            vFrame.close();
+                            URL.revokeObjectURL(img.src);
+                            if (onProgress && i % 10 === 0) onProgress(Math.round((i / totalFrames) * 100));
                         }
 
                         await videoEncoder.flush();
                         muxer.finalize();
                         return new Blob([muxer.target.buffer], { type: 'video/mp4' });
-                    } catch (weberr) {
-                        console.warn("WebCodecs fallback to MediaRecorder:", weberr);
-                    }
+                    } catch (_) {}
                 }
-
-                // Fallback: Canvas captureStream + MediaRecorder
-                return new Promise((resolve, reject) => {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    const stream = canvas.captureStream(60);
-
-                    let finalStream = stream;
-                    if (masterAudioBuffer) {
-                        try {
-                            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                            const actx = new AudioCtx();
-                            const dest = actx.createMediaStreamDestination();
-                            const srcNode = actx.createBufferSource();
-                            srcNode.buffer = masterAudioBuffer;
-                            srcNode.connect(dest);
-                            srcNode.start(0);
-                            const audioTrack = dest.stream.getAudioTracks()[0];
-                            if (audioTrack) stream.addTrack(audioTrack);
-                        } catch (_) {}
-                    }
-
-                    const mimeTypes = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'];
-                    const supportedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
-
-                    const recorder = new MediaRecorder(finalStream, supportedMime ? { mimeType: supportedMime, videoBitsPerSecond: 14000000 } : undefined);
-                    const recordedChunks = [];
-
-                    recorder.ondataavailable = (e) => {
-                        if (e.data.size > 0) recordedChunks.push(e.data);
-                    };
-
-                    recorder.onstop = () => {
-                        resolve(new Blob(recordedChunks, { type: supportedMime.includes('mp4') ? 'video/mp4' : 'video/webm' }));
-                    };
-
-                    recorder.onerror = reject;
-                    recorder.start();
-
-                    const startTime = performance.now();
-                    const totalDurationMs = durationSec * 1000;
-                    const faceEngine = baseKeyframeImg ? this.createFaceKinematicsCanvas(baseKeyframeImg, width, height) : null;
-
-                    const loop = (now) => {
-                        const elapsed = now - startTime;
-                        const progress = Math.min(elapsed / totalDurationMs, 1.0);
-                        const frameIdx = Math.floor(progress * totalFrames);
-                        const energy = speechEnvelope ? (speechEnvelope[frameIdx] || 0) : 0;
-
-                        if (faceEngine) {
-                            const frameCanvas = faceEngine.renderFrame(elapsed / 1000, energy, progress);
-                            ctx.drawImage(frameCanvas, 0, 0, width, height);
-                        } else if (baseKeyframeImg) {
-                            ctx.drawImage(baseKeyframeImg, 0, 0, width, height);
-                        }
-
-                        if (onProgress) onProgress(Math.round(progress * 100));
-
-                        if (elapsed < totalDurationMs) {
-                            requestAnimationFrame(loop);
-                        } else {
-                            setTimeout(() => recorder.stop(), 100);
-                        }
-                    };
-
-                    requestAnimationFrame(loop);
-                });
-            },
-
-            async mixMasterAudioTrack(dialogueScript, voiceCharacters, durationSec, musicParams, apiKey) {
-                const sampleRate = 48000;
-                const totalSamples = Math.ceil(sampleRate * durationSec);
-                const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-                const offlineCtx = new OfflineCtx(2, totalSamples, sampleRate);
-
-                const mood = musicParams?.mood || 'neutral';
-                const instrumentation = musicParams?.instrumentation || ['synth_pad'];
-                const tempo = musicParams?.tempo || 'medium';
-                const intensity = musicParams?.intensity || 'medium';
-
-                const baseFreq = 60;
-                const moodFreqMap = {
-                    'mysterious': [baseFreq * 0.9, baseFreq * 1.1, baseFreq * 1.3],
-                    'epic': [baseFreq * 0.8, baseFreq * 1.2, baseFreq * 1.5],
-                    'calm': [baseFreq * 1.0, baseFreq * 1.05, baseFreq * 1.1],
-                    'neutral': [baseFreq, baseFreq * 1.2, baseFreq * 1.4]
-                };
-                const currentFrequencies = moodFreqMap[mood] || moodFreqMap['neutral'];
-
-                currentFrequencies.forEach((freq) => {
-                    const osc = offlineCtx.createOscillator();
-                    const gain = offlineCtx.createGain();
-                    const filter = offlineCtx.createBiquadFilter();
-
-                    osc.type = 'sine';
-                    if (instrumentation.includes('synth_pad') || instrumentation.includes('strings')) {
-                        osc.type = 'sawtooth';
-                    } else if (instrumentation.includes('piano')) {
-                        osc.type = 'triangle';
-                    }
-
-                    osc.frequency.setValueAtTime(freq, 0);
-                    const startGain = (intensity === 'low') ? 0.01 : (intensity === 'high' ? 0.04 : 0.02);
-                    const endGain = startGain * 0.5;
-                    gain.gain.setValueAtTime(startGain, 0);
-                    gain.gain.linearRampToValueAtTime(endGain, durationSec);
-
-                    filter.type = 'lowpass';
-                    filter.frequency.setValueAtTime(mood === 'mysterious' ? 800 : (mood === 'epic' ? 2000 : 1200), 0);
-                    filter.Q.setValueAtTime(mood === 'epic' ? 1.5 : 0.5, 0);
-
-                    osc.connect(filter);
-                    filter.connect(gain);
-                    gain.connect(offlineCtx.destination);
-                    osc.start(0);
-                    osc.stop(durationSec);
-                });
-
-                if (Array.isArray(dialogueScript) && dialogueScript.length > 0 && apiKey) {
-                    for (const line of dialogueScript) {
-                        const targetChar = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
-                        if (targetChar && line.text) {
-                            const charAudioBuffer = await this.generateGeminiTTSAudio(line.text, targetChar, apiKey);
-                            if (charAudioBuffer) {
-                                const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), durationSec - 0.5);
-                                const source = offlineCtx.createBufferSource();
-                                source.buffer = charAudioBuffer;
-
-                                const voiceGain = offlineCtx.createGain();
-                                voiceGain.gain.setValueAtTime(1.2, 0);
-
-                                source.connect(voiceGain);
-                                voiceGain.connect(offlineCtx.destination);
-                                source.start(startTime);
-                            }
-                        }
-                    }
-                }
-
-                return await offlineCtx.startRendering();
+                return null;
             }
         };
 
@@ -3845,7 +3818,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         try { const s = localStorage.getItem('gdeep_api_keys_pool'); if (s) return JSON.parse(s); } catch (_) {}
                         return [];
                     })());
-                    const rawApiKeysInput = ref((() => { try { return apiKeyPool.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
+            const rawApiKeysInput = ref((() => { try { return apiKeyPool.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
                     const apiKeyCount = computed(() => apiKeyPool.value.length);
 
                     const parseKeysFromText = (rawText, minLen = 20) => {
@@ -4149,6 +4122,23 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         return [...list].sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0) || (b.updatedAt || 0) - (a.updatedAt || 0));
                     });
 
+                    // Tính toán tổng token input hiện tại cho hiển thị trên UI
+                    const currentInputTokensDisplay = ref('0');
+                    const isMemoryRetrievalActive = ref(false);
+
+                    const updateInputTokensDisplay = async () => {
+                        if (isGenerating.value) return;
+                        const currentPayload = await TokenBudgetManager.assembleInfiniteContextPayload(
+                            currentMessages.value,
+                            inputText.value,
+                            null // Không cắt tin nhắn nào
+                        );
+                        const totalTokens = TokenBudgetManager.measureHistoryTokens(currentPayload);
+                        currentInputTokensDisplay.value = (totalTokens / 1000).toFixed(1) + 'k';
+                        isMemoryRetrievalActive.value = totalTokens > TokenBudgetManager.RECENT_WINDOW_BUDGET;
+                    };
+
+
                     const notify = (msg, isError = false) => {
                         if (typeof window.Toastify !== 'undefined') {
                             window.Toastify({
@@ -4390,24 +4380,10 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
 
                         e.target.value = '';
                         setTimeout(resizeTextarea, 100);
+                        updateInputTokensDisplay();
                     };
 
                     const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
-                        let baseImgUrl = '';
-
-                        if (directImageInput) {
-                            if (typeof directImageInput === 'string') baseImgUrl = directImageInput;
-                            else if (directImageInput.data) baseImgUrl = getImgSrc(directImageInput);
-                        } else if (msg && msg.attachments && msg.attachments.length > 0) {
-                            const imgAtt = msg.attachments.find(a => a.mimeType && a.mimeType.startsWith('image/'));
-                            if (imgAtt) baseImgUrl = getImgSrc(imgAtt);
-                        }
-
-                        if (!baseImgUrl && msg) {
-                            const match = (msg.content || '').match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
-                            if (match && match[1]) baseImgUrl = match[1];
-                        }
-
                         if (isGenerating.value) return;
                         isGenerating.value = true;
                         triggerHaptic('heavy');
@@ -4440,45 +4416,34 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 userTimelineCues.value, cinemaVoiceCharacters.value, durationSec, healthyKey
                             );
 
-                            let sourceVideoBlob = null;
-                            let baseKeyframeImg = null;
-                            let usedEngine = '';
-
-                            searchStatusText.value = "Mạng Spatiotemporal DiT đang ghi hình chuyển động liên tục...";
-                            sourceVideoBlob = await AICinemaEngine.synthesizeContinuousDiTVideo(
-                                filmSet.dit_video_prompt_en,
-                                width, height, durationSec, videoSeed,
-                                (st) => { searchStatusText.value = st; }
-                            );
-
-                            if (sourceVideoBlob) {
-                                usedEngine = 'Native Spatiotemporal DiT (Hunyuan/LTX Continuous Motion)';
-                            } else {
-                                usedEngine = 'Studio Actor Kinematics & Speech-Driven Lip-Sync Engine';
-                                searchStatusText.value = "Đang khởi tạo nhân vật chính xác từ bối cảnh trường quay...";
-                                const keyframeUrl = baseImgUrl || `https://image.pollinations.ai/prompt/${encodeURIComponent(filmSet.actor_dna + ", film set studio lighting, photorealistic 8k, raw cinema") }?width=${width}&height=${height}&model=flux-realism&nologo=true&seed=${videoSeed}`;
-                                baseKeyframeImg = await AICinemaEngine.loadImage(keyframeUrl);
-                            }
+                            searchStatusText.value = "Mạng Flux Sequential đang ghi hình 60 FPS (Zero-Compromise)...";
+                            const sequentialFrames = await AICinemaEngine.synthesizeSequentialFluxFrames({
+                                basePromptEn: filmSet.flux_base_prompt_en,
+                                actorDna: filmSet.actor_dna,
+                                width, height, durationSec,
+                                speechEnvelope,
+                                onStatus: (st) => { searchStatusText.value = st; }
+                            });
 
                             searchStatusText.value = "Đang kết xuất 60.0 FPS chuẩn AVC/AAC và đồng bộ khẩu hình...";
                             const finalVideoBlob = await AICinemaEngine.renderUniversal60FPSVideo({
-                                sourceVideoBlob,
-                                baseKeyframeImg,
-                                speechEnvelope,
+                                sequentialFrames,
                                 masterAudioBuffer,
                                 width, height, durationSec,
                                 onProgress: (pct) => { searchStatusText.value = `Hoàn thiện thước phim 60 FPS: ${pct}%...`; }
                             });
 
-                            const videoUrl = ObjectUrlRegistry.create(finalVideoBlob);
-                            targetMsg.renderedVideoUrl = videoUrl;
+                            if (finalVideoBlob) {
+                                const videoUrl = ObjectUrlRegistry.create(finalVideoBlob);
+                                targetMsg.renderedVideoUrl = videoUrl;
+                            }
 
                             const dialogueSummary = userTimelineCues.value.map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`).join('\n');
 
                             targetMsg.content = (targetMsg.content || '') + 
-                                `\n\n🎬 **[Thước Phim Điện Ảnh 60 FPS — Quay Tại Phim Trường]**\n` +
-                                `- **Công nghệ:** ${usedEngine}\n` +
-                                `- **Thời lượng:** ${durationSec}s | **Tỷ lệ:** ${aspectRatio} | 60.0 FPS Chuẩn mượt\n` +
+                                `\n\n🎬 **[Thước Phim Điện Ảnh 60 FPS — Flux Sequential Engine]**\n` +
+                                `- **Công nghệ:** Flux Realism Sequential (Temporal Coherence Reference)\n` +
+                                `- **Thời lượng:** ${durationSec}s | **Tỷ lệ:** ${aspectRatio} | 60.0 FPS Siêu Mượt\n` +
                                 `- **Mã diễn viên (Actor DNA):** #${videoSeed}\n` +
                                 `- **Chuyển động:** ${filmSet.kinematics}\n` +
                                 (dialogueSummary ? `\n🎙️ **Lời thoại & Khẩu hình (Lip-Sync):**\n${dialogueSummary}` : '');
@@ -4492,6 +4457,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         } finally {
                             isGenerating.value = false;
                             searchStatusText.value = "";
+                            updateInputTokensDisplay();
                         }
                     };
 
@@ -4601,7 +4567,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         }));
 
                         if (window.innerWidth < 768) isSidebarOpen.value = false;
-                        nextTick(() => { scrollToBottom(true); renderMermaidDiagrams(); });
+                        nextTick(() => { scrollToBottom(true); renderMermaidDiagrams(); updateInputTokensDisplay(); });
                     };
 
                     const loadThreadsForActiveGem = async () => {
@@ -4642,6 +4608,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         if (db) {
                             try { await db.threads.put(cleanForDb(newThread)); } catch (_) {}
                         }
+                        updateInputTokensDisplay();
                     };
 
                     const switchGemTab = async (gemId) => {
@@ -4940,12 +4907,14 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         if (att?.videoUrl) ObjectUrlRegistry.revoke(att.videoUrl);
                         pendingAttachments.value.splice(idx, 1);
                         triggerHaptic('light');
+                        updateInputTokensDisplay();
                     };
 
                     const clearAllPendingAttachments = () => {
                         pendingAttachments.value.forEach(a => { if (a?.videoUrl) ObjectUrlRegistry.revoke(a.videoUrl); });
                         pendingAttachments.value = [];
                         resizeTextarea();
+                        updateInputTokensDisplay();
                     };
 
                     const handleDragEnter = (e) => {
@@ -5085,6 +5054,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                             localStorage.setItem(backupKey, JSON.stringify(existing));
                         } catch (_) {}
                         if (db) dbWriteQueue.enqueue(async () => { await db.messages.delete(msg.id); });
+                        updateInputTokensDisplay();
                     };
 
                     const switchBranch = async (msg, dir) => {
@@ -5322,6 +5292,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 baseVoiceText += finalTranscript;
                                 inputText.value = baseVoiceText + interimTranscript;
                                 resizeTextarea();
+                                updateInputTokensDisplay();
                             };
                             speechRecognition.onerror = () => {
                                 isListening.value = false;
@@ -5523,6 +5494,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                         data: comp.data,
                                         size: (f.size / 1024).toFixed(1) + ' KB'
                                     });
+                                    updateInputTokensDisplay();
                                 }
                             }
                         }
@@ -5538,6 +5510,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 size: (new Blob([txt]).size / 1024).toFixed(1) + ' KB'
                             });
                             notify("Đã tự động chuyển văn bản dài thành tệp đính kèm");
+                            updateInputTokensDisplay();
                         }
                     };
 
@@ -5630,33 +5603,6 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         }
                     };
 
-                    const estimateTokens = (text) => text ? Math.ceil(text.length / 3.5) : 0;
-
-                    const trimHistoryToTokenLimit = (history, maxTokens = MAX_HISTORY_TOKENS) => {
-                        if (!history?.length) return history;
-                        let total = 0;
-                        const tokenList = history.map(turn => {
-                            let t = 0;
-                            turn.parts?.forEach(p => {
-                                if (p.text) t += estimateTokens(p.text);
-                                if (p.inlineData || p.fileData) t += 256;
-                            });
-                            return t;
-                        });
-                        total = tokenList.reduce((a, b) => a + b, 0);
-                        if (total <= maxTokens) return history;
-                        let start = 0;
-                        while (total > maxTokens && start < history.length - 2) {
-                            total -= tokenList[start];
-                            start++;
-                        }
-                        const trimmed = history.slice(start);
-                        while (trimmed.length > 0 && trimmed[0].role !== 'user') {
-                            trimmed.shift();
-                        }
-                        return trimmed;
-                    };
-
                     const sanitizeHistoryForGemini = (rawHistory, ensureEndsWithUser = false) => {
                         if (!rawHistory?.length) return [];
                         let filtered = rawHistory.filter(m => (m.role === 'user' || m.role === 'model') && Array.isArray(m.parts) && m.parts.length > 0);
@@ -5689,34 +5635,15 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         return alternating;
                     };
 
-                    const buildCleanHistory = (upToMessageId = null) => {
-                        const rawHistory = [];
-                        let msgList = currentMessages.value;
-                        if (upToMessageId) {
-                            const idx = msgList.findIndex(m => m.id === upToMessageId);
-                            if (idx !== -1) {
-                                msgList = msgList.slice(0, idx);
-                            }
-                        }
-
-                        for (let i = 0; i < msgList.length; i++) {
-                            const m = msgList[i];
-                            if (m.role === 'user') {
-                                const parts = buildTurnParts(m.promptContent || m.content || '', m.attachments || []);
-                                rawHistory.push({ role: 'user', parts });
-                            } else if (m.role === 'model') {
-                                let mText = (m.content || '').trim();
-                                const prevMsg = msgList[i - 1];
-                                if (prevMsg?.role === 'system_execution' && prevMsg.rawExecutionParts?.length > 0) {
-                                    const execLogs = getExecutionLogsText(prevMsg);
-                                    if (execLogs) mText = `[THÔNG TIN TÍNH TOÁN]:\n${execLogs}\n[KẾT QUẢ]:\n${mText}`;
-                                }
-                                if (mText) {
-                                    rawHistory.push({ role: 'model', parts: [{ text: mText }] });
-                                }
-                            }
-                        }
-                        return sanitizeHistoryForGemini(rawHistory, false);
+                    // Cập nhật hàm buildCleanHistory để sử dụng TokenBudgetManager
+                    const buildCleanHistory = async (upToMessageId = null) => {
+                        const rawPromptText = inputText.value || '';
+                        const assembled = await TokenBudgetManager.assembleInfiniteContextPayload(
+                            currentMessages.value,
+                            rawPromptText,
+                            upToMessageId
+                        );
+                        return sanitizeHistoryForGemini(assembled, false);
                     };
 
                     const performSerperSearch = async (query) => {
@@ -5966,7 +5893,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         try {
                             let limitedHistory = [];
                             if (!isRegenerate) {
-                                limitedHistory = buildCleanHistory();
+                                limitedHistory = await buildCleanHistory(); // Sử dụng buildCleanHistory mới
                                 const newUserParts = buildTurnParts(text, attachments);
 
                                 const userMsg = createMessageRecord({
@@ -6003,20 +5930,20 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                         if (db) dbWriteQueue.enqueue(async () => { for (const m of toPurge) await db.messages.delete(m.id); });
                                         currentMessages.value = currentMessages.value.filter(m => !toPurge.some(p => p.id === m.id));
                                     }
-                                    limitedHistory = buildCleanHistory(existingBotMsgTarget.id);
+                                    limitedHistory = await buildCleanHistory(existingBotMsgTarget.id); // Sử dụng buildCleanHistory mới
                                 } else {
                                     const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                                     if (lastUser) {
-                                        limitedHistory = buildCleanHistory(lastUser.id);
+                                        limitedHistory = await buildCleanHistory(lastUser.id); // Sử dụng buildCleanHistory mới
                                         const userParts = buildTurnParts(lastUser.promptContent || lastUser.content || '', lastUser.attachments || []);
                                         limitedHistory.push({ role: 'user', parts: userParts });
                                     } else {
-                                        limitedHistory = buildCleanHistory();
+                                        limitedHistory = await buildCleanHistory(); // Sử dụng buildCleanHistory mới
                                     }
                                 }
                             }
 
-                            limitedHistory = sanitizeHistoryForGemini(trimHistoryToTokenLimit(limitedHistory, MAX_HISTORY_TOKENS), false);
+                            limitedHistory = sanitizeHistoryForGemini(limitedHistory, false);
                             const activeGem = currentActiveGemObj.value;
 
                             let systemPrompt = `[CHỈ DẪN HỆ THỐNG NƠ-RON]\nBạn là G-Deep ${targetModelObj.name} với Mạng Lưới Nhận Thức Tự Thân.\nQuy tắc: Phản hồi chính xác, mạch lạc, trực tiếp, không ngụy biện. Định dạng Markdown chuẩn mực.\n\n[TRỢ LÝ: ${activeGem.name}]\n${(activeGem.instruction || "").trim() || 'Hỗ trợ giải quyết công việc toàn diện.'}\n`;
@@ -6060,7 +5987,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 systemPrompt += `\n[CHẾ ĐỘ TẠO ẢNH]
 1. Tự động dịch và phát triển ý tưởng thành câu prompt tiếng Anh chi tiết: Chủ thể, ánh sáng, góc máy. Phong cách: ${imageConfig.style}.
 2. Xuất ảnh theo cú pháp Markdown:
-![Hình ảnh](https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_ENCODED}?width=${w}&height=${h}&model=flux-realism&nologo=true&seed=${randomSeed})
+![Hình ảnh](https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_ENCODED}?width={w}&height={h}&model=flux-realism&nologo=true&seed=${randomSeed})
 3. Bên dưới ảnh, ghi ngắn gọn 2-3 dòng miêu tả bối cảnh.`;
                             }
 
@@ -6480,6 +6407,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 if (isFirstPrompt || currentMessages.value.filter(m => m.role === 'user').length === 1) {
                                     setTimeout(() => autoNameThread(text, targetThreadId), 1000);
                                 }
+                                updateInputTokensDisplay();
                             }
                         }
                     };
@@ -6496,7 +6424,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         let rawMarkdownBuffer = msg.content || '';
                         const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
                         const continuationPrompt = buildSeamlessContinuationPrompt(boundary);
-                        const limitedHistory = buildCleanHistory(msg.id);
+                        const limitedHistory = await buildCleanHistory(msg.id); // Sử dụng buildCleanHistory mới
                         const continuationHistory = sanitizeHistoryForGemini([
                             ...limitedHistory,
                             { role: 'model', parts: [{ text: rawMarkdownBuffer }] },
@@ -6569,6 +6497,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                             isGenerating.value = false;
                             currentStreamingMsg.value = null;
                             abortController = null;
+                            updateInputTokensDisplay();
                         }
                     };
 
@@ -6590,7 +6519,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                             try {
                                 let allMsgs = [];
                                 if (db) {
-                                    allMsgs = (await db.messages.toArray()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                                    allMsgs = (await db.messages.toArray()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
                                 }
                                 if (!allMsgs.length) {
                                     threads.value.forEach(t => {
@@ -6604,6 +6533,10 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 fullTextSearchResults.value = matched.map(m => ({ ...m, threadTitle: threadMap.get(m.threadId) || 'Phiên trò chuyện' }));
                             } catch (e) {}
                         }, 200);
+                    });
+
+                    watch(inputText, () => {
+                        updateInputTokensDisplay();
                     });
 
                     let visualViewportCleanup = null, docClickCleanup = null, unsubscribeBus = null;
@@ -6716,6 +6649,7 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                                 appEl.removeAttribute('v-cloak');
                                 appEl.style.opacity = '1';
                             }
+                            updateInputTokensDisplay(); // Initial display update
                         }
                     });
 
@@ -6782,7 +6716,8 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                         enableCinemaStudio, toggleCinemaStudio, cinemaStudioTab, cinemaConfig, animateImageToVideo, animateCurrentLightboxImage,
                         cinemaVoiceCharacters, addNewVoiceCharacter, removeVoiceCharacter,
                         userTimelineCues, timelineCursorPercent, handleTimelineRulerClick, addTimelineDialogueCue, removeTimelineCue, getCharacterBadgeColor,
-                        handleInputFocus
+                        handleInputFocus,
+                        currentInputTokensDisplay, isMemoryRetrievalActive // Expose new computed properties
                     };
                 }
             });
@@ -7098,7 +7033,6 @@ TRẢ VỀ DUY NHẤT MỘT JSON:
                 }
             });
 
-            // Gắn ứng dụng Vue vào DOM Viewport
             app.mount('#app');
         })();
     </script>
