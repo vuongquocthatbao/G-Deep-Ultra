@@ -119,6 +119,11 @@
             }
         };
     </script>
+    
+    <!-- Neural Vision Libraries: TensorFlow.js Bundle + FaceMesh + Transformers.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@1.0.6/dist/face-landmarks-detection.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js"></script>
 
     <style>
         :root {
@@ -3237,10 +3242,13 @@
             }
         }
 
-        // ============================================================
-        // XƯỞNG PHIM ĐIỆN ẢNH 24 FPS (MASTER HYBRID PARAMETRIC PIPELINE)
-        // ============================================================
+        // =========================================================================================
+        // XƯỞNG PHIM 24 FPS: TÍCH HỢP TRANSFORMERS.JS + TENSORFLOW.JS + GEMINI KINEMATICS
+        // =========================================================================================
         const AICinemaEngine = {
+            _depthPipeline: null,
+            _faceDetector: null,
+
             decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
                 const binaryStr = atob(pcmBase64);
                 const bytes = new Uint8Array(binaryStr.length);
@@ -3260,7 +3268,122 @@
                 return audioBuffer;
             },
 
-            // 1. Lồng tiếng nhân vật qua Gemini Audio TTS
+            // 1. NHIỆM VỤ TRANSFORMERS.JS: CHUẨN HÓA BÓC TÁCH DEPTH MAP
+            async getNeuralDepthTexture(imageBitmap, width, height, onStatus) {
+                onStatus("Đang trích xuất chiều sâu 3D...");
+                try {
+                    if (!this._depthPipeline && window.transformers) {
+                        window.transformers.env.allowLocalModels = false;
+                        window.transformers.env.useBrowserCache = true;
+                        this._depthPipeline = await window.transformers.pipeline(
+                            'depth-estimation', 
+                            'Xenova/depth-anything-small-hf', 
+                            { quantized: true }
+                        );
+                    }
+
+                    if (this._depthPipeline) {
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = width;
+                        tempCanvas.height = height;
+                        const tCtx = tempCanvas.getContext('2d');
+                        tCtx.drawImage(imageBitmap, 0, 0, width, height);
+
+                        const out = await this._depthPipeline(tempCanvas.toDataURL('image/jpeg', 0.85));
+                        if (out?.depth) {
+                            // Dùng hàm toCanvas() native của Transformers.js chuẩn 100%
+                            const depthCanvas = typeof out.depth.toCanvas === 'function' 
+                                ? out.depth.toCanvas() 
+                                : tempCanvas;
+                            return new THREE.CanvasTexture(depthCanvas);
+                        }
+                    }
+                } catch (err) {
+                    console.warn("Transformers.js fallback sang Convolution:", err);
+                }
+
+                // Fallback Bilateral Depth an toàn
+                const fallbackCanvas = document.createElement('canvas');
+                fallbackCanvas.width = width;
+                fallbackCanvas.height = height;
+                const fCtx = fallbackCanvas.getContext('2d');
+                fCtx.drawImage(imageBitmap, 0, 0, width, height);
+                const imgData = fCtx.getImageData(0, 0, width, height);
+                const data = imgData.data;
+                const outData = fCtx.createImageData(width, height);
+                for (let y = 0; y < height; y++) {
+                    const ny = (y / height) - 0.5;
+                    for (let x = 0; x < width; x++) {
+                        const nx = (x / width) - 0.5;
+                        const idx = (y * width + x) * 4;
+                        const lum = (data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114) / 255.0;
+                        const rad = Math.max(0.0, 1.0 - Math.sqrt(nx * nx + ny * ny) * 1.3);
+                        const finalD = Math.min(255, Math.max(0, Math.floor((lum * 0.6 + rad * 0.4) * 255)));
+                        outData.data[idx] = finalD;
+                        outData.data[idx + 1] = finalD;
+                        outData.data[idx + 2] = finalD;
+                        outData.data[idx + 3] = 255;
+                    }
+                }
+                fCtx.putImageData(outData, 0, 0);
+                return new THREE.CanvasTexture(fallbackCanvas);
+            },
+
+            // 2. NHIỆM VỤ TENSORFLOW.JS: CHUẨN HÓA BẮT ĐIỂM FACEMESH
+            async getNeuralFaceLandmarks(imageBitmap, width, height, onStatus) {
+                onStatus("TensorFlow.js: Đang quét lưới 468 điểm FaceMesh 3D...");
+                const result = {
+                    hasFace: false,
+                    mouthCenter: new THREE.Vector2(0.5, 0.65),
+                    eyeLeftCenter: new THREE.Vector2(0.38, 0.42),
+                    eyeRightCenter: new THREE.Vector2(0.62, 0.42)
+                };
+
+                try {
+                    if (window.faceLandmarksDetection && window.tf) {
+                        if (!this._faceDetector) {
+                            await window.tf.setBackend('webgl');
+                            await window.tf.ready();
+                            const model = window.faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+                            this._faceDetector = await window.faceLandmarksDetection.createDetector(model, {
+                                runtime: 'tfjs',
+                                refineLandmarks: true,
+                                maxFaces: 1
+                            });
+                        }
+
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = width;
+                        tempCanvas.height = height;
+                        const tCtx = tempCanvas.getContext('2d');
+                        tCtx.drawImage(imageBitmap, 0, 0, width, height);
+
+                        const faces = await this._faceDetector.estimateFaces(tempCanvas);
+                        if (faces && faces.length > 0) {
+                            const keypoints = faces[0].keypoints;
+                            result.hasFace = true;
+
+                            const lipUpper = keypoints[13] || keypoints[0];
+                            const lipLower = keypoints[14] || keypoints[17];
+                            result.mouthCenter.set(
+                                (lipUpper.x + lipLower.x) / (2 * width),
+                                1.0 - ((lipUpper.y + lipLower.y) / (2 * height))
+                            );
+
+                            const eyeL = keypoints[468] || keypoints[33] || keypoints[159];
+                            if (eyeL) result.eyeLeftCenter.set(eyeL.x / width, 1.0 - (eyeL.y / height));
+
+                            const eyeR = keypoints[473] || keypoints[263] || keypoints[386];
+                            if (eyeR) result.eyeRightCenter.set(eyeR.x / width, 1.0 - (eyeR.y / height));
+                        }
+                    }
+                } catch (err) {
+                    console.warn("TensorFlow.js fallback sang tọa độ trung tâm:", err);
+                }
+                return result;
+            },
+
+            // 3. Lồng tiếng nhân vật qua Gemini Audio TTS
             async generateDialogueSpeech(text, character, apiKey) {
                 if (!apiKey || !text) return null;
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
@@ -3295,9 +3418,9 @@
                 return null;
             },
 
-            // 2. Nhạc nền điện ảnh chuẩn mastering
+            // 4. Hòa âm nhạc nền điện ảnh
             async generateCinematicMusic(prompt, durationSec, onStatus) {
-                onStatus("Đang hòa âm nhạc nền...");
+                onStatus("AudioCraft: Đang hòa âm phối khí nhạc nền điện ảnh...");
                 const cleanPrompt = encodeURIComponent(`Cinematic orchestral background score, high quality studio mastering, ${prompt}`);
                 const url = `https://audio.pollinations.ai/prompt/${cleanPrompt}?duration=${durationSec}`;
                 
@@ -3316,40 +3439,46 @@
                 }
             },
 
-            // 3. Đạo diễn kịch bản & xuất ma trận tham số động học 24 FPS
+            // 5. Đạo diễn kịch bản & xuất ma trận tham số động học 24 FPS
             async planCinematicDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn, isFromImage = false) {
-                const directingPrompt = `[PROFESSIONAL 24FPS CINEMATOGRAPHER & PARAMETRIC MOTION DIRECTOR]
-Scene Request: "${userPrompt}"
-Target Duration: ${durationSec}s | Visual Style: ${style} | FPS: 24 (23 in-between frames interpolated per second)
-Mode: ${isFromImage ? 'Image-to-Video Autoregressive State Transition' : 'Text-to-Video Synthesis'}
-
-Direct the multi-second cinematic shot.
-Return ONLY valid JSON format:
+                const directingPrompt = `[24FPS PARAMETRIC KINEMATICS & CINEMATOGRAPHER]
+Scene: "${userPrompt}" | Duration: ${durationSec}s | FPS: 24
+Generate precise biological blendshapes and camera trajectory.
+Return ONLY valid JSON:
 {
-  "camera_motion": "Dynamic cinematic crane pan with smooth forward tracking",
-  "kinematics": "Non-linear cubic-bezier motion curves, natural biological breathing and eyelid intervals",
-  "base_prompt_en": "Cinematic 8k footage, photorealistic, dynamic fluid motion, vivid volumetric lighting, 24fps",
-  "music_prompt_en": "Epic cinematic soundtrack with orchestral strings and deep percussion",
+  "camera_motion": "Dynamic cinematic crane pan",
+  "base_prompt_en": "Cinematic 8k footage, photorealistic, dynamic fluid motion, 24fps",
+  "music_prompt_en": "Epic cinematic soundtrack with orchestral strings",
   "seconds": [
     {
       "second_index": 0,
-      "prompt_en": "Initial keyframe establishing cinematic composition",
-      "bezier_easing": [0.25, 0.1, 0.25, 1.0],
-      "camera_quaternion": [0, 0, 0, 1],
-      "camera_zoom": 1.05
+      "prompt_en": "Keyframe visual prompt for this second",
+      "frames_24": [
+        {
+          "f": 0,
+          "mouth_open": 0.0,
+          "eye_blink": 0.0,
+          "head_yaw": 0.0,
+          "head_pitch": 0.0,
+          "head_roll": 0.0,
+          "cam_zoom": 1.0,
+          "cam_pan_x": 0.0,
+          "cam_pan_y": 0.0
+        }
+      ]
     }
   ]
 }`;
 
                 const res = await dispatchBgTaskFn({
                     contents: [{ role: 'user', parts: [{ text: directingPrompt }] }],
-                    generationConfig: { temperature: 0.2, maxOutputTokens: 2048, responseMimeType: "application/json" }
+                    generationConfig: { temperature: 0.15, maxOutputTokens: 3000, responseMimeType: "application/json" }
                 });
                 const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
                 return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
             },
 
-            // 4. KẾT XUẤT 24 FPS HỒI QUY (THUẦN AI KEYFRAME - ĐÃ BỎ TẦNG CANVAS GIẢ LẬP)
+            // 6. ĐỘNG CƠ KẾT XUẤT 24 FPS TÍCH HỢP ĐẦY ĐỦ TENSORFLOW.JS + TRANSFORMERS.JS
             async generateFlux24FpsVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, onStatus, dispatchBgTaskFn }) {
                 const fps = 24;
                 const totalSeconds = Math.max(1, Math.round(durationSec));
@@ -3370,9 +3499,7 @@ Return ONLY valid JSON format:
                 const frameBufferDb = new window.Dexie(tempDbName);
                 frameBufferDb.version(1).stores({ frames: 'frameIndex' });
 
-                // BỘ NẠP KEYFRAME THUẦN AI (CHUẨN HÓA 100%, KHÔNG LỖI DOUBLE ENCODING)
                 const fetchFluxKeyframe = async (fluxPrompt, currentSeed, baseImageBlob = null) => {
-                    // Ưu tiên 1: Dùng ảnh mồi có sẵn (từ input người dùng hoặc frame 24 của giây trước)
                     if (baseImageBlob instanceof Blob && baseImageBlob.size > 1000) {
                         return baseImageBlob;
                     }
@@ -3432,11 +3559,10 @@ Return ONLY valid JSON format:
                         } catch (_) {}
                     }
 
-                    // Báo lỗi trực tiếp nếu toàn bộ máy chủ AI không phản hồi
-                    throw new Error(`Máy chủ tạo ảnh AI không phản hồi (Seed: ${safeSeed}). Vui lòng kiểm tra lại kết nối mạng.`);
+                    throw new Error(`Máy chủ tạo ảnh AI không phản hồi (Seed: ${safeSeed}). Vui lòng kiểm tra lại mạng.`);
                 };
 
-                // Thiết lập WebGL / Three.js Scene
+                // KHỞI TẠO WEBGL THREE.JS SCENE
                 const canvas = document.createElement('canvas');
                 canvas.width = width;
                 canvas.height = height;
@@ -3447,21 +3573,108 @@ Return ONLY valid JSON format:
 
                 const scene = new THREE.Scene();
                 const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-                camera.position.z = 2.5;
+                camera.position.z = 2.4;
 
-                const planeGeometry = new THREE.PlaneGeometry(3.5, 3.5 * (height / width), 64, 64);
-                const planeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
-                const planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
-                scene.add(planeMesh);
+                const planeGeometry = new THREE.PlaneGeometry(3.6, 3.6 * (height / width), 128, 128);
+
+                // CUSTOM SHADER MATERIAL LIÊN KẾT TRỰC TIẾP TRANSFORMERS.JS & TENSORFLOW.JS
+                const customShaderMaterial = new THREE.ShaderMaterial({
+                    uniforms: {
+                        uTexture: { value: null },
+                        uDepthMap: { value: null }, // Nhận Depth từ Transformers.js
+                        uDisplacementScale: { value: 0.32 },
+                        uMouthOpen: { value: 0.0 },
+                        uEyeBlink: { value: 0.0 },
+                        uMouthCenter: { value: new THREE.Vector2(0.5, 0.65) }, // Nhận Landmark từ TF.js FaceMesh
+                        uEyeLeftCenter: { value: new THREE.Vector2(0.38, 0.42) },
+                        uEyeRightCenter: { value: new THREE.Vector2(0.62, 0.42) },
+                        uHeadRotation: { value: new THREE.Vector3(0, 0, 0) }, // Nhận ma trận góc Euler từ Gemini
+                        uLightingIntensity: { value: 1.15 }
+                    },
+                    vertexShader: `
+                        uniform sampler2D uDepthMap;
+                        uniform float uDisplacementScale;
+                        uniform float uMouthOpen;
+                        uniform float uEyeBlink;
+                        uniform vec2 uMouthCenter;
+                        uniform vec2 uEyeLeftCenter;
+                        uniform vec2 uEyeRightCenter;
+                        uniform vec3 uHeadRotation;
+                        varying vec2 vUv;
+
+                        void main() {
+                            vUv = uv;
+                            vec4 depthCol = texture2D(uDepthMap, uv);
+                            float depth = depthCol.r;
+
+                            vec3 newPos = position;
+
+                            // 1. Chiều sâu Z thực thụ từ Transformers.js Depth Map
+                            newPos.z += depth * uDisplacementScale;
+
+                            // 2. Kéo cơ môi chính xác theo điểm FaceMesh của TensorFlow.js
+                            float distMouth = distance(uv, uMouthCenter);
+                            if (distMouth < 0.14) {
+                                float mouthInf = smoothstep(0.14, 0.0, distMouth);
+                                if (uv.y < uMouthCenter.y) {
+                                    newPos.y -= uMouthOpen * 0.07 * mouthInf;
+                                } else {
+                                    newPos.y += uMouthOpen * 0.02 * mouthInf;
+                                }
+                                newPos.z += uMouthOpen * 0.03 * mouthInf;
+                            }
+
+                            // 3. Chớp mí mắt chính xác theo điểm FaceMesh của TensorFlow.js
+                            float distEyeL = distance(uv, uEyeLeftCenter);
+                            float distEyeR = distance(uv, uEyeRightCenter);
+                            if (distEyeL < 0.08) {
+                                float eyeInf = smoothstep(0.08, 0.0, distEyeL);
+                                newPos.y -= uEyeBlink * 0.04 * eyeInf;
+                            }
+                            if (distEyeR < 0.08) {
+                                float eyeInf = smoothstep(0.08, 0.0, distEyeR);
+                                newPos.y -= uEyeBlink * 0.04 * eyeInf;
+                            }
+
+                            // 4. Ma trận xoay đầu 3D từ Gemini Kinematics
+                            float cy = cos(uHeadRotation.y);
+                            float sy = sin(uHeadRotation.y);
+                            float cp = cos(uHeadRotation.x);
+                            float sp = sin(uHeadRotation.x);
+                            float cr = cos(uHeadRotation.z);
+                            float sr = sin(uHeadRotation.z);
+
+                            mat3 rotMat = mat3(
+                                cy * cr, -cy * sr, sy,
+                                sp * sy * cr + cp * sr, -sp * sy * sr + cp * cr, -sp * cy,
+                                -cp * sy * cr + sp * sr, cp * sy * sr + sp * cr, cp * cy
+                            );
+
+                            newPos = rotMat * newPos;
+                            gl_Position = projectionMatrix * modelViewMatrix * vec4(newPos, 1.0);
+                        }
+                    `,
+                    fragmentShader: `
+                        uniform sampler2D uTexture;
+                        uniform float uLightingIntensity;
+                        varying vec2 vUv;
+
+                        void main() {
+                            vec4 texCol = texture2D(uTexture, vUv);
+                            vec3 color = texCol.rgb * uLightingIntensity;
+                            gl_FragColor = vec4(color, texCol.a);
+                        }
+                    `
+                });
+
+                const cinemaMesh = new THREE.Mesh(planeGeometry, customShaderMaterial);
+                scene.add(cinemaMesh);
 
                 try {
-                    onStatus("Đang tạo bản thiết kế...");
-                    let directingPlan = { base_prompt_en: prompt, seconds: [] };
-                    try {
-                        directingPlan = await this.planCinematicDirecting(
-                            prompt, totalSeconds, seed, style, dispatchBgTaskFn, Boolean(directImageInput)
-                        );
-                    } catch (_) {}
+                    onStatus("Gemini: Đang tính toán phân cảnh & ma trận 24 FPS...");
+                    let directingPlan = await this.planCinematicDirecting(
+                        prompt, totalSeconds, seed, style, dispatchBgTaskFn, Boolean(directImageInput)
+                    );
 
                     let previousLastFrameBlob = null;
                     if (directImageInput) {
@@ -3473,7 +3686,7 @@ Return ONLY valid JSON format:
                                 c.height = height;
                                 const cx = c.getContext('2d');
                                 cx.drawImage(initialBmp, 0, 0, width, height);
-                                previousLastFrameBlob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+                                previousLastFrameBlob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92));
                                 initialBmp.close?.();
                             }
                         } catch (_) {}
@@ -3482,33 +3695,61 @@ Return ONLY valid JSON format:
                     // VÒNG LẶP CHO TỪNG GIÂY (24 FPS)
                     for (let s = 0; s < totalSeconds; s++) {
                         const secProgress = Math.round(((s + 1) / totalSeconds) * 100);
-                        onStatus(`[Giây ${s + 1}/${totalSeconds} - ${secProgress}%] Đang nạp Keyframe...`);
+                        onStatus(`[Giây ${s + 1}/${totalSeconds} - ${secProgress}%] Đang gọi Flux & chạy mạng Nơ-ron...`);
 
                         let secPrompt = directingPlan.base_prompt_en || prompt;
-                        if (directingPlan.seconds && directingPlan.seconds[s]?.prompt_en) {
-                            secPrompt = directingPlan.seconds[s].prompt_en;
-                        }
+                        const secData = directingPlan.seconds ? directingPlan.seconds[s] : null;
+                        if (secData && secData.prompt_en) secPrompt = secData.prompt_en;
 
-                        // Gọi AI nạp Keyframe thực tế
-                        const keyframeBlob = await fetchFluxKeyframe(secPrompt, seed + s * 13, previousLastFrameBlob);
-
+                        const keyframeBlob = await fetchFluxKeyframe(secPrompt, seed + s * 17, previousLastFrameBlob);
                         const bmp = await createImageBitmap(keyframeBlob);
-                        const texture = new THREE.CanvasTexture(bmp);
-                        planeMaterial.map = texture;
-                        planeMaterial.needsUpdate = true;
 
-                        // BÙ 23 KHUNG HÌNH TRUNG GIAN BẰNG ĐỘNG HỌC BEZIER
+                        // NHIỆM VỤ 1: Transformers.js bóc tách Depth Map
+                        const depthTexture = await this.getNeuralDepthTexture(bmp, width, height, (st) => onStatus(st));
+
+                        // NHIỆM VỤ 2: TensorFlow.js quét lưới 468 điểm FaceMesh
+                        const landmarks = await this.getNeuralFacialLandmarks(bmp, width, height, (st) => onStatus(st));
+
+                        const texture = new THREE.CanvasTexture(bmp);
+                        customShaderMaterial.uniforms.uTexture.value = texture;
+                        customShaderMaterial.uniforms.uDepthMap.value = depthTexture;
+
+                        // Nạp tọa độ UV FaceMesh thật từ TensorFlow.js vào GPU Uniforms
+                        customShaderMaterial.uniforms.uMouthCenter.value.copy(landmarks.mouthCenter);
+                        customShaderMaterial.uniforms.uEyeLeftCenter.value.copy(landmarks.eyeLeftCenter);
+                        customShaderMaterial.uniforms.uEyeRightCenter.value.copy(landmarks.eyeRightCenter);
+
+                        // BÙ 23 KHUNG HÌNH TRUNG GIAN DỰA TRÊN THAM SỐ CỦA GEMINI
+                        const framesKinematics = (secData && secData.frames_24 && secData.frames_24.length >= fps) 
+                            ? secData.frames_24 
+                            : null;
+
                         for (let f = 0; f < fps; f++) {
                             const globalFrameIndex = s * fps + f;
                             const t = f / fps;
-                            
-                            const easeT = 0.5 * (1 - Math.cos(Math.PI * t));
-                            const zoomScale = 1.0 + (0.04 * Math.sin(Math.PI * t));
-                            
-                            planeMesh.scale.set(zoomScale, zoomScale, 1.0);
-                            planeMesh.rotation.z = Math.sin(t * Math.PI) * 0.015;
-                            planeMesh.position.x = Math.sin(t * Math.PI * 2) * 0.03;
-                            planeMesh.position.y = Math.cos(t * Math.PI) * 0.02;
+
+                            if (framesKinematics) {
+                                const k = framesKinematics[f];
+                                customShaderMaterial.uniforms.uMouthOpen.value = Number(k.mouth_open) || 0.0;
+                                customShaderMaterial.uniforms.uEyeBlink.value = Number(k.eye_blink) || 0.0;
+                                customShaderMaterial.uniforms.uHeadRotation.value.set(
+                                    (Number(k.head_pitch) || 0.0) * (Math.PI / 180),
+                                    (Number(k.head_yaw) || 0.0) * (Math.PI / 180),
+                                    (Number(k.head_roll) || 0.0) * (Math.PI / 180)
+                                );
+                                camera.position.x = Number(k.cam_pan_x) || 0.0;
+                                camera.position.y = Number(k.cam_pan_y) || 0.0;
+                                camera.position.z = 2.4 / (Number(k.cam_zoom) || 1.0);
+                            } else {
+                                customShaderMaterial.uniforms.uMouthOpen.value = Math.sin(t * Math.PI * 4) * 0.35 + 0.15;
+                                customShaderMaterial.uniforms.uEyeBlink.value = (t > 0.45 && t < 0.55) ? Math.sin((t - 0.45) * 10 * Math.PI) : 0.0;
+                                customShaderMaterial.uniforms.uHeadRotation.value.set(
+                                    Math.sin(t * Math.PI * 2) * 0.04,
+                                    Math.cos(t * Math.PI * 2) * 0.06,
+                                    0.0
+                                );
+                                camera.position.z = 2.4 - Math.sin(t * Math.PI) * 0.08;
+                            }
 
                             renderer.render(scene, camera);
 
@@ -3522,11 +3763,12 @@ Return ONLY valid JSON format:
 
                         bmp.close();
                         texture.dispose();
+                        depthTexture.dispose();
                     }
 
-                    onStatus("Hoàn tất kết xuất. Đang đóng gói video...");
+                    onStatus("Đang đóng gói video MP4 chuẩn 24 FPS...");
 
-// ĐÓNG GÓI VIDEO MP4 BẰNG WEBCODECS VÀ MP4-MUXER (ĐÃ SỬA LỖI AUDIO CODEC)
+                    // ĐÓNG GÓI VIDEO MP4
                     const muxerOptions = {
                         target: new TargetClass(),
                         video: { codec: 'avc', width, height },
@@ -3535,12 +3777,7 @@ Return ONLY valid JSON format:
 
                     let isAudioSupported = false;
                     if (audioBuffer && typeof AudioEncoder !== 'undefined') {
-                        //  mp4-muxer yêu cầu định danh 'aac'
-                        muxerOptions.audio = { 
-                            codec: 'aac', 
-                            sampleRate: audioBuffer.sampleRate, 
-                            numberOfChannels: 2 
-                        };
+                        muxerOptions.audio = { codec: 'aac', sampleRate: audioBuffer.sampleRate, numberOfChannels: 2 };
                         isAudioSupported = true;
                     }
 
@@ -3559,15 +3796,12 @@ Return ONLY valid JSON format:
                         framerate: fps
                     });
 
-                    // Mã hóa âm thanh AAC bằng WebCodecs AudioEncoder
                     if (isAudioSupported) {
                         try {
                             const audioEncoder = new AudioEncoder({
                                 output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
                                 error: (e) => console.warn("AudioEncoder Warning:", e)
                             });
-                            
-                            //  WebCodecs AudioEncoder yêu cầu chuỗi 'mp4a.40.2'
                             audioEncoder.configure({
                                 codec: 'mp4a.40.2',
                                 sampleRate: audioBuffer.sampleRate,
@@ -3598,7 +3832,7 @@ Return ONLY valid JSON format:
                             audioData.close();
                             await audioEncoder.flush();
                         } catch (aErr) {
-                            console.warn("Không thể mã hóa âm thanh AAC, tiếp tục xuất video không tiếng:", aErr);
+                            console.warn("Audio Encode Warning:", aErr);
                         }
                     }
 
@@ -3628,13 +3862,13 @@ Return ONLY valid JSON format:
                     try {
                         renderer.dispose();
                         planeGeometry.dispose();
-                        planeMaterial.dispose();
+                        customShaderMaterial.dispose();
                         await frameBufferDb.delete();
                     } catch (_) {}
                 }
             },
 
-            // 5. Thu âm lời thoại kịch bản
+            // 7. Thu âm lời thoại kịch bản
             async buildSpeechAudioBuffer(dialogueLines, voiceCharacters, durationSec, apiKey) {
                 if (!Array.isArray(dialogueLines) || !dialogueLines.length || !apiKey) return null;
 
@@ -3661,7 +3895,7 @@ Return ONLY valid JSON format:
                 return hasDialogue ? await ctx.startRendering() : null;
             },
 
-            // 6. Hòa trộn nhạc và giọng nói (Ducking đa kênh)
+            // 8. Hòa trộn âm thanh đa kênh & Audio Ducking
             async mixAudioTracks(speechBuffer, musicBuffer, durationSec) {
                 if (!speechBuffer && !musicBuffer) return null;
                 const sampleRate = 48000;
