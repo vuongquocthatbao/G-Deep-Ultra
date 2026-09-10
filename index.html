@@ -3526,14 +3526,22 @@ Return ONLY valid JSON format:
 
                     onStatus("Hoàn tất kết xuất. Đang đóng gói video...");
 
+// ĐÓNG GÓI VIDEO MP4 BẰNG WEBCODECS VÀ MP4-MUXER (ĐÃ SỬA LỖI AUDIO CODEC)
                     const muxerOptions = {
                         target: new TargetClass(),
                         video: { codec: 'avc', width, height },
                         fastStart: 'in-memory'
                     };
 
+                    let isAudioSupported = false;
                     if (audioBuffer && typeof AudioEncoder !== 'undefined') {
-                        muxerOptions.audio = { codec: 'mp4a.40.2', sampleRate: audioBuffer.sampleRate, numberOfChannels: 2 };
+                        //  mp4-muxer yêu cầu định danh 'aac'
+                        muxerOptions.audio = { 
+                            codec: 'aac', 
+                            sampleRate: audioBuffer.sampleRate, 
+                            numberOfChannels: 2 
+                        };
+                        isAudioSupported = true;
                     }
 
                     const muxer = new MuxerClass(muxerOptions);
@@ -3551,12 +3559,15 @@ Return ONLY valid JSON format:
                         framerate: fps
                     });
 
-                    if (audioBuffer && typeof AudioEncoder !== 'undefined') {
+                    // Mã hóa âm thanh AAC bằng WebCodecs AudioEncoder
+                    if (isAudioSupported) {
                         try {
                             const audioEncoder = new AudioEncoder({
                                 output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-                                error: (e) => console.error("AudioEncoder Error:", e)
+                                error: (e) => console.warn("AudioEncoder Warning:", e)
                             });
+                            
+                            //  WebCodecs AudioEncoder yêu cầu chuỗi 'mp4a.40.2'
                             audioEncoder.configure({
                                 codec: 'mp4a.40.2',
                                 sampleRate: audioBuffer.sampleRate,
@@ -3587,7 +3598,7 @@ Return ONLY valid JSON format:
                             audioData.close();
                             await audioEncoder.flush();
                         } catch (aErr) {
-                            console.warn("Mã hóa âm thanh cảnh báo:", aErr);
+                            console.warn("Không thể mã hóa âm thanh AAC, tiếp tục xuất video không tiếng:", aErr);
                         }
                     }
 
