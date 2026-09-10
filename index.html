@@ -3844,20 +3844,29 @@ Return ONLY valid JSON:
                         }
                     }
 
-                    const ctx2d = canvas.getContext('2d');
+// ĐÓNG GÓI TRỰC TIẾP QUA NATIVE WEBCODECS (ZERO-COPY HARDWARE PIPELINE)
                     const frameMicros = 1_000_000 / fps;
 
                     for (let i = 0; i < totalFrames; i++) {
                         const record = await frameBufferDb.frames.get(i);
-                        if (!record || !record.blob) throw new Error(`Mất frame #${i}`);
+                        if (!record || !record.blob) {
+                            throw new Error(`Lỗi dữ liệu nơ-ron: Không tìm thấy frame #${i} trong bộ đệm.`);
+                        }
 
+                        // 1. Giải mã trực tiếp Blob thành ImageBitmap trên GPU
                         const frameBmp = await createImageBitmap(record.blob);
-                        ctx2d.drawImage(frameBmp, 0, 0, width, height);
-                        frameBmp.close();
 
-                        const vFrame = new VideoFrame(canvas, { timestamp: Math.round(i * frameMicros) });
+                        // 2. Nạp thẳng ImageBitmap vào VideoFrame phần cứng (Không qua Canvas 2D)
+                        const vFrame = new VideoFrame(frameBmp, { 
+                            timestamp: Math.round(i * frameMicros) 
+                        });
+
+                        // 3. Đưa khung hình vào bộ mã hóa H.264
                         videoEncoder.encode(vFrame, { keyFrame: i % fps === 0 });
+                        
+                        // 4. Giải phóng tài nguyên GPU ngay lập tức để chống rò rỉ bộ nhớ
                         vFrame.close();
+                        frameBmp.close();
 
                         await frameBufferDb.frames.delete(i);
                     }
@@ -4739,7 +4748,7 @@ Return ONLY valid JSON:
                             const isFromImage = Boolean(directImageInput);
 
                             // BƯỚC 1: Đạo diễn kịch bản & phân cảnh qua Gemini
-                            searchStatusText.value = "Đang khởi tạo kịch bản 24 FPS...";
+                            searchStatusText.value = "Đang khởi tạo kịch bản...";
                             const directingPlan = await AICinemaEngine.planCinematicDirecting(
                                 customPrompt || (isFromImage ? 'Chuyển động điện ảnh mượt mà từ hình ảnh' : 'Cảnh quay điện ảnh sống động'),
                                 durationSec,
@@ -4791,9 +4800,9 @@ Return ONLY valid JSON:
                             const dialogueSummary = userTimelineCues.value.map(d => `- **${d.speaker} · ${d.startTimeSec}s:** "${d.text}"`).join('\n');
 
                             targetMsg.content = (targetMsg.content || '') + 
-                                `\n\n🎬 **Tác Phẩm Điện Ảnh 24 FPS Hoàn Thiện**\n` +
+                                `\n\n🎬 **Tác Phẩm Điện Ảnh Hoàn Thiện**\n` +
                                 `- **Thời lượng:** ${durationSec} giây\n` +
-                                `- **Chuẩn kết xuất:** 24 FPS Hollywood (Bù 23f)\n` +
+                                `- **Chuẩn kết xuất:** Hollywood\n` +
                                 `- **Tỷ lệ khung hình:** ${aspectRatio}\n` +
                                 `- **Động học tham số:** ${directingPlan.kinematics}\n` +
                                 (dialogueSummary ? `\n🎙️ **Phần thoại:**\n${dialogueSummary}` : '');
