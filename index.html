@@ -3349,7 +3349,7 @@ Return ONLY valid JSON format:
                 return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
             },
 
-            // 4. KẾT XUẤT VIDEO CHUYỂN ĐỘNG AI QUA GEMINI <=> FLUX FRAME-BY-FRAME (VỚI ÂM THANH ĐỒNG BỘ TRỰC TIẾP)
+            // 4. KẾT XUẤT VIDEO CHUYỂN ĐỘNG AI QUA GEMINI <=> FLUX (CƠ CHẾ BẢO TOÀN THỨ TỰ & PHỤC HỒI KHUNG HÌNH THẤT BẠI TUYỆT ĐỐI)
             async generateFluxFrameVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, onStatus, dispatchBgTaskFn }) {
                 const fps = 24;
                 const totalFrames = Math.max(1, Math.round(durationSec * fps));
@@ -3365,171 +3365,239 @@ Return ONLY valid JSON format:
                     throw new Error("Trình duyệt không hỗ trợ WebCodecs / MP4 Muxer.");
                 }
 
-                const muxerOptions = {
-                    target: new TargetClass(),
-                    video: { codec: 'avc', width, height },
-                    fastStart: 'in-memory'
+                // Khởi tạo Database đệm tạm thời trên đĩa (IndexedDB) để chống tràn bộ nhớ RAM khi tạo phim dài tập
+                const tempDbName = `GDeepFrameBuffer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                const frameBufferDb = new window.Dexie(tempDbName);
+                frameBufferDb.version(1).stores({ frames: 'frameIndex' });
+
+                const fetchFluxBlob = async (fluxPrompt, currentSeed) => {
+                    const encodedPrompt = encodeURIComponent(fluxPrompt);
+                    const urlPrimary = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux-realism&width=${width}&height=${height}&seed=${currentSeed}&nologo=true`;
+                    const urlFallback = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=${currentSeed}&nologo=true`;
+
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 25000);
+
+                    try {
+                        let res = await fetch(urlPrimary, { signal: controller.signal });
+                        if (!res.ok) res = await fetch(urlFallback, { signal: controller.signal });
+                        clearTimeout(timer);
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        const blob = await res.blob();
+                        if (blob.size < 1000) throw new Error("Kích thước tệp ảnh không hợp lệ");
+                        return blob;
+                    } catch (err) {
+                        clearTimeout(timer);
+                        throw err;
+                    }
                 };
 
-                if (audioBuffer && typeof AudioEncoder !== 'undefined') {
-                    muxerOptions.audio = { codec: 'aac', sampleRate: audioBuffer.sampleRate, numberOfChannels: 2 };
-                }
-
-                const muxer = new MuxerClass(muxerOptions);
-
-                const videoEncoder = new VideoEncoder({
-                    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-                    error: (e) => console.error("VideoEncoder Error:", e)
-                });
-
-                videoEncoder.configure({
-                    codec: 'avc1.64002a',
-                    width,
-                    height,
-                    bitrate: 12_000_000,
-                    framerate: fps
-                });
-
-                // Encode Audio if available
-                if (audioBuffer && typeof AudioEncoder !== 'undefined') {
-                    try {
-                        const audioEncoder = new AudioEncoder({
-                            output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-                            error: (e) => console.error("AudioEncoder Error:", e)
-                        });
-                        audioEncoder.configure({
-                            codec: 'mp4a.40.2',
-                            sampleRate: audioBuffer.sampleRate,
-                            numberOfChannels: 2,
-                            bitrate: 192_000
-                        });
-
-                        const numFrames = audioBuffer.length;
-                        const leftChan = audioBuffer.getChannelData(0);
-                        const rightChan = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChan;
-                        const interleavedData = new Float32Array(numFrames * 2);
-
-                        for (let s = 0; s < numFrames; s++) {
-                            interleavedData[s * 2] = leftChan[s];
-                            interleavedData[s * 2 + 1] = rightChan[s];
-                        }
-
-                        const audioData = new AudioData({
-                            format: 'f32',
-                            sampleRate: audioBuffer.sampleRate,
-                            numberOfFrames: numFrames,
-                            numberOfChannels: 2,
-                            timestamp: 0,
-                            data: interleavedData
-                        });
-
-                        audioEncoder.encode(audioData);
-                        audioData.close();
-                        await audioEncoder.flush();
-                    } catch (aErr) {
-                        console.warn("Lỗi mã hóa âm thanh:", aErr);
-                    }
-                }
-
-                const canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
-
-                // Khởi tạo kịch bản hình ảnh nhất quán (Visual Guideline)
-                onStatus("Đang khởi tạo kịch bản hình ảnh nhất quán...");
-                const guidelinePrompt = `[VISUAL GUIDELINE CREATOR]
+                try {
+                    // GIAI ĐOẠN 1: THIẾT LẬP BẢN HƯỚNG DẪN THỊ GIÁC ĐỒNG NHẤT
+                    onStatus("Gemini: Đang khởi tạo chỉ dẫn thị giác đồng nhất cho toàn bộ video...");
+                    const guidelinePrompt = `[VISUAL GUIDELINE CREATOR]
 Create a highly detailed physical description (visual guideline) for the subject and environment in this scene: "${prompt}".
-Specify exact facial features, hair style, clothing, colors, background elements, and camera style.
-Keep it concise but extremely specific so that subsequent prompts can reference it to maintain 100% consistency.
+Specify exact facial features, hair style, clothing, colors, background elements, and cinematic style.
+Keep it concise but strictly specific so subsequent frames preserve 100% identity and continuity.
 Return ONLY the English visual guideline text.`;
 
-                const guidelineRes = await dispatchBgTaskFn({
-                    contents: [{ role: 'user', parts: [{ text: guidelinePrompt }] }],
-                    generationConfig: { temperature: 0.2, maxOutputTokens: 512 }
-                });
-                const visualGuideline = guidelineRes?.candidates?.[0]?.content?.parts?.[0]?.text || prompt;
+                    const guidelineRes = await dispatchBgTaskFn({
+                        contents: [{ role: 'user', parts: [{ text: guidelinePrompt }] }],
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 1024 }
+                    });
+                    const visualGuideline = guidelineRes?.candidates?.[0]?.content?.parts?.[0]?.text || prompt;
 
-                let previousPrompt = "";
-                let previousFrameDescription = "Initial state";
+                    // Mảng lưu trữ thông tin prompt của tất cả các khung hình đã được đạo diễn
+                    const frameManifest = new Array(totalFrames);
+                    const failedQueue = []; // Hàng đợi chứa các khung hình cần tạo lại: { index, prompt, seed, retryCount }
 
-                // Vòng lặp tạo khung hình tuần tự 24fps
-                const frameMicros = 1_000_000 / fps;
-                for (let i = 0; i < totalFrames; i++) {
-                    const progressPercent = Math.round((i / totalFrames) * 100);
-                    onStatus(`Đang sản xuất khung hình ${i + 1}/${totalFrames} (${progressPercent}%) - Đang viết prompt...`);
+                    let previousPrompt = "";
+                    let previousFrameDescription = "Khởi đầu bối cảnh";
 
-                    // Gemini đạo diễn viết prompt cho khung hình hiện tại
-                    const frameDirectorPrompt = `[CINEMATIC FRAME DIRECTOR]
+                    // GIAI ĐOẠN 2: LƯỢT QUÉT THỨ NHẤT - TẠO PROMPT VÀ TẢI ẢNH TUẦN TỰ (KHÔNG DỪNG LẠI KHI CÓ KHUNG LỖI)
+                    for (let i = 0; i < totalFrames; i++) {
+                        const pct = Math.round(((i + 1) / totalFrames) * 100);
+                        onStatus(`[Lượt 1] Khung ${i + 1}/${totalFrames} (${pct}%): Đang tạo hành động...`);
+
+                        const frameDirectorPrompt = `[CINEMATIC FRAME DIRECTOR]
 Master Visual Guideline: "${visualGuideline}"
-Total Frames: ${totalFrames} | Current Frame Index: ${i} (0-indexed)
+Total Video Frames: ${totalFrames} | Target Frame Index: ${i} (0-indexed)
 Previous Frame Prompt: "${previousPrompt || 'None'}"
-Previous Frame State: "${previousFrameDescription}"
+Previous State: "${previousFrameDescription}"
 
-Your job is to write the exact prompt for the current frame to create a smooth, continuous, professional motion video at 24fps.
-Describe the micro-movement for this frame (e.g., slight camera pan, subtle facial expression change, organic movement of hair/wind, character walking slightly).
-Ensure the subject's appearance, clothing, and environment remain 100% identical to the Master Visual Guideline.
-Strictly forbid sudden jumps, morphing, or changes in identity.
-Return ONLY a valid JSON object:
+Task: Direct micro-movement for frame #${i} at 24fps. Ensure continuous organic kinematics (subtle camera motion, character movement, natural physics).
+Maintain 100% identity to the Master Visual Guideline.
+Return ONLY valid JSON:
 {
-  "flux_prompt": "The exact English prompt for Flux, incorporating the Master Visual Guideline and the micro-movement",
-  "frame_description": "A brief description of the current frame's state for the next step's context"
+  "flux_prompt": "English prompt for Flux with micro-movement",
+  "frame_description": "Brief state of frame for the next frame's continuity"
 }`;
 
-                    let framePromptData = { flux_prompt: visualGuideline, frame_description: "Initial frame" };
-                    try {
-                        const frameRes = await dispatchBgTaskFn({
-                            contents: [{ role: 'user', parts: [{ text: frameDirectorPrompt }] }],
-                            generationConfig: { temperature: 0.1, maxOutputTokens: 512, responseMimeType: "application/json" }
-                        });
-                        const rawJson = frameRes?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-                        framePromptData = JSON.parse(rawJson.replace(/```json/gi, '').replace(/```/g, '').trim());
-                    } catch (e) {
-                        framePromptData = {
-                            flux_prompt: `${visualGuideline}, frame ${i} of ${totalFrames}, smooth continuous cinematic motion, consistent subject`,
-                            frame_description: `Frame ${i}`
-                        };
+                        let currentFluxPrompt = `${visualGuideline}, frame ${i} of ${totalFrames}, 24fps cinematic motion, highly detailed`;
+                        try {
+                            const frameRes = await dispatchBgTaskFn({
+                                contents: [{ role: 'user', parts: [{ text: frameDirectorPrompt }] }],
+                                generationConfig: { temperature: 0.15, maxOutputTokens: 1024, responseMimeType: "application/json" }
+                            });
+                            const rawJson = frameRes?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+                            const parsed = JSON.parse(rawJson.replace(/```json/gi, '').replace(/```/g, '').trim());
+                            if (parsed.flux_prompt) currentFluxPrompt = parsed.flux_prompt;
+                            if (parsed.frame_description) previousFrameDescription = parsed.frame_description;
+                        } catch (_) {}
+
+                        previousPrompt = currentFluxPrompt;
+                        frameManifest[i] = { frameIndex: i, fluxPrompt: currentFluxPrompt, seed: seed + (i % 5) };
+
+                        onStatus(`[Lượt 1] Khung ${i + 1}/${totalFrames} (${pct}%): Đang tạo...`);
+
+                        try {
+                            const blob = await fetchFluxBlob(currentFluxPrompt, frameManifest[i].seed);
+                            // Lưu trực tiếp vào IndexedDB theo frameIndex chính xác
+                            await frameBufferDb.frames.put({ frameIndex: i, blob });
+                        } catch (err) {
+                            // TẠM THỜI GIỮ LẠI PROMPT, ĐÁNH DẤU LỖI VÀ TIẾP TỤC KHUNG HÌNH N+1
+                            console.warn(`Khung hình #${i + 1} gặp lỗi mạng. Đưa vào hàng đợi tạo lại.`);
+                            failedQueue.push({ index: i, prompt: currentFluxPrompt, seed: frameManifest[i].seed, retryCount: 1 });
+                        }
                     }
 
-                    previousPrompt = framePromptData.flux_prompt;
-                    previousFrameDescription = framePromptData.frame_description;
+                    // GIAI ĐOẠN 3: LƯỢT QUÉT THỨ HAI - TIẾN HÀNH TẠO LẠI TOÀN BỘ CÁC KHUNG HÌNH THẤT BẠI
+                    let retryCycle = 10;
+                    while (failedQueue.length > 0) {
+                        const item = failedQueue.shift();
+                        const remaining = failedQueue.length + 1;
+                        onStatus(`[Phục hồi - Chu kỳ ${retryCycle}] Đang tạo lại khung hình #${item.index + 1} (còn ${remaining} khung cần hoàn tất)...`);
 
-                    onStatus(`Đang sản xuất khung hình ${i + 1}/${totalFrames} (${progressPercent}%) - Đang vẽ ảnh...`);
+                        try {
+                            // Jitter seed một lượng nhỏ nếu đã thử nhiều lần mà server bị nghẽn
+                            const attemptSeed = item.seed + (item.retryCount * 7);
+                            const blob = await fetchFluxBlob(item.prompt, attemptSeed);
+                            // Ghi đè vào IndexedDB đúng vị trí thứ tự frameIndex ban đầu
+                            await frameBufferDb.frames.put({ frameIndex: item.index, blob });
+                            // Nghỉ ngắn để ổn định băng thông
+                            await new Promise(r => setTimeout(r, 200));
+                        } catch (retryErr) {
+                            item.retryCount++;
+                            failedQueue.push(item); // Vẫn chưa thành công -> Đẩy lại vào cuối hàng đợi
+                            // Chờ lũy tiến để tránh dồn dập request
+                            const backoffDelay = Math.min(1000 * item.retryCount, 4000);
+                            await new Promise(r => setTimeout(r, backoffDelay));
+                        }
+                        if (failedQueue.length === 0) break;
+                        retryCycle++;
+                    }
 
-                    // Gọi Flux tạo ảnh khung hình
-                    const encodedPrompt = encodeURIComponent(framePromptData.flux_prompt);
-                    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux-realism&width=${width}&height=${height}&seed=${seed}&nologo=true`;
+                    onStatus("Tất cả các khung hình đã được thu thập đầy đủ 100%. Đang chuẩn bị xuất xưởng tệp video...");
 
-                    const img = new Image();
-                    img.crossOrigin = "anonymous";
-                    img.src = imageUrl;
+                    // GIAI ĐOẠN 4: ĐÓNG GÓI VIDEO THEO ĐÚNG THỨ TỰ TUẦN TỰ (0 -> totalFrames - 1)
+                    const muxerOptions = {
+                        target: new TargetClass(),
+                        video: { codec: 'avc', width, height },
+                        fastStart: 'in-memory'
+                    };
 
-                    await new Promise((resolve, reject) => {
-                        img.onload = () => resolve();
-                        img.onerror = () => {
-                            img.src = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true`;
-                            img.onload = () => resolve();
-                            img.onerror = () => reject(new Error(`Không thể tải khung hình ${i + 1}`));
-                        };
+                    if (audioBuffer && typeof AudioEncoder !== 'undefined') {
+                        muxerOptions.audio = { codec: 'aac', sampleRate: audioBuffer.sampleRate, numberOfChannels: 2 };
+                    }
+
+                    const muxer = new MuxerClass(muxerOptions);
+
+                    const videoEncoder = new VideoEncoder({
+                        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                        error: (e) => console.error("VideoEncoder Error:", e)
                     });
 
-                    ctx.drawImage(img, 0, 0, width, height);
+                    videoEncoder.configure({
+                        codec: 'avc1.64002a',
+                        width,
+                        height,
+                        bitrate: 12_000_000,
+                        framerate: fps
+                    });
 
-                    const vFrame = new VideoFrame(canvas, { timestamp: Math.round(i * frameMicros) });
-                    videoEncoder.encode(vFrame, { keyFrame: i % fps === 0 });
-                    vFrame.close();
+                    // Đóng gói luồng Audio nếu có
+                    if (audioBuffer && typeof AudioEncoder !== 'undefined') {
+                        try {
+                            const audioEncoder = new AudioEncoder({
+                                output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+                                error: (e) => console.error("AudioEncoder Error:", e)
+                            });
+                            audioEncoder.configure({
+                                codec: 'mp4a.40.2',
+                                sampleRate: audioBuffer.sampleRate,
+                                numberOfChannels: 2,
+                                bitrate: 192_000
+                            });
 
-                    // Giải phóng bộ nhớ ngay lập tức để chống sập tab
-                    img.onload = null;
-                    img.onerror = null;
-                    img.src = "";
+                            const numFrames = audioBuffer.length;
+                            const leftChan = audioBuffer.getChannelData(0);
+                            const rightChan = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChan;
+                            const interleavedData = new Float32Array(numFrames * 2);
+
+                            for (let s = 0; s < numFrames; s++) {
+                                interleavedData[s * 2] = leftChan[s];
+                                interleavedData[s * 2 + 1] = rightChan[s];
+                            }
+
+                            const audioData = new AudioData({
+                                format: 'f32',
+                                sampleRate: audioBuffer.sampleRate,
+                                numberOfFrames: numFrames,
+                                numberOfChannels: 2,
+                                timestamp: 0,
+                                data: interleavedData
+                            });
+
+                            audioEncoder.encode(audioData);
+                            audioData.close();
+                            await audioEncoder.flush();
+                        } catch (aErr) {
+                            console.warn("Mã hóa âm thanh cảnh báo:", aErr);
+                        }
+                    }
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    const frameMicros = 1_000_000 / fps;
+
+                    // Duyệt tuần tự từ frame 0 đến frame cuối cùng
+                    for (let i = 0; i < totalFrames; i++) {
+                        const encodePct = Math.round(((i + 1) / totalFrames) * 100);
+                        if (i % 6 === 0 || i === totalFrames - 1) {
+                            onStatus(`Đang ghép nối khung hình: ${i + 1}/${totalFrames} (${encodePct}%)...`);
+                        }
+
+                        const record = await frameBufferDb.frames.get(i);
+                        if (!record || !record.blob) {
+                            throw new Error(`Mất mát dữ liệu tại khung hình #${i + 1}. Quá trình bị hủy.`);
+                        }
+
+                        // Chuyển Blob thành ImageBitmap độc lập
+                        const bmp = await createImageBitmap(record.blob);
+                        ctx.drawImage(bmp, 0, 0, width, height);
+                        bmp.close(); // Thu hồi bộ nhớ RAM ngay lập tức
+
+                        const vFrame = new VideoFrame(canvas, { timestamp: Math.round(i * frameMicros) });
+                        videoEncoder.encode(vFrame, { keyFrame: i % fps === 0 });
+                        vFrame.close(); // Giải phóng phần cứng xử lý hình ảnh
+
+                        // Xóa khung hình khỏi IndexedDB để trả lại dung lượng đĩa
+                        await frameBufferDb.frames.delete(i);
+                    }
+
+                    onStatus("Đang hoàn thiện các tệp dữ liệu MP4...");
+                    await videoEncoder.flush();
+                    muxer.finalize();
+
+                    return new Blob([muxer.target.buffer], { type: 'video/mp4' });
+                } finally {
+                    // Dọn dẹp sạch sẽ cơ sở dữ liệu đệm sau khi hoàn tất hoặc xảy ra sự cố
+                    try {
+                        await frameBufferDb.delete();
+                    } catch (_) {}
                 }
-
-                onStatus("Đang hoàn tất đóng gói luồng video...");
-                await videoEncoder.flush();
-                muxer.finalize();
-
-                return new Blob([muxer.target.buffer], { type: 'video/mp4' });
             },
 
             // 5. Thu âm lời thoại kịch bản
