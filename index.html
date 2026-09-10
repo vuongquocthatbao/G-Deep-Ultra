@@ -3346,12 +3346,24 @@ Return ONLY valid JSON format:
         return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
     },
 
-    // 4. KẾT XUẤT VIDEO CHUYỂN ĐỘNG AI THẬT SỰ (Strict Check - Bắt buộc video stream hợp lệ)
+        // 4. KẾT XUẤT VIDEO CHUYỂN ĐỘNG AI QUA MODEL WAN
     async generateMotionSynthesis({ prompt, directImageInput, durationSec, aspectRatio, seed, onStatus }) {
-        onStatus("Neural Video Engine: Đang kết xuất video chuyển động thực sự qua Hunyuan/LTX API...");
-        const cleanPrompt = encodeURIComponent(`Cinematic realistic video, continuous fluid motion, 60fps photorealistic, ${prompt}`);
-        const aspect = (aspectRatio === '9:16') ? '9:16' : (aspectRatio === '1:1' ? '1:1' : '16:9');
-        
+        onStatus("Đang kết xuất chuyển động...");
+        const cleanPrompt = `cinematic realistic video, continuous fluid motion, 60fps, photorealistic, ${prompt || ''}`.trim();
+
+        // Xác định kích thước chuẩn cho model Wan dựa trên tỷ lệ khung hình
+        let width = 1280, height = 720;
+        if (aspectRatio === '9:16') {
+            width = 720;
+            height = 1280;
+        } else if (aspectRatio === '1:1') {
+            width = 832;
+            height = 832;
+        } else if (aspectRatio === '21:9') {
+            width = 1280;
+            height = 544;
+        }
+
         let imageUrl = '';
         if (directImageInput) {
             const bmp = await resolveSourceToBitmap(directImageInput);
@@ -3364,19 +3376,23 @@ Return ONLY valid JSON format:
             }
         }
 
-        const url = `https://video.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?model=hunyuan-video&duration=${durationSec}&aspect=${aspect}&seed=${seed}${imageUrl ? '&image=' + encodeURIComponent(imageUrl) : ''}`;
-        
+        const encodedPrompt = encodeURIComponent(cleanPrompt);
+        let url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=wan&width=${width}&height=${height}&seed=${seed}&nologo=true`;
+        if (imageUrl) {
+            url += `&image=${encodeURIComponent(imageUrl)}`;
+        }
+
         const res = await fetch(url);
         if (!res.ok) {
-            throw new Error(`Máy chủ Video AI từ chối kết nối (HTTP ${res.status}). Vui lòng thử lại sau giây lát.`);
+            throw new Error(`Máy chủ Wan AI từ chối kết nối (HTTP ${res.status}). Vui lòng thử lại sau giây lát.`);
         }
 
         const contentType = res.headers.get('content-type') || '';
         const blob = await res.blob();
 
-        // Kiểm tra tính toàn vẹn của tệp video trả về
+        // Kiểm tra tính toàn vẹn của tệp video trả về từ Wan AI
         if (blob.size < 50000 || (!contentType.includes('video') && !contentType.includes('octet-stream') && blob.type.indexOf('video') === -1)) {
-            throw new Error("Dữ liệu nhận về từ máy chủ không phải là luồng video AI hợp lệ.");
+            throw new Error("Dữ liệu nhận về không phải là luồng video hợp lệ.");
         }
 
         return blob;
