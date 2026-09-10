@@ -1292,7 +1292,7 @@
                                     <button type="button" @click="cinemaStudioTab = 'specs'; triggerHaptic('light')"
                                             :class="['px-2 py-1 rounded-md transition-all font-semibold flex items-center gap-1', cinemaStudioTab === 'specs' ? 'bg-purple-600 text-white shadow' : 'text-textMuted hover:text-white']">
                                         <lucide-icon name="settings" class="w-3 h-3"></lucide-icon>
-                                        <span>Thông Số</span>
+                                        <span>Thông Sơ</span>
                                     </button>
                                 </div>
                                 <button type="button" @click="toggleCinemaStudio()" class="btn-instant action-btn-sm text-textMuted hover:text-white rounded-lg ml-1" title="Đóng">
@@ -1398,6 +1398,9 @@
                                     <option :value="15" class="bg-surface">15 Giây</option>
                                     <option :value="30" class="bg-surface">30 Giây</option>
                                     <option :value="60" class="bg-surface">60 Giây</option>
+                                    <option :value="120" class="bg-surface">2 Phút</option>
+                                    <option :value="300" class="bg-surface">5 Phút</option>
+                                    <option :value="900" class="bg-surface">15 Phút (Tập phim)</option>
                                 </select>
                             </div>
 
@@ -3242,85 +3245,85 @@
         }
 
         // ============================================================
-// XƯỞNG SẢN XUẤT PHIM ĐIỆN ẢNH REAL-AI THUẦN TÚY (NO FALLBACK)
-// ============================================================
-const AICinemaEngine = {
-    decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
-        const binaryStr = atob(pcmBase64);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-        const dataView = new DataView(bytes.buffer);
-        const numSamples = Math.floor(bytes.length / 2);
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        const audioCtx = new AudioCtx();
-        const audioBuffer = audioCtx.createBuffer(1, numSamples, sampleRate);
-        const channelData = audioBuffer.getChannelData(0);
+        // XƯỞNG SẢN XUẤT PHIM ĐIỆN ẢNH REAL-AI THUẦN TÚY (NO WAN - FLUX ONLY)
+        // ============================================================
+        const AICinemaEngine = {
+            decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
+                const binaryStr = atob(pcmBase64);
+                const bytes = new Uint8Array(binaryStr.length);
+                for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+                const dataView = new DataView(bytes.buffer);
+                const numSamples = Math.floor(bytes.length / 2);
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                const audioCtx = new AudioCtx();
+                const audioBuffer = audioCtx.createBuffer(1, numSamples, sampleRate);
+                const channelData = audioBuffer.getChannelData(0);
 
-        for (let i = 0; i < numSamples; i++) {
-            const int16 = dataView.getInt16(i * 2, true);
-            channelData[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
-        }
-        audioCtx.close();
-        return audioBuffer;
-    },
+                for (let i = 0; i < numSamples; i++) {
+                    const int16 = dataView.getInt16(i * 2, true);
+                    channelData[i] = int16 < 0 ? int16 / 32768 : int16 / 32767;
+                }
+                audioCtx.close();
+                return audioBuffer;
+            },
 
-    // 1. Lồng tiếng nhân vật thực sự qua Gemini Audio
-    async generateDialogueSpeech(text, character, apiKey) {
-        if (!apiKey || !text) return null;
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-        const payload = {
-            contents: [{ role: 'user', parts: [{ text: `[CINEMATIC VOICE ACTING] ${text}` }] }],
-            generationConfig: {
-                responseModalities: ["AUDIO"],
-                speechConfig: {
-                    voiceConfig: {
-                        prebuiltVoiceConfig: {
-                            voiceName: character.geminiVoice || (character.gender === 'female' ? 'Kore' : 'Puck')
+            // 1. Lồng tiếng nhân vật thực sự qua Gemini Audio
+            async generateDialogueSpeech(text, character, apiKey) {
+                if (!apiKey || !text) return null;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
+                const payload = {
+                    contents: [{ role: 'user', parts: [{ text: `[CINEMATIC VOICE ACTING] ${text}` }] }],
+                    generationConfig: {
+                        responseModalities: ["AUDIO"],
+                        speechConfig: {
+                            voiceConfig: {
+                                prebuiltVoiceConfig: {
+                                    voiceName: character.geminiVoice || (character.gender === 'female' ? 'Kore' : 'Puck')
+                                }
+                            }
                         }
-                    }
+                    },
+                    safetySettings: SAFETY_SETTINGS
+                };
+
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) return null;
+                const json = await res.json();
+                const audioPart = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio/'));
+                if (audioPart?.inlineData?.data) {
+                    return this.decodePcmToAudioBuffer(audioPart.inlineData.data, 24000);
+                }
+                return null;
+            },
+
+            // 2. Nhạc nền điện ảnh thực tế qua MusicGen API
+            async generateCinematicMusic(prompt, durationSec, onStatus) {
+                onStatus("AudioCraft / MusicGen: Đang hòa âm phối khí nhạc nền điện ảnh...");
+                const cleanPrompt = encodeURIComponent(`Cinematic orchestral background score, high quality studio mastering, ${prompt}`);
+                const url = `https://audio.pollinations.ai/prompt/${cleanPrompt}?duration=${durationSec}`;
+                
+                try {
+                    const res = await fetch(url);
+                    if (!res.ok) return null;
+                    const blob = await res.blob();
+                    const arrayBuffer = await blob.arrayBuffer();
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    const audioCtx = new AudioCtx();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                    audioCtx.close();
+                    return audioBuffer;
+                } catch (_) {
+                    return null;
                 }
             },
-            safetySettings: SAFETY_SETTINGS
-        };
 
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!res.ok) return null;
-        const json = await res.json();
-        const audioPart = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio/'));
-        if (audioPart?.inlineData?.data) {
-            return this.decodePcmToAudioBuffer(audioPart.inlineData.data, 24000);
-        }
-        return null;
-    },
-
-    // 2. Nhạc nền điện ảnh thực tế qua MusicGen API
-    async generateCinematicMusic(prompt, durationSec, onStatus) {
-        onStatus("AudioCraft / MusicGen: Đang hòa âm phối khí nhạc nền điện ảnh...");
-        const cleanPrompt = encodeURIComponent(`Cinematic orchestral background score, high quality studio mastering, ${prompt}`);
-        const url = `https://audio.pollinations.ai/prompt/${cleanPrompt}?duration=${durationSec}`;
-        
-        try {
-            const res = await fetch(url);
-            if (!res.ok) return null;
-            const blob = await res.blob();
-            const arrayBuffer = await blob.arrayBuffer();
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            const audioCtx = new AudioCtx();
-            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-            audioCtx.close();
-            return audioBuffer;
-        } catch (_) {
-            return null;
-        }
-    },
-
-    // 3. Đạo diễn kịch bản góc quay AI qua Gemini
-    async planCinematicDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn, isFromImage = false) {
-        const directingPrompt = `[PROFESSIONAL CINEMATOGRAPHER & MOTION DIRECTOR]
+            // 3. Đạo diễn kịch bản góc quay AI qua Gemini
+            async planCinematicDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn, isFromImage = false) {
+                const directingPrompt = `[PROFESSIONAL CINEMATOGRAPHER & MOTION DIRECTOR]
 Scene Request: "${userPrompt}"
 Target Duration: ${durationSec}s | Visual Style: ${style} | Mode: ${isFromImage ? 'Image-to-Video Motion Synthesis' : 'Text-to-Video Synthesis'}
 
@@ -3338,244 +3341,255 @@ Return ONLY valid JSON format:
   "music_prompt_en": "Epic cinematic soundtrack with orchestral strings and deep percussion"
 }`;
 
-        const res = await dispatchBgTaskFn({
-            contents: [{ role: 'user', parts: [{ text: directingPrompt }] }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: "application/json" }
-        });
-        const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-        return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
-    },
-
-        // 4. KẾT XUẤT VIDEO CHUYỂN ĐỘNG AI QUA MODEL WAN
-    async generateMotionSynthesis({ prompt, directImageInput, durationSec, aspectRatio, seed, onStatus }) {
-        onStatus("Đang kết xuất chuyển động...");
-        const cleanPrompt = `cinematic realistic video, continuous fluid motion, 60fps, photorealistic, ${prompt || ''}`.trim();
-
-        // Xác định kích thước chuẩn cho model Wan dựa trên tỷ lệ khung hình
-        let width = 1280, height = 720;
-        if (aspectRatio === '9:16') {
-            width = 720;
-            height = 1280;
-        } else if (aspectRatio === '1:1') {
-            width = 832;
-            height = 832;
-        } else if (aspectRatio === '21:9') {
-            width = 1280;
-            height = 544;
-        }
-
-        let imageUrl = '';
-        if (directImageInput) {
-            const bmp = await resolveSourceToBitmap(directImageInput);
-            if (bmp) {
-                const c = document.createElement('canvas');
-                c.width = bmp.width;
-                c.height = bmp.height;
-                c.getContext('2d').drawImage(bmp, 0, 0);
-                imageUrl = c.toDataURL('image/jpeg', 0.90);
-            }
-        }
-
-        const encodedPrompt = encodeURIComponent(cleanPrompt);
-        let url = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=wan&width=${width}&height=${height}&seed=${seed}&nologo=true`;
-        if (imageUrl) {
-            url += `&image=${encodeURIComponent(imageUrl)}`;
-        }
-
-        const res = await fetch(url);
-        if (!res.ok) {
-            throw new Error(`Máy chủ Wan AI từ chối kết nối (HTTP ${res.status}). Vui lòng thử lại sau giây lát.`);
-        }
-
-        const contentType = res.headers.get('content-type') || '';
-        const blob = await res.blob();
-
-        // Kiểm tra tính toàn vẹn của tệp video trả về từ Wan AI
-        if (blob.size < 50000 || (!contentType.includes('video') && !contentType.includes('octet-stream') && blob.type.indexOf('video') === -1)) {
-            throw new Error("Dữ liệu nhận về không phải là luồng video hợp lệ.");
-        }
-
-        return blob;
-    },
-
-    // 5. GHÉP ÂM THANH TRỰC TIẾP VÀO KHUNG HÌNH VIDEO AI THỰC TẾ
-    async attachAudioToRealVideo(videoBlob, audioBuffer, onProgress) {
-        if (!audioBuffer) return videoBlob; // Nếu không có thoại/nhạc, giữ nguyên tệp video AI gốc
-
-        const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
-        const TargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
-
-        if (!MuxerClass || typeof VideoEncoder === 'undefined') {
-            return videoBlob;
-        }
-
-        const videoUrl = URL.createObjectURL(videoBlob);
-        const video = document.createElement('video');
-        video.src = videoUrl;
-        video.muted = true;
-        video.playsInline = true;
-
-        await new Promise((resolve, reject) => {
-            video.onloadedmetadata = () => resolve();
-            video.onerror = () => reject(new Error("Không thể nạp tệp video AI để đóng gói âm thanh"));
-        });
-
-        const width = Math.floor((video.videoWidth || 1280) / 2) * 2;
-        const height = Math.floor((video.videoHeight || 720) / 2) * 2;
-        const duration = video.duration || 5;
-        const fps = 24;
-        const totalFrames = Math.max(1, Math.round(duration * fps));
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-
-        const muxer = new MuxerClass({
-            target: new TargetClass(),
-            video: { codec: 'avc', width, height },
-            audio: { codec: 'aac', sampleRate: audioBuffer.sampleRate, numberOfChannels: 2 },
-            fastStart: 'in-memory'
-        });
-
-        const videoEncoder = new VideoEncoder({
-            output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-            error: (e) => console.error("VideoEncoder Error:", e)
-        });
-
-        videoEncoder.configure({
-            codec: 'avc1.64002a',
-            width,
-            height,
-            bitrate: 16_000_000,
-            framerate: fps
-        });
-
-        // Trích xuất chính xác từng frame của Video AI thật sang Encoder
-        const frameMicros = 1_000_000 / fps;
-        for (let i = 0; i < totalFrames; i++) {
-            const targetTime = (i / totalFrames) * duration;
-            video.currentTime = targetTime;
-            await new Promise(r => {
-                const onSeek = () => { video.removeEventListener('seeked', onSeek); r(); };
-                video.addEventListener('seeked', onSeek);
-            });
-
-            ctx.drawImage(video, 0, 0, width, height);
-            const vFrame = new VideoFrame(canvas, { timestamp: Math.round(i * frameMicros) });
-            videoEncoder.encode(vFrame, { keyFrame: i % fps === 0 });
-            vFrame.close();
-
-            if (onProgress && i % 6 === 0) {
-                onProgress(Math.round((i / totalFrames) * 100));
-            }
-        }
-        await videoEncoder.flush();
-        URL.revokeObjectURL(videoUrl);
-
-        // Đóng gói luồng Audio chuẩn AAC
-        if (typeof AudioEncoder !== 'undefined') {
-            try {
-                const audioEncoder = new AudioEncoder({
-                    output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-                    error: (e) => console.error("AudioEncoder Error:", e)
+                const res = await dispatchBgTaskFn({
+                    contents: [{ role: 'user', parts: [{ text: directingPrompt }] }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: "application/json" }
                 });
-                audioEncoder.configure({
-                    codec: 'mp4a.40.2',
-                    sampleRate: audioBuffer.sampleRate,
-                    numberOfChannels: 2,
-                    bitrate: 192_000
-                });
+                const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+                return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
+            },
 
-                const numFrames = audioBuffer.length;
-                const leftChan = audioBuffer.getChannelData(0);
-                const rightChan = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChan;
-                const interleavedData = new Float32Array(numFrames * 2);
+            // 4. KẾT XUẤT VIDEO CHUYỂN ĐỘNG AI QUA GEMINI <=> FLUX FRAME-BY-FRAME (VỚI ÂM THANH ĐỒNG BỘ TRỰC TIẾP)
+            async generateFluxFrameVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, onStatus, dispatchBgTaskFn }) {
+                const fps = 24;
+                const totalFrames = Math.max(1, Math.round(durationSec * fps));
+                
+                let width = 1024, height = 576;
+                if (aspectRatio === '9:16') { width = 576; height = 1024; }
+                else if (aspectRatio === '1:1') { width = 768; height = 768; }
+                else if (aspectRatio === '21:9') { width = 1024; height = 448; }
 
-                for (let s = 0; s < numFrames; s++) {
-                    interleavedData[s * 2] = leftChan[s];
-                    interleavedData[s * 2 + 1] = rightChan[s];
+                const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
+                const TargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
+                if (!MuxerClass || typeof VideoEncoder === 'undefined') {
+                    throw new Error("Trình duyệt không hỗ trợ WebCodecs / MP4 Muxer.");
                 }
 
-                const audioData = new AudioData({
-                    format: 'f32',
-                    sampleRate: audioBuffer.sampleRate,
-                    numberOfFrames: numFrames,
-                    numberOfChannels: 2,
-                    timestamp: 0,
-                    data: interleavedData
+                const muxerOptions = {
+                    target: new TargetClass(),
+                    video: { codec: 'avc', width, height },
+                    fastStart: 'in-memory'
+                };
+
+                if (audioBuffer && typeof AudioEncoder !== 'undefined') {
+                    muxerOptions.audio = { codec: 'aac', sampleRate: audioBuffer.sampleRate, numberOfChannels: 2 };
+                }
+
+                const muxer = new MuxerClass(muxerOptions);
+
+                const videoEncoder = new VideoEncoder({
+                    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                    error: (e) => console.error("VideoEncoder Error:", e)
                 });
 
-                audioEncoder.encode(audioData);
-                audioData.close();
-                await audioEncoder.flush();
-            } catch (aErr) {
-                console.warn("Lỗi mux audio:", aErr);
-            }
-        }
+                videoEncoder.configure({
+                    codec: 'avc1.64002a',
+                    width,
+                    height,
+                    bitrate: 12_000_000,
+                    framerate: fps
+                });
 
-        muxer.finalize();
-        return new Blob([muxer.target.buffer], { type: 'video/mp4' });
-    },
+                // Encode Audio if available
+                if (audioBuffer && typeof AudioEncoder !== 'undefined') {
+                    try {
+                        const audioEncoder = new AudioEncoder({
+                            output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+                            error: (e) => console.error("AudioEncoder Error:", e)
+                        });
+                        audioEncoder.configure({
+                            codec: 'mp4a.40.2',
+                            sampleRate: audioBuffer.sampleRate,
+                            numberOfChannels: 2,
+                            bitrate: 192_000
+                        });
 
-    // 6. Thu âm lời thoại kịch bản
-    async buildSpeechAudioBuffer(dialogueLines, voiceCharacters, durationSec, apiKey) {
-        if (!Array.isArray(dialogueLines) || !dialogueLines.length || !apiKey) return null;
+                        const numFrames = audioBuffer.length;
+                        const leftChan = audioBuffer.getChannelData(0);
+                        const rightChan = audioBuffer.numberOfChannels > 1 ? audioBuffer.getChannelData(1) : leftChan;
+                        const interleavedData = new Float32Array(numFrames * 2);
 
-        const sampleRate = 48000;
-        const totalSamples = Math.ceil(sampleRate * durationSec);
-        const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
-        const ctx = new OfflineCtx(2, totalSamples, sampleRate);
-        let hasDialogue = false;
+                        for (let s = 0; s < numFrames; s++) {
+                            interleavedData[s * 2] = leftChan[s];
+                            interleavedData[s * 2 + 1] = rightChan[s];
+                        }
 
-        for (const line of dialogueLines) {
-            const targetChar = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
-            if (targetChar && line.text) {
-                const charBuffer = await this.generateDialogueSpeech(line.text, targetChar, apiKey);
-                if (charBuffer) {
-                    hasDialogue = true;
-                    const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), Math.max(0, durationSec - 0.5));
-                    const source = ctx.createBufferSource();
-                    source.buffer = charBuffer;
-                    source.connect(ctx.destination);
-                    source.start(startTime);
+                        const audioData = new AudioData({
+                            format: 'f32',
+                            sampleRate: audioBuffer.sampleRate,
+                            numberOfFrames: numFrames,
+                            numberOfChannels: 2,
+                            timestamp: 0,
+                            data: interleavedData
+                        });
+
+                        audioEncoder.encode(audioData);
+                        audioData.close();
+                        await audioEncoder.flush();
+                    } catch (aErr) {
+                        console.warn("Lỗi mã hóa âm thanh:", aErr);
+                    }
                 }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+
+                // Khởi tạo kịch bản hình ảnh nhất quán (Visual Guideline)
+                onStatus("Đang khởi tạo kịch bản hình ảnh nhất quán...");
+                const guidelinePrompt = `[VISUAL GUIDELINE CREATOR]
+Create a highly detailed physical description (visual guideline) for the subject and environment in this scene: "${prompt}".
+Specify exact facial features, hair style, clothing, colors, background elements, and camera style.
+Keep it concise but extremely specific so that subsequent prompts can reference it to maintain 100% consistency.
+Return ONLY the English visual guideline text.`;
+
+                const guidelineRes = await dispatchBgTaskFn({
+                    contents: [{ role: 'user', parts: [{ text: guidelinePrompt }] }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 512 }
+                });
+                const visualGuideline = guidelineRes?.candidates?.[0]?.content?.parts?.[0]?.text || prompt;
+
+                let previousPrompt = "";
+                let previousFrameDescription = "Initial state";
+
+                // Vòng lặp tạo khung hình tuần tự 24fps
+                const frameMicros = 1_000_000 / fps;
+                for (let i = 0; i < totalFrames; i++) {
+                    const progressPercent = Math.round((i / totalFrames) * 100);
+                    onStatus(`Đang sản xuất khung hình ${i + 1}/${totalFrames} (${progressPercent}%) - Đang viết prompt...`);
+
+                    // Gemini đạo diễn viết prompt cho khung hình hiện tại
+                    const frameDirectorPrompt = `[CINEMATIC FRAME DIRECTOR]
+Master Visual Guideline: "${visualGuideline}"
+Total Frames: ${totalFrames} | Current Frame Index: ${i} (0-indexed)
+Previous Frame Prompt: "${previousPrompt || 'None'}"
+Previous Frame State: "${previousFrameDescription}"
+
+Your job is to write the exact prompt for the current frame to create a smooth, continuous, professional motion video at 24fps.
+Describe the micro-movement for this frame (e.g., slight camera pan, subtle facial expression change, organic movement of hair/wind, character walking slightly).
+Ensure the subject's appearance, clothing, and environment remain 100% identical to the Master Visual Guideline.
+Strictly forbid sudden jumps, morphing, or changes in identity.
+Return ONLY a valid JSON object:
+{
+  "flux_prompt": "The exact English prompt for Flux, incorporating the Master Visual Guideline and the micro-movement",
+  "frame_description": "A brief description of the current frame's state for the next step's context"
+}`;
+
+                    let framePromptData = { flux_prompt: visualGuideline, frame_description: "Initial frame" };
+                    try {
+                        const frameRes = await dispatchBgTaskFn({
+                            contents: [{ role: 'user', parts: [{ text: frameDirectorPrompt }] }],
+                            generationConfig: { temperature: 0.1, maxOutputTokens: 512, responseMimeType: "application/json" }
+                        });
+                        const rawJson = frameRes?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+                        framePromptData = JSON.parse(rawJson.replace(/```json/gi, '').replace(/```/g, '').trim());
+                    } catch (e) {
+                        framePromptData = {
+                            flux_prompt: `${visualGuideline}, frame ${i} of ${totalFrames}, smooth continuous cinematic motion, consistent subject`,
+                            frame_description: `Frame ${i}`
+                        };
+                    }
+
+                    previousPrompt = framePromptData.flux_prompt;
+                    previousFrameDescription = framePromptData.frame_description;
+
+                    onStatus(`Đang sản xuất khung hình ${i + 1}/${totalFrames} (${progressPercent}%) - Đang vẽ ảnh...`);
+
+                    // Gọi Flux tạo ảnh khung hình
+                    const encodedPrompt = encodeURIComponent(framePromptData.flux_prompt);
+                    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux-realism&width=${width}&height=${height}&seed=${seed}&nologo=true`;
+
+                    const img = new Image();
+                    img.crossOrigin = "anonymous";
+                    img.src = imageUrl;
+
+                    await new Promise((resolve, reject) => {
+                        img.onload = () => resolve();
+                        img.onerror = () => {
+                            img.src = `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true`;
+                            img.onload = () => resolve();
+                            img.onerror = () => reject(new Error(`Không thể tải khung hình ${i + 1}`));
+                        };
+                    });
+
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    const vFrame = new VideoFrame(canvas, { timestamp: Math.round(i * frameMicros) });
+                    videoEncoder.encode(vFrame, { keyFrame: i % fps === 0 });
+                    vFrame.close();
+
+                    // Giải phóng bộ nhớ ngay lập tức để chống sập tab
+                    img.onload = null;
+                    img.onerror = null;
+                    img.src = "";
+                }
+
+                onStatus("Đang hoàn tất đóng gói luồng video...");
+                await videoEncoder.flush();
+                muxer.finalize();
+
+                return new Blob([muxer.target.buffer], { type: 'video/mp4' });
+            },
+
+            // 5. Thu âm lời thoại kịch bản
+            async buildSpeechAudioBuffer(dialogueLines, voiceCharacters, durationSec, apiKey) {
+                if (!Array.isArray(dialogueLines) || !dialogueLines.length || !apiKey) return null;
+
+                const sampleRate = 48000;
+                const totalSamples = Math.ceil(sampleRate * durationSec);
+                const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
+                const ctx = new OfflineCtx(2, totalSamples, sampleRate);
+                let hasDialogue = false;
+
+                for (const line of dialogueLines) {
+                    const targetChar = voiceCharacters.find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || voiceCharacters[0];
+                    if (targetChar && line.text) {
+                        const charBuffer = await this.generateDialogueSpeech(line.text, targetChar, apiKey);
+                        if (charBuffer) {
+                            hasDialogue = true;
+                            const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), Math.max(0, durationSec - 0.5));
+                            const source = ctx.createBufferSource();
+                            source.buffer = charBuffer;
+                            source.connect(ctx.destination);
+                            source.start(startTime);
+                        }
+                    }
+                }
+                return hasDialogue ? await ctx.startRendering() : null;
+            },
+
+            // 6. Hòa trộn nhạc và giọng nói
+            async mixAudioTracks(speechBuffer, musicBuffer, durationSec) {
+                if (!speechBuffer && !musicBuffer) return null;
+                const sampleRate = 48000;
+                const totalSamples = Math.ceil(sampleRate * durationSec);
+                const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
+                const ctx = new OfflineCtx(2, totalSamples, sampleRate);
+
+                if (musicBuffer) {
+                    const musicSource = ctx.createBufferSource();
+                    musicSource.buffer = musicBuffer;
+                    const musicGain = ctx.createGain();
+                    musicGain.gain.setValueAtTime(speechBuffer ? 0.18 : 0.45, 0);
+                    musicSource.connect(musicGain);
+                    musicGain.connect(ctx.destination);
+                    musicSource.start(0);
+                }
+
+                if (speechBuffer) {
+                    const speechSource = ctx.createBufferSource();
+                    speechSource.buffer = speechBuffer;
+                    const speechGain = ctx.createGain();
+                    speechGain.gain.setValueAtTime(1.0, 0);
+                    speechSource.connect(speechGain);
+                    speechGain.connect(ctx.destination);
+                    speechSource.start(0);
+                }
+
+                return await ctx.startRendering();
             }
-        }
-        return hasDialogue ? await ctx.startRendering() : null;
-    },
-
-    // 7. Hòa trộn nhạc và giọng nói
-    async mixAudioTracks(speechBuffer, musicBuffer, durationSec) {
-        if (!speechBuffer && !musicBuffer) return null;
-        const sampleRate = 48000;
-        const totalSamples = Math.ceil(sampleRate * durationSec);
-        const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
-        const ctx = new OfflineCtx(2, totalSamples, sampleRate);
-
-        if (musicBuffer) {
-            const musicSource = ctx.createBufferSource();
-            musicSource.buffer = musicBuffer;
-            const musicGain = ctx.createGain();
-            musicGain.gain.setValueAtTime(speechBuffer ? 0.18 : 0.45, 0);
-            musicSource.connect(musicGain);
-            musicGain.connect(ctx.destination);
-            musicSource.start(0);
-        }
-
-        if (speechBuffer) {
-            const speechSource = ctx.createBufferSource();
-            speechSource.buffer = speechBuffer;
-            const speechGain = ctx.createGain();
-            speechGain.gain.setValueAtTime(1.0, 0);
-            speechSource.connect(speechGain);
-            speechGain.connect(ctx.destination);
-            speechSource.start(0);
-        }
-
-        return await ctx.startRendering();
-    }
-};
+        };
 
         // ============================================================
         // VẬN HÀNH ỨNG DỤNG VUE 3
@@ -3819,7 +3833,8 @@ Return ONLY valid JSON format:
                     const saveApiKeyPoolFromInput = () => {
                         const parsed = parseKeysFromText(rawApiKeysInput.value);
                         const map = new Map(apiKeyPool.value.map(k => [k.key, k]));
-                        const pool = parsed.map(k => map.get(k) || { key: k, status: 'active', failCount: 0, successCount: 0, lastUsed: 0, cooldownUntil: 0 });
+                        const```html
+pool = parsed.map(k => map.get(k) || { key: k, status: 'active', failCount: 0, successCount: 0, lastUsed: 0, cooldownUntil: 0 });
                         apiKeyPool.value = pool;
                         try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(toRaw(apiKeyPool.value))); } catch (_) {}
                         notify(pool.length ? `Đã lưu ${pool.length} khóa kết nối.` : "Danh sách khóa trống.", !pool.length);
@@ -4365,105 +4380,95 @@ Return ONLY valid JSON format:
 
                     // Thực thi sản xuất phim điện ảnh với Unified Stack Workflow
                     const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
-    if (isGenerating.value) return;
-    isGenerating.value = true;
-    triggerHaptic('heavy');
+                        if (isGenerating.value) return;
+                        isGenerating.value = true;
+                        triggerHaptic('heavy');
 
-    const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
-    if (!msg) currentMessages.value.push(targetMsg);
+                        const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
+                        if (!msg) currentMessages.value.push(targetMsg);
 
-    try {
-        const durationSec = Number(cinemaConfig.duration) || 5;
-        const aspectRatio = cinemaConfig.aspectRatio || '16:9';
-        const videoSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
-        const healthyKey = getNextHealthyApiKey()?.key || '';
+                        try {
+                            const durationSec = Number(cinemaConfig.duration) || 5;
+                            const aspectRatio = cinemaConfig.aspectRatio || '16:9';
+                            const videoSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
+                            const healthyKey = getNextHealthyApiKey()?.key || '';
 
-        const isFromImage = Boolean(directImageInput);
+                            const isFromImage = Boolean(directImageInput);
 
-        // BƯỚC 1: Đạo diễn kịch bản & phân cảnh qua Gemini
-        searchStatusText.value = "Đang tạo kịch bản...";
-        const directingPlan = await AICinemaEngine.planCinematicDirecting(
-            customPrompt || (isFromImage ? 'Chuyển động điện ảnh mượt mà từ hình ảnh' : 'Cảnh quay điện ảnh sống động'),
-            durationSec,
-            videoSeed,
-            cinemaConfig.style || 'cinematic',
-            dispatchBackgroundTaskWithFallback,
-            isFromImage
-        );
+                            // BƯỚC 1: Đạo diễn kịch bản & phân cảnh qua Gemini
+                            searchStatusText.value = "Đang tạo kịch bản...";
+                            const directingPlan = await AICinemaEngine.planCinematicDirecting(
+                                customPrompt || (isFromImage ? 'Chuyển động điện ảnh mượt mà từ hình ảnh' : 'Cảnh quay điện ảnh sống động'),
+                                durationSec,
+                                videoSeed,
+                                cinemaConfig.style || 'cinematic',
+                                dispatchBackgroundTaskWithFallback,
+                                isFromImage
+                            );
 
-        // BƯỚC 2: Thu âm diễn xuất bằng Gemini Audio
-        searchStatusText.value = "Đang thu âm lời thoại...";
-        const speechAudioBuffer = await AICinemaEngine.buildSpeechAudioBuffer(
-            userTimelineCues.value,
-            cinemaVoiceCharacters.value,
-            durationSec,
-            healthyKey
-        );
+                            // BƯỚC 2: Thu âm diễn xuất bằng Gemini Audio
+                            searchStatusText.value = "Đang thu âm lời thoại...";
+                            const speechAudioBuffer = await AICinemaEngine.buildSpeechAudioBuffer(
+                                userTimelineCues.value,
+                                cinemaVoiceCharacters.value,
+                                durationSec,
+                                healthyKey
+                            );
 
-        // BƯỚC 3: Hòa âm phối khí nhạc nền điện ảnh
-        const musicAudioBuffer = await AICinemaEngine.generateCinematicMusic(
-            directingPlan.music_prompt_en || directingPlan.base_prompt_en,
-            durationSec,
-            (st) => { searchStatusText.value = st; }
-        );
+                            // BƯỚC 3: Hòa âm phối khí nhạc nền điện ảnh
+                            const musicAudioBuffer = await AICinemaEngine.generateCinematicMusic(
+                                directingPlan.music_prompt_en || directingPlan.base_prompt_en,
+                                durationSec,
+                                (st) => { searchStatusText.value = st; }
+                            );
 
-        // BƯỚC 4: Trộn âm thanh Stereo
-        const finalMixedAudio = await AICinemaEngine.mixAudioTracks(
-            speechAudioBuffer,
-            musicAudioBuffer,
-            durationSec
-        );
+                            // BƯỚC 4: Trộn âm thanh Stereo
+                            const finalMixedAudio = await AICinemaEngine.mixAudioTracks(
+                                speechAudioBuffer,
+                                musicAudioBuffer,
+                                durationSec
+                            );
 
-        // BƯỚC 5: TỔNG HỢP VIDEO CHUYỂN ĐỘNG AI THẬT SỰ (KHÔNG FALLBACK)
-        const rawAiVideoBlob = await AICinemaEngine.generateMotionSynthesis({
-            prompt: directingPlan.base_prompt_en,
-            directImageInput,
-            durationSec,
-            aspectRatio,
-            seed: videoSeed,
-            onStatus: (st) => { searchStatusText.value = st; }
-        });
+                            // BƯỚC 5 & 6: TỔNG HỢP VIDEO CHUYỂN ĐỘNG AI THẬT SỰ QUA GEMINI <=> FLUX FRAME-BY-FRAME (VỚI ÂM THANH ĐỒNG BỘ TRỰC TIẾP)
+                            const finalVideoBlob = await AICinemaEngine.generateFluxFrameVideo({
+                                prompt: directingPlan.base_prompt_en,
+                                directImageInput,
+                                durationSec,
+                                aspectRatio,
+                                seed: videoSeed,
+                                style: cinemaConfig.style || 'cinematic',
+                                audioBuffer: finalMixedAudio,
+                                onStatus: (st) => { searchStatusText.value = st; },
+                                dispatchBgTaskFn: dispatchBackgroundTaskWithFallback
+                            });
 
-        if (!rawAiVideoBlob) {
-            throw new Error("Không thể kết xuất video.");
-        }
+                            const videoUrl = ObjectUrlRegistry.create(finalVideoBlob);
+                            targetMsg.renderedVideoUrl = videoUrl;
 
-        // BƯỚC 6: Đóng gói âm thanh vào Video AI thật bằng WebCodecs MP4 Muxer
-        searchStatusText.value = "Đang đồng bộ luồng âm thanh vào Video...";
-        const finalVideoBlob = await AICinemaEngine.attachAudioToRealVideo(
-            rawAiVideoBlob,
-            finalMixedAudio,
-            (pct) => { searchStatusText.value = `Đang đồng bộ luồng video: ${pct}%...`; }
-        );
+                            const dialogueSummary = userTimelineCues.value.map(d => `- **${d.speaker} · ${d.startTimeSec}s:** "${d.text}"`).join('\n');
 
-        const videoUrl = ObjectUrlRegistry.create(finalVideoBlob);
-        targetMsg.renderedVideoUrl = videoUrl;
+                            targetMsg.content = (targetMsg.content || '') + 
+                                `\n\n🎬 **Tác Phẩm Video AI Hoàn Thiện**\n` +
+                                `- **Thời lượng:** ${durationSec} giây\n` +
+                                `- **Tỷ lệ:** ${aspectRatio}\n` +
+                                `- **Động học AI:** ${directingPlan.kinematics}\n` +
+                                (dialogueSummary ? `\n🎙️ **Phần thoại:**\n${dialogueSummary}` : '');
 
-        const dialogueSummary = userTimelineCues.value.map(d => `- **${d.speaker} · ${d.startTimeSec}s:** "${d.text}"`).join('\n');
-
-        targetMsg.content = (targetMsg.content || '') + 
-            `\n\n🎬 **Tác Phẩm Video AI Hoàn Thiện**\n` +
-            `- **Thời lượng:** ${durationSec} giây\n` +
-            `- **Tỷ lệ:** ${aspectRatio}\n` +
-            `- **Động học AI:** ${directingPlan.kinematics}\n` +
-            (dialogueSummary ? `\n🎙️ **Phần thoại:**\n${dialogueSummary}` : '');
-
-        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-        scheduleDbSave(targetMsg);
-        scrollToBottom(true);
-        notify("Đã sản xuất xong video");
-    } catch (err) {
-        // Ném lỗi rõ ràng lên UI, không giấu giếm bằng video ảnh tĩnh 2D
-        notify(`Lỗi tạo video: ${err.message}`, true);
-        targetMsg.content = (targetMsg.content || '') + `\n\n⚠️ **Thất bại trong việc tạo Video AI:** ${err.message}`;
-        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-        scheduleDbSave(targetMsg);
-    } finally {
-        isGenerating.value = false;
-        searchStatusText.value = "";
-        updateInputTokensDisplay();
-    }
-};
+                            targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                            scheduleDbSave(targetMsg);
+                            scrollToBottom(true);
+                            notify("Đã sản xuất xong video");
+                        } catch (err) {
+                            notify(`Lỗi tạo video: ${err.message}`, true);
+                            targetMsg.content = (targetMsg.content || '') + `\n\n⚠️ **Thất bại trong việc tạo Video AI:** ${err.message}`;
+                            targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                            scheduleDbSave(targetMsg);
+                        } finally {
+                            isGenerating.value = false;
+                            searchStatusText.value = "";
+                            updateInputTokensDisplay();
+                        }
+                    };
 
                     const animateCurrentLightboxImage = () => {
                         const currentUrl = lightbox.url;
@@ -5894,7 +5899,7 @@ Return ONLY valid JSON format:
                                         const toPurge = [];
                                         for (let i = targetIdx - 1; i >= 0; i--) {
                                             const m = currentMessages.value[i];
-                                            if (m.role === 'system_thought' || m.role === 'system_execution') toPurge.push(m);
+                                            if (m.role === 'system_thought' || m.role === 'system_execution' ) toPurge.push(m);
                                             else break;
                                         }
                                         if (db) dbWriteQueue.enqueue(async () => { for (const m of toPurge) await db.messages.delete(m.id); });
