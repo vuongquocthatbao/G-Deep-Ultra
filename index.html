@@ -3268,7 +3268,7 @@
                 return audioBuffer;
             },
 
-            // 1. NHIỆM VỤ TRANSFORMERS.JS: CHỈ CHẤP NHẬN BẢN ĐỒ ĐỘ SÂU NƠ-RON THẬT (KHÔNG CANVAS 2D FALLBACK)
+            // 1. NHIỆM VỤ TRANSFORMERS.JS: CHỈ CHẤP NHẬN DEPTH THẬT TỪ GPU
             async getNeuralDepthTexture(imageBitmap, width, height, onStatus) {
                 onStatus("Hệ thống đang chạy trên GPU...");
                 if (!window.transformers) {
@@ -3293,7 +3293,7 @@
 
                 const out = await this._depthPipeline(tempCanvas.toDataURL('image/jpeg', 0.90));
                 if (!out?.depth || typeof out.depth.toCanvas !== 'function') {
-                    throw new Error("Không thể trích xuất Depth Tensor từ bức ảnh này.");
+                    throw new Error("Hệ thống không thể trích xuất Depth Tensor từ bức ảnh này.");
                 }
 
                 return new THREE.CanvasTexture(out.depth.toCanvas());
@@ -3472,33 +3472,119 @@ Return ONLY valid JSON format:
                 return null;
             },
 
-            // 5. HÒA ÂM NHẠC NỀN AUDIOCRAFT
-            async generateCinematicMusic(prompt, durationSec, onStatus) {
-                onStatus("Đang hòa âm nhạc nền...");
-                const cleanPrompt = encodeURIComponent(`Cinematic orchestral background score, high quality studio mastering, ${prompt}`);
-                const url = `https://audio.pollinations.ai/prompt/${cleanPrompt}?duration=${durationSec}`;
-                
-                const res = await fetch(url);
-                if (!res.ok) return null;
-                const blob = await res.blob();
-                const arrayBuffer = await blob.arrayBuffer();
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                const audioCtx = new AudioCtx();
-                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-                audioCtx.close();
-                return audioBuffer;
+            // 5. TỔNG HỢP NHẠC NỀN THEO 100% THAM SỐ ÂM HỌC CỦA GEMINI (KHÔNG GÁN CỨNG)
+            async generateCinematicMusic(audioSynthesisConfig, durationSec, onStatus) {
+                onStatus("Web Audio DSP: Đang tổng hợp nhạc nền theo phổ âm học của Gemini...");
+                try {
+                    const sampleRate = 48000;
+                    const totalSamples = Math.ceil(sampleRate * durationSec);
+                    const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
+                    const actx = new OfflineCtx(2, totalSamples, sampleRate);
+
+                    // ĐỌC 100% THÔNG SỐ TỪ BỘ NÃO GEMINI
+                    const chordFreqs = (audioSynthesisConfig && Array.isArray(audioSynthesisConfig.chord_frequencies) && audioSynthesisConfig.chord_frequencies.length > 0)
+                        ? audioSynthesisConfig.chord_frequencies
+                        : [65.41, 98.00, 130.81, 164.81];
+
+                    const waveforms = (audioSynthesisConfig && Array.isArray(audioSynthesisConfig.timbre_waveforms) && audioSynthesisConfig.timbre_waveforms.length > 0)
+                        ? audioSynthesisConfig.timbre_waveforms
+                        : ['triangle', 'sine'];
+
+                    const subBassFreq = Number(audioSynthesisConfig?.sub_bass_freq) || 40.0;
+                    const filterCutoff = Number(audioSynthesisConfig?.filter_cutoff_hz) || 450.0;
+                    const filterQ = Number(audioSynthesisConfig?.filter_resonance_q) || 2.5;
+                    const lfoRate = Number(audioSynthesisConfig?.lfo_rate_hz) || 0.4;
+                    const attackSec = durationSec * (Number(audioSynthesisConfig?.attack_ratio) || 0.2);
+                    const releaseSec = durationSec * (Number(audioSynthesisConfig?.release_ratio) || 0.25);
+
+                    // 1. TỔNG HỢP CÁC LỚP HỢP ÂM DO GEMINI SOẠN
+                    chordFreqs.forEach((freq, idx) => {
+                        const osc = actx.createOscillator();
+                        const gain = actx.createGain();
+                        const filter = actx.createBiquadFilter();
+
+                        // Dạng sóng theo chỉ định của Gemini
+                        osc.type = waveforms[idx % waveforms.length] || 'triangle';
+                        osc.frequency.setValueAtTime(Number(freq), 0);
+
+                        // Bộ lọc động học do Gemini tính toán
+                        filter.type = 'lowpass';
+                        filter.frequency.setValueAtTime(filterCutoff + (idx * 40), 0);
+                        filter.Q.setValueAtTime(filterQ, 0);
+
+                        // Dao động LFO điều chế tần số (tạo độ rung cảm xúc động)
+                        const lfo = actx.createOscillator();
+                        const lfoGain = actx.createGain();
+                        lfo.frequency.setValueAtTime(lfoRate, 0);
+                        lfoGain.gain.setValueAtTime(15.0, 0);
+                        lfo.connect(filter.frequency);
+                        lfo.start(0);
+                        lfo.stop(durationSec);
+
+                        // Envelope âm lượng theo tỷ lệ thời gian Gemini chỉ định
+                        const peakGain = 0.08 / chordFreqs.length;
+                        gain.gain.setValueAtTime(0.0001, 0);
+                        gain.gain.exponentialRampToValueAtTime(peakGain, Math.max(0.1, attackSec));
+                        gain.gain.setValueAtTime(peakGain, Math.max(attackSec, durationSec - releaseSec));
+                        gain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
+
+                        osc.connect(filter);
+                        filter.connect(gain);
+                        gain.connect(actx.destination);
+
+                        osc.start(0);
+                        osc.stop(durationSec);
+                    });
+
+                    // 2. LỚP SUB-BASS TRẦM ĐỘNG THEO TẦN SỐ GEMINI CHỈ ĐỊNH
+                    if (subBassFreq > 0) {
+                        const subOsc = actx.createOscillator();
+                        const subGain = actx.createGain();
+                        subOsc.type = 'sine';
+                        subOsc.frequency.setValueAtTime(subBassFreq, 0);
+
+                        subGain.gain.setValueAtTime(0.0001, 0);
+                        subGain.gain.exponentialRampToValueAtTime(0.05, Math.max(0.2, attackSec * 0.8));
+                        subGain.gain.setValueAtTime(0.05, Math.max(0.2, durationSec - releaseSec));
+                        subGain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
+
+                        subOsc.connect(subGain);
+                        subGain.connect(actx.destination);
+                        subOsc.start(0);
+                        subOsc.stop(durationSec);
+                    }
+
+                    return await actx.startRendering();
+                } catch (e) {
+                    console.warn("Lỗi tổng hợp nhạc nền DSP từ tham số Gemini:", e);
+                    return null;
+                }
             },
 
-            // 6. ĐẠO DIỄN KỊCH BẢN PHÂN ĐOẠN TỔNG THỂ
+            // 6. ĐẠO DIỄN KỊCH BẢN & SOẠN THÔNG SỐ ÂM HỌC ĐỘNG
             async planCinematicDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn, isFromImage = false) {
-                const directingPrompt = `[24FPS MULTI-SECOND STORYBOARD DIRECTOR]
-Scene: "${userPrompt}" | Duration: ${durationSec}s | Output: ${durationSec} seconds
-Divide into ${durationSec} sequential keyframe prompts.
-Return ONLY valid JSON:
+                const directingPrompt = `[24FPS CINEMATOGRAPHER & ALGORITHMIC COMPOSER]
+Scene: "${userPrompt}" | Duration: ${durationSec}s | FPS: 24
+
+TASK:
+1. Divide into ${durationSec} sequential 1-second story segments.
+2. Compose exact acoustic sound-design parameters matching the mood (chords, frequencies in Hz, waveforms, filter cutoff, modulation).
+
+Return ONLY valid JSON format:
 {
-  "camera_motion": "Dynamic cinematic tracking",
+  "camera_motion": "Cinematic tracking pan",
   "base_prompt_en": "Cinematic 8k footage, photorealistic, dynamic lighting, 24fps",
-  "music_prompt_en": "Epic orchestral soundtrack with deep strings",
+  "audio_synthesis": {
+    "mood_name": "Emotional tone descriptor",
+    "chord_frequencies": [65.41, 98.00, 130.81, 164.81, 196.00],
+    "timbre_waveforms": ["sawtooth", "triangle", "triangle", "sine"],
+    "sub_bass_freq": 38.0,
+    "filter_cutoff_hz": 450.0,
+    "filter_resonance_q": 2.5,
+    "lfo_rate_hz": 0.4,
+    "attack_ratio": 0.2,
+    "release_ratio": 0.3
+  },
   "seconds": [
     {
       "second_index": 0,
@@ -3509,7 +3595,7 @@ Return ONLY valid JSON:
 
                 const res = await dispatchBgTaskFn({
                     contents: [{ role: 'user', parts: [{ text: directingPrompt }] }],
-                    generationConfig: { temperature: 0.2, maxOutputTokens: 2048, responseMimeType: "application/json" }
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 2500, responseMimeType: "application/json" }
                 });
                 const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
                 return JSON.parse(raw.replace(/```json/gi, '').replace(/```/g, '').trim());
@@ -4826,7 +4912,7 @@ Return ONLY valid JSON:
                         updateInputTokensDisplay();
                     };
 
-                    // THỰC THI SẢN XUẤT PHIM ĐIỆN ẢNH 24 FPS VỚI MASTER HYBRID PARAMETRIC PIPELINE
+                    // THỰC THI SẢN XUẤT PHIM ĐIỆN ẢNH VỚI MASTER HYBRID PARAMETRIC PIPELINE CHUẨN XÁC
                     const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
                         if (isGenerating.value) return;
                         isGenerating.value = true;
@@ -4843,8 +4929,8 @@ Return ONLY valid JSON:
 
                             const isFromImage = Boolean(directImageInput);
 
-                            // BƯỚC 1: Đạo diễn kịch bản & phân cảnh qua Gemini
-                            searchStatusText.value = "Đang khởi tạo kịch bản...";
+                            // BƯỚC 1: Đạo diễn kịch bản & soạn thông số âm học qua Gemini
+                            searchStatusText.value = "Đang khởi tạo kịch bản & phân cảnh...";
                             const directingPlan = await AICinemaEngine.planCinematicDirecting(
                                 customPrompt || (isFromImage ? 'Chuyển động điện ảnh mượt mà từ hình ảnh' : 'Cảnh quay điện ảnh sống động'),
                                 durationSec,
@@ -4863,9 +4949,10 @@ Return ONLY valid JSON:
                                 healthyKey
                             );
 
-                            // BƯỚC 3: Hòa âm phối khí nhạc nền điện ảnh
+                            // BƯỚC 3: Hòa âm nhạc nền dựa trên 100% THAM SỐ ÂM HỌC ĐỘNG của Gemini
+                            searchStatusText.value = "Đang phối khí âm nhạc điện ảnh...";
                             const musicAudioBuffer = await AICinemaEngine.generateCinematicMusic(
-                                directingPlan.music_prompt_en || directingPlan.base_prompt_en,
+                                directingPlan.audio_synthesis, //  Truyền đúng Object âm học của Gemini
                                 durationSec,
                                 (st) => { searchStatusText.value = st; }
                             );
@@ -4877,8 +4964,8 @@ Return ONLY valid JSON:
                                 durationSec
                             );
 
-                            // BƯỚC 5 & 6: KẾT XUẤT 24 FPS (1 KEYFRAME/S FLUX + BÙ 23 KHUNG HÌNH WEBGL HỒI QUY)
-                            const finalVideoBlob = await AICinemaEngine.generateFlux24FpsVideo({
+                            // BƯỚC 5 & 6: KẾT XUẤT 24 FPS VỚI SỰ THAM GIA CỦA GEMINI VISION + TF.JS + TRANSFORMERS.JS
+                            const cinemaResult = await AICinemaEngine.generateFlux24FpsVideo({
                                 prompt: directingPlan.base_prompt_en,
                                 directImageInput,
                                 durationSec,
@@ -4886,21 +4973,23 @@ Return ONLY valid JSON:
                                 seed: videoSeed,
                                 style: cinemaConfig.style || 'cinematic',
                                 audioBuffer: finalMixedAudio,
+                                userTimelineCues: userTimelineCues.value, //  Truyền đầy đủ timeline câu thoại
                                 onStatus: (st) => { searchStatusText.value = st; },
                                 dispatchBgTaskFn: dispatchBackgroundTaskWithFallback
                             });
 
-                            const videoUrl = ObjectUrlRegistry.create(finalVideoBlob);
+                            //  Trích xuất videoBlob chuẩn xác từ Object trả về
+                            const videoUrl = ObjectUrlRegistry.create(cinemaResult.videoBlob);
                             targetMsg.renderedVideoUrl = videoUrl;
 
                             const dialogueSummary = userTimelineCues.value.map(d => `- **${d.speaker} · ${d.startTimeSec}s:** "${d.text}"`).join('\n');
 
                             targetMsg.content = (targetMsg.content || '') + 
-                                `\n\n🎬 **Tác Phẩm Điện Ảnh Hoàn Thiện**\n` +
+                                `\n\n🎬 **Tác Phẩm Điện Ảnh 24 FPS Hoàn Thiện**\n` +
                                 `- **Thời lượng:** ${durationSec} giây\n` +
-                                `- **Chuẩn kết xuất:** Hollywood\n` +
+                                `- **Chuẩn kết xuất:** 24 FPS Hollywood (Bù 23f)\n` +
                                 `- **Tỷ lệ khung hình:** ${aspectRatio}\n` +
-                                `- **Động học tham số:** ${directingPlan.kinematics}\n` +
+                                `- **Động học tham số:** ${cinemaResult.kinematicsSummary}\n` + //  Lấy động học thật từ Gemini Vision
                                 (dialogueSummary ? `\n🎙️ **Phần thoại:**\n${dialogueSummary}` : '');
 
                             targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
