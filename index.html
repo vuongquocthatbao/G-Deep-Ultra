@@ -3247,7 +3247,7 @@
             }
         }
 
-        // =========================================================================================
+// =========================================================================================
         // XƯỞNG PHIM 24 FPS: ĐỘNG HỌC HỒI QUY TOÀN PHẦN TỪ TRÍ TUỆ NHÂN TẠO
         // =========================================================================================
         const AICinemaEngine = {
@@ -3269,7 +3269,7 @@
                 return audioBuffer;
             },
 
-            // 1. BIÊN KỊCH HỒI QUY ĐỘNG TOÀN PHẦN
+            // 1. BIÊN KỊCH HỒI QUY ĐỘNG TOÀN PHẦN TỪ AI
             async planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
                 const prompt = `[AUTOREGRESSIVE CINEMATIC DIRECTOR]
 Scene: "${userPrompt}"
@@ -3342,12 +3342,11 @@ RETURN ONLY VALID JSON (Do not truncate, fill all ${durationSec} seconds):
                             };
                         }
                     } catch (err) {
-                        console.warn(`Lỗi kịch bản lần ${attempt}:`, err);
+                        console.warn(`Lỗi biên kịch lần ${attempt}:`, err);
                     }
                     await new Promise(r => setTimeout(r, Math.min(400 * Math.pow(1.2, attempt), 2000)));
                 }
 
-                // Kịch bản bảo đảm không gián đoạn
                 const fallbackSeconds = [];
                 for (let i = 0; i < durationSec; i++) {
                     fallbackSeconds.push({
@@ -3364,30 +3363,37 @@ RETURN ONLY VALID JSON (Do not truncate, fill all ${durationSec} seconds):
                 };
             },
 
+            // CẦU NỐI ĐỒNG BỘ: Định nghĩa chuẩn xác cả 2 hàm điều phối
+            async planCinematicDirecting(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
+                return await this.planGlobalCinematicScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn);
+            },
+
             async planGlobalCinematicScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
                 const storyline = await this.planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn);
                 return {
                     character_dna: storyline.character_anchor,
                     environment_anchor: storyline.environment_anchor,
                     audio_synthesis: storyline.audio_synthesis,
+                    base_prompt_en: storyline.seconds[0]?.flux_prompt || userPrompt,
                     seconds: storyline.seconds.map(s => ({
                         sec: s.sec,
                         action_delta: s.action_intent || s.flux_prompt,
+                        flux_prompt: s.flux_prompt,
                         cam_start: [0, 0, 2.4, 0, 0, 0],
                         cam_end: [0, 0, 2.4, 0, 0, 0]
                     }))
                 };
             },
 
-            // 2. PHÂN TÍCH ĐỘNG HỌC HÌNH ẢNH TRỰC TIẾP
+            // 2. PHÂN TÍCH ĐỘNG HỌC KHÔNG GIAN TỪ HÌNH ẢNH
             async solveFrameInterpolationWithStateMemory({ 
                 imageCanvas, 
                 secondIndex, 
                 totalSeconds, 
                 actionDelta, 
                 dialogueText, 
-                previousStateVector,
-                camTrajectory,
+                previousStateVector, 
+                camTrajectory, 
                 dispatchBgTaskFn 
             }) {
                 const base64Data = imageCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
@@ -3396,9 +3402,15 @@ RETURN ONLY VALID JSON (Do not truncate, fill all ${durationSec} seconds):
                 
                 const buildProceduralMatrix = () => {
                     const matrix = [];
-                    for(let i=0; i<23; i++) matrix.push([0,0,0,0,0,0,0, safeCamStart[0], safeCamStart[1], safeCamStart[2]]);
+                    for(let i = 0; i < 23; i++) {
+                        matrix.push([0, 0, 0, 0, 0, 0, 0, safeCamStart[0], safeCamStart[1], safeCamStart[2]]);
+                    }
                     return {
-                        has_face: false, depth_scale: 0.35, pivot_point: [0.5, 0.5], mouth_center: [0.5, 0.6], mouth_radius: 0.0,
+                        has_face: false, 
+                        depth_scale: 0.35, 
+                        pivot_point: [0.5, 0.5], 
+                        mouth_center: [0.5, 0.6], 
+                        mouth_radius: 0.0,
                         matrix_23: matrix
                     };
                 };
@@ -3580,7 +3592,7 @@ RETURN ONLY THIS STRICT JSON FORM:
             },
 
             // 6. ENGINE 3D HỒI QUY TOÀN PHẦN (24 FPS)
-            async generateFlux24FpsVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, userTimelineCues, onStatus, dispatchBgTaskFn }) {
+            async generateFlux24FpsVideo({ prompt, directingPlan, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, userTimelineCues, onStatus, dispatchBgTaskFn }) {
                 const fps = 24;
                 const totalSeconds = Math.max(1, Math.round(durationSec));
                 const totalFrames = totalSeconds * fps;
@@ -3733,8 +3745,8 @@ RETURN ONLY THIS STRICT JSON FORM:
                 scene.add(cinemaMesh);
 
                 try {
-                    onStatus("Đang thiết lập kịch bản và phân cảnh...");
-                    const globalScript = await this.planGlobalCinematicScript(
+                    // Dùng trực tiếp kịch bản đã đạo diễn hoặc khởi tạo mới nếu chưa có
+                    const globalScript = directingPlan || await this.planGlobalCinematicScript(
                         prompt, totalSeconds, seed, style || 'cinematic', dispatchBgTaskFn
                     );
 
@@ -3744,12 +3756,12 @@ RETURN ONLY THIS STRICT JSON FORM:
                     let currentStateVector = {
                         head_rot: [0.0, 0.0, 0.0],
                         mouth_state: [0.0, 0.0],
-                        cam_pos: globalScript.seconds[0].cam_start.slice(0, 3),
-                        cam_rot: globalScript.seconds[0].cam_start.slice(3, 6)
+                        cam_pos: globalScript.seconds[0]?.cam_start.slice(0, 3) || [0, 0, 2.4],
+                        cam_rot: globalScript.seconds[0]?.cam_start.slice(3, 6) || [0, 0, 0]
                     };
 
                     for (let s = 0; s < totalSeconds; s++) {
-                        const secPlan = globalScript.seconds[s];
+                        const secPlan = globalScript.seconds[s] || { action_delta: prompt };
                         onStatus(`[Giây ${s + 1}/${totalSeconds}] Khởi tạo bối cảnh phân cảnh...`);
 
                         const keyframeCanvas = await fetchFluxToCanvas(
@@ -4767,7 +4779,7 @@ RETURN ONLY THIS STRICT JSON FORM:
                         updateInputTokensDisplay();
                     };
 
-                    const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
+const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
                         if (isGenerating.value) return;
                         isGenerating.value = true;
                         triggerHaptic('heavy');
@@ -4813,6 +4825,7 @@ RETURN ONLY THIS STRICT JSON FORM:
 
                             const cinemaResult = await AICinemaEngine.generateFlux24FpsVideo({
                                 prompt: directingPlan.base_prompt_en,
+                                directingPlan: directingPlan, // Truyền trực tiếp, không gọi lại API lần 2
                                 directImageInput,
                                 durationSec,
                                 aspectRatio,
