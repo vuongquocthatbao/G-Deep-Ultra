@@ -3790,7 +3790,7 @@ RETURN ONLY THIS STRICT JSON FORM:
                     // =========================================================================
                     for (let s = 0; s < totalSeconds; s++) {
                         const secPlan = globalScript.seconds[s];
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Khóa DNA & vẽ Keyframe...`);
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Khóa DNA nhân vật & vẽ Keyframe...`);
 
                         // 1. FLUX VẼ KEYFRAME ĐƯỢC KHÓA BỞI CHARACTER DNA TOKEN & SEED CỐ ĐỊNH (Khoảng trống 3)
                         const keyframeCanvas = await fetchFluxToCanvas(
@@ -3803,7 +3803,7 @@ RETURN ONLY THIS STRICT JSON FORM:
                         const currentDialogue = (userTimelineCues || []).find(c => Math.floor(c.startTimeSec) === s)?.text || "";
 
                         // 2. GEMINI VISION NHẬN STATE CỦA GIÂY TRƯỚC + QUỸ ĐẠO CAMERA TOÀN CỤC (Khoảng trống 1 & 4)
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] đồng bộ động học...`);
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Gemini đồng bộ động học từ State Vector t-1...`);
                         let kinematics = null;
                         const retryContext = { imageCanvas: keyframeCanvas, secondIndex: s, totalSeconds, actionDelta: secPlan.action_delta, dialogueText: currentDialogue, previousStateVector: currentStateVector, camTrajectory: secPlan, dispatchBgTaskFn };
                         const failedQueue = [{ secIdx: s, context: retryContext }]; // Hàng đợi xử lý lỗi
@@ -3822,50 +3822,59 @@ RETURN ONLY THIS STRICT JSON FORM:
                         if (!kinematics) throw new Error(`Không thể tính toán động học cho giây ${s + 1} sau nhiều lần thử.`);
 
 
-                        // Gán texture trực tiếp, loại bỏ hoàn toàn cơ chế blend gây bóng ma 2 mặt
+                        // 3. THIẾT LẬP VÀO WEBGL VỚI CƠ CHẾ CHỐNG NHẢY HÌNH (BOUNDARY BLENDING - Khoảng trống 2)
                         const currCanvasTexture = new THREE.CanvasTexture(keyframeCanvas);
-                        currCanvasTexture.flipY = false;
-                        cinemaShaderMat.uniforms.uTexture.value = currCanvasTexture;
+                        currCanvasTexture.flipY = false; // KHẮC PHỤC LỖI LỘN NGƯỢC
+
+                        cinemaShaderMat.uniforms.uTextureCurrent.value = currCanvasTexture;
+
+                        if (prevCanvasTexture) {
+                            cinemaShaderMat.uniforms.uTexturePrev.value = prevCanvasTexture;
+                        } else {
+                            cinemaShaderMat.uniforms.uTexturePrev.value = currCanvasTexture; // Giây đầu tiên, prev = current
+                        }
 
                         const depthTex = this.createVolumetricDepthTexture(width, height, kinematics.pivot_point);
                         cinemaShaderMat.uniforms.uDepthMap.value = depthTex;
-                        cinemaShaderMat.uniforms.uDisplacement.value = Math.min(kinematics.depth_scale, 0.28); // Khống chế độ lồi Z vừa phải để không bị rách khối
-                        cinemaShaderMat.uniforms.uPivot.value.set(kinematics.pivot_point[0], kinematics.pivot_point[1]);
-                        
-                        if (kinematics.has_face) {
-                            cinemaShaderMat.uniforms.uMouthCenter.value.set(kinematics.mouth_center[0], kinematics.mouth_center[1]);
-                            cinemaShaderMat.uniforms.uMouthRadius.value = Math.min(kinematics.mouth_radius, 0.05);
-                        } else {
-                            cinemaShaderMat.uniforms.uMouthRadius.value = 0.0;
-                        }
+                        cinemaShaderMat.uniforms.uDisplacement.value = kinematics.depth_scale;
+                        cinemaShaderMat.uniforms.uPivot.value.set(kinematics.pivot_point[0], 1.0 - kinematics.pivot_point[1]);
+                        cinemaShaderMat.uniforms.uMouthCenter.value.set(kinematics.mouth_center[0], 1.0 - kinematics.mouth_center[1]);
+                        cinemaShaderMat.uniforms.uMouthRadius.value = kinematics.has_face ? kinematics.mouth_radius : 0.0;
 
-                        // RENDER FRAME 0
-                        cinemaShaderMat.uniforms.uRotation.value.set(0, 0, 0);
-                        cinemaShaderMat.uniforms.uTranslation.value.set(0, 0);
-                        cinemaShaderMat.uniforms.uMouthOpen.value = 0.0;
-                        camera.position.set(kinematics.cam_start[0], kinematics.cam_start[1], kinematics.cam_start[2]);
+                        // RENDER FRAME 0 CỦA GIÂY NÀY (Hòa trộn 30% với giây cũ để triệt tiêu jump-cut)
+                        cinemaShaderMat.uniforms.uBlendFactor.value = prevCanvasTexture ? 1.0 : 0.0; // Bắt đầu 100% frame cũ nếu có
+                        cinemaShaderMat.uniforms.uRotation.value.set(
+                            currentStateVector.head_rot[0] * (Math.PI / 180),
+                            currentStateVector.head_rot[1] * (Math.PI / 180),
+                            currentStateVector.head_rot[2] * (Math.PI / 180)
+                        );
+                        camera.position.set(currentStateVector.cam_pos[0], currentStateVector.cam_pos[1], currentStateVector.cam_pos[2]);
                         camera.lookAt(0, 0, 0);
                         renderer.render(scene, camera);
 
                         const f0Blob = await new Promise(res => glCanvas.toBlob(res, 'image/jpeg', 0.95));
                         await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: f0Blob });
 
-                        // RENDER 23 FRAMES NỘI SUY (Chuyển động rắn mượt mà, không vặn xoắn)
+                        // RENDER 23 FRAMES TIẾP THEO THEO NGUYÊN LÝ LIÊN TỤC VẬT LÝ
                         for (let f = 1; f < 24; f++) {
                             const k = kinematics.matrix_23[f - 1];
 
+                            // Chuyển dần hòa trộn về 0.0 trong 3 frame đầu tiên
+                            if (f <= 3 && prevCanvasTexture) {
+                                cinemaShaderMat.uniforms.uBlendFactor.value = 1.0 - (f / 3.0); // 1.0 -> 0.0
+                            } else {
+                                cinemaShaderMat.uniforms.uBlendFactor.value = 0.0;
+                            }
+
                             cinemaShaderMat.uniforms.uMouthOpen.value = Number(k[0]) || 0.0;
+                            cinemaShaderMat.uniforms.uMouthWide.value = Number(k[1]) || 0.0;
 
-                            // Góc xoay Euler do Gemini tính toán (Khống chế góc hợp lý để không biến dạng phối cảnh)
-                            const pitchRad = (Math.max(-12.0, Math.min(12.0, Number(k[3]) || 0.0))) * (Math.PI / 180);
-                            const yawRad   = (Math.max(-18.0, Math.min(18.0, Number(k[2]) || 0.0))) * (Math.PI / 180);
-                            const rollRad  = (Math.max(-8.0,  Math.min(8.0,  Number(k[4]) || 0.0))) * (Math.PI / 180);
-
-                            cinemaShaderMat.uniforms.uHeadRotation.value.set(pitchRad, yawRad, rollRad);
-                            cinemaShaderMat.uniforms.uTranslation.value.set(
-                                Math.max(-0.1, Math.min(0.1, Number(k[5]) || 0.0)),
-                                Math.max(-0.1, Math.min(0.1, Number(k[6]) || 0.0))
+                            cinemaShaderMat.uniforms.uRotation.value.set(
+                                (Number(k[3]) || 0.0) * (Math.PI / 180),
+                                (Number(k[2]) || 0.0) * (Math.PI / 180),
+                                (Number(k[4]) || 0.0) * (Math.PI / 180)
                             );
+                            cinemaShaderMat.uniforms.uTranslation.value.set(Number(k[5]) || 0.0, Number(k[6]) || 0.0);
 
                             camera.position.set(Number(k[7]) || 0.0, Number(k[8]) || 0.0, Number(k[9]) || 2.4);
                             camera.lookAt(0, 0, 0);
@@ -3873,10 +3882,22 @@ RETURN ONLY THIS STRICT JSON FORM:
 
                             const interBlob = await new Promise(res => glCanvas.toBlob(res, 'image/jpeg', 0.95));
                             await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: interBlob });
+
+                            // CẬP NHẬT STATE VECTOR TẠI FRAME 23 ĐỂ BẢO TOÀN SANG GIÂY SAU (Khoảng trống 1)
+                            if (f === 23) {
+                                currentStateVector = {
+                                    head_rot: [Number(k[3]) || 0.0, Number(k[2]) || 0.0, Number(k[4]) || 0.0],
+                                    mouth_state: [Number(k[0]) || 0.0, Number(k[1]) || 0.0],
+                                    cam_pos: [Number(k[7]) || 0.0, Number(k[8]) || 0.0, Number(k[9]) || 2.4],
+                                    cam_rot: [0, 0, 0]
+                                };
+                            }
                         }
 
-                        currCanvasTexture.dispose();
+                        if (prevCanvasTexture) prevCanvasTexture.dispose();
+                        prevCanvasTexture = currCanvasTexture; // Lưu texture hiện tại làm "prev" cho giây tiếp theo
                         depthTex.dispose();
+                    }
 
                     if (prevCanvasTexture) prevCanvasTexture.dispose(); // Giải phóng texture cuối cùng
 
