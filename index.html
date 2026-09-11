@@ -3429,6 +3429,52 @@ RETURN ONLY THIS STRICT JSON SCHEMA:
                     timeline: matrix.slice(0, targetFrames)
                 };
             },
+            
+            // ĐẠO DIỄN KỊCH BẢN & THIẾT LẬP THAM SỐ ÂM HỌC
+            async planCinematicDirecting(userPrompt, durationSec, seed, style, dispatchBgTaskFn, isFromImage = false) {
+                const directingPrompt = `[HOLLYWOOD SCRIPT & ACOUSTIC DIRECTOR]
+Scene: "${userPrompt}" | Duration: ${durationSec}s | Style: ${style}
+
+TASK:
+1. Formulate dynamic English prompt for the master keyframe.
+2. Compose acoustic synthesis parameters.
+
+RETURN ONLY VALID JSON:
+{
+  "base_prompt_en": "Cinematic master shot, photorealistic, 8k, dramatic lighting",
+  "audio_synthesis": {
+    "mood_name": "Cinematic",
+    "chord_frequencies": [55.0, 82.41, 110.0, 164.81],
+    "timbre_waveforms": ["sawtooth", "triangle"],
+    "sub_bass_freq": 36.0,
+    "filter_cutoff_hz": 420.0,
+    "filter_resonance_q": 2.0,
+    "attack_ratio": 0.2,
+    "release_ratio": 0.3
+  }
+}`;
+
+                try {
+                    const res = await dispatchBgTaskFn({
+                        contents: [{ role: 'user', parts: [{ text: directingPrompt }] }],
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 1500, responseMimeType: "application/json" },
+                        safetySettings: SAFETY_SETTINGS
+                    });
+                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+                    const parsed = robustJsonParse(raw);
+                    if (parsed && parsed.base_prompt_en) return parsed;
+                } catch (e) {
+                    console.warn("Lỗi đạo diễn kịch bản, dùng cấu hình mặc định:", e);
+                }
+
+                return {
+                    base_prompt_en: userPrompt || "Cinematic 8k master shot, photorealistic, Hollywood lighting",
+                    audio_synthesis: {
+                        chord_frequencies: [55.0, 82.41, 110.0, 164.81],
+                        sub_bass_freq: 36.0
+                    }
+                };
+            },
 
             // 2. BỘ TÁCH LỚP QUANG HỌC & TÁI TẠO NỀN KHUẤT (SEPARATION & INPAINTING)
             createSeparatedLayerTextures(imageBitmap, rigData) {
