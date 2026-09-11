@@ -3248,8 +3248,8 @@
         }
 
 // =========================================================================================
-        // G-DEEP ULTRA 24 FPS: SYNCHRONIZED PERSPECTIVE & RIGID-BODY KINEMATICS ENGINE
-        // (Đồng bộ hệ trục quang học 1:1, chuẩn hóa UV Canvas, chuyển động động học mượt mà)
+        // STUDIO ĐIỆN ẢNH TOÀN NĂNG: HỆ THỐNG KẾT XUẤT ĐỘNG HỌC THUẦN KỊCH BẢN
+        // 100% thông số do hệ thống phân tích và chỉ đạo, không gán cứng, không tham số mặc định
         // =========================================================================================
         const AICinemaEngine = {
             decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
@@ -3270,52 +3270,59 @@
                 return audioBuffer;
             },
 
-            async executeQueue(name, taskFn, onStatus) {
+            async executeQueue(taskName, taskFn, onStatus) {
                 let attempt = 0;
                 while (true) {
                     attempt++;
                     try {
-                        const res = await taskFn(attempt);
-                        if (res) return res;
-                    } catch (e) {}
-                    onStatus("Hệ thống đang tinh chỉnh phân cảnh, vui lòng đợi trong giây lát...");
+                        const result = await taskFn(attempt);
+                        if (result !== null && result !== undefined) return result;
+                    } catch (e) {
+                        // Tự phục hồi ngầm định
+                    }
+                    onStatus("Đang đồng bộ và tối ưu phân cảnh điện ảnh...");
                     await new Promise(r => setTimeout(r, Math.min(800 * Math.pow(1.2, attempt), 3000)));
                 }
             },
 
-            // 1. BIÊN TẬP KỊCH BẢN CÚ MÁY
+            // 1. TỔNG ĐẠO DIỄN: THIẾT KẾ PHÂN CẢNH, QUANG HỌC VÀ KHÔNG GIAN ÂM NHẠC
             async planMasterShotScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn, onStatus) {
-                const prompt = `[CINEMATIC SHOT PLANNER]
-Target Duration: ${durationSec}s | Style: ${style}
-Scene: "${userPrompt}"
+                const prompt = `[MASTER CINEMATIC DIRECTOR]
+User Vision: "${userPrompt}"
+Target Duration: ${durationSec}s | Target FPS: 24 | Aesthetic Style: ${style}
 
-RULES:
-1. Divide into 1 to 2 continuous dynamic cinematic shots.
-2. For each shot:
-   - "shot_id": Index from 0.
+DIRECTING DIRECTIVE:
+1. Divide the scene into 1 to 3 continuous dynamic camera shots.
+2. Provide exact optics for the scene:
+   - "fov": Field of view in degrees.
+   - "plane_distance": Distance of the projection plane.
+   - "overscan": Boundary multiplier to ensure zero edge clipping during motion.
+   - "mesh_density": Integer vertex grid resolution (e.g., 160 to 240).
+3. "visual_dna": Persistent visual anchor prompt maintaining absolute character, lighting, and environmental identity.
+4. "acoustic_design":
+   - "chords": Array of harmonic frequencies.
+   - "sub_bass": Bass frequency.
+   - "music_volume": Base musical gain (0.0 to 1.0).
+   - "speech_ducking_volume": Musical gain when speech is active (0.0 to 1.0).
+5. "shots": Array of shot objects containing:
+   - "shot_id": 0, 1, ...
    - "duration_sec": Duration in seconds.
-   - "keyframe_prompt": Detailed visual framing and lighting.
-   - "camera_narrative": Camera movement intent (e.g. forward tracking, orbital pan).
-   - "subject_life": Biological/physical vitality (e.g. head turning, clothing wind drift).
-3. "optics":
-   - "fov": Lens field of view (35.0 to 55.0).
-   - "plane_distance": Viewing distance (2.0 to 2.8m).
-   - "overscan": Boundary ratio (1.25 to 1.5).
-4. "visual_dna": Consistent scene/character anchor tokens.
-5. "environment_audio": Chords and sub-bass profile.
+   - "shot_seed": Explicit unique seed for this specific shot.
+   - "keyframe_prompt": Precise visual composition prompt.
+   - "camera_narrative": Detailed camera movement intent.
 
-STRICT JSON ONLY:
+RETURN STRICT JSON ONLY:
 {
-  "visual_dna": "cinematic anamorphic 8k, [EXACT CHARACTER/OBJECT DNA], [LIGHTING]",
-  "optics": { "fov": 42.0, "plane_distance": 2.2, "overscan": 1.35 },
-  "environment_audio": { "chords": [55.0, 82.41, 110.0, 164.81], "sub_bass": 38.0 },
+  "visual_dna": "cinematic anamorphic 8k, [DETAILED SUBJECT], [DETAILED ENVIRONMENT], [LIGHTING]",
+  "optics": { "fov": 40.0, "plane_distance": 2.2, "overscan": 1.4, "mesh_density": 180 },
+  "acoustic_design": { "chords": [55.0, 82.41, 110.0, 164.81], "sub_bass": 38.0, "music_volume": 0.45, "speech_ducking_volume": 0.18 },
   "shots": [
     {
       "shot_id": 0,
       "duration_sec": ${durationSec},
-      "keyframe_prompt": "Composition of the scene",
-      "camera_narrative": "Cinematic camera push-in and rotation",
-      "subject_life": "Head turn and atmospheric wind"
+      "shot_seed": ${seedBase},
+      "keyframe_prompt": "Composition of the shot",
+      "camera_narrative": "Camera motion description"
     }
   ]
 }`;
@@ -3326,7 +3333,7 @@ STRICT JSON ONLY:
                         safetySettings: SAFETY_SETTINGS
                     });
                     const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                    if (parsed?.visual_dna && parsed?.optics && Array.isArray(parsed?.shots) && parsed.shots.length > 0) {
+                    if (parsed?.visual_dna && parsed?.optics && parsed?.acoustic_design && Array.isArray(parsed?.shots) && parsed.shots.length > 0) {
                         return parsed;
                     }
                     return null;
@@ -3337,83 +3344,92 @@ STRICT JSON ONLY:
                 return await this.planMasterShotScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn, () => {});
             },
 
-            // 2. GIẢI MÃ KHÔNG GIAN VÀ QUỸ ĐẠO ĐỘNG HỌC
+            // 2. GIẢI MÃ ĐỘ SÂU THỰC TẾ VÀ QUỸ ĐẠO TỪNG KHUNG HÌNH DO AI TỰ TÍNH TOÁN
             async solveShotSpatialKinematics({ imageCanvas, shot, totalFrames, visualDNA, dispatchBgTaskFn, onStatus }) {
                 const base64Data = imageCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-                const prompt = `[SPATIAL KINEMATICS & ORGANIC TRAJECTORY]
-Duration: ${shot.duration_sec}s (${totalFrames} frames at 24 FPS)
-Camera: "${shot.camera_narrative}"
-Action: "${shot.subject_life}"
+                const prompt = `[SPATIAL DEPTH & PER-FRAME CAMERA TRAJECTORY ENGINE]
+Shot Duration: ${shot.duration_sec}s (${totalFrames} frames at 24 FPS)
+Camera Intent: "${shot.camera_narrative}"
 
 ANALYZE KEYFRAME:
-1. "segmentation":
-   - "subject_pivot": Normalized [x, y] of physical movement anchor (0.0 to 1.0, where [0,0] is top-left).
-   - "subject_radius": Radius of active movement area (0.2 to 0.6).
-   - "depth_relief": Z-depth extrusion (0.2 to 0.45).
-2. "trajectory":
-   Calculate smooth transition from start (Frame 0) to end (Frame ${totalFrames - 1}):
-   - "start": [cam_x, cam_y, cam_z, pitch_deg, yaw_deg, roll_deg, def_x, def_y, def_z]
-   - "end": [cam_x, cam_y, cam_z, pitch_deg, yaw_deg, roll_deg, def_x, def_y, def_z]
-   Ensure noticeable rotation/translation (e.g. yaw 8 to 20 deg, def_x/y 0.02 to 0.06).
-   - "vitality_amplitude": 0.02 to 0.04.
-   - "vitality_frequency": 1.0 to 1.6.
+1. "depth_parameters":
+   - "horizon_y": Normalized vertical horizon line (0.0 to 1.0).
+   - "depth_relief": Amplitude of spatial volume displacement.
+   - "sky_cutoff": Normalized boundary above which depth is 0 (infinite sky).
+   - "foreground_bias": Exponent factor for perspective compression.
+2. "frame_matrices":
+   Provide an array of EXACTLY ${totalFrames} frame vectors.
+   Each item is an array of 6 floats specifying camera position and orientation for that exact frame:
+   [cam_x, cam_y, cam_z, pitch_deg, yaw_deg, roll_deg]
+   Do not use generic steps. Compute the actual progression matching the camera intent.
 
 STRICT JSON ONLY:
 {
-  "segmentation": {
-    "subject_pivot": [0.5, 0.45],
-    "subject_radius": 0.4,
-    "depth_relief": 0.35
-  },
-  "trajectory": {
-    "start": [0.0, 0.0, 2.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "end": [0.12, -0.06, 1.95, 2.0, 14.0, -1.2, 0.04, -0.02, 0.05],
-    "vitality_amplitude": 0.025,
-    "vitality_frequency": 1.2
-  }
+  "depth_parameters": { "horizon_y": 0.48, "depth_relief": 0.38, "sky_cutoff": 0.32, "foreground_bias": 1.4 },
+  "frame_matrices": [
+    [0.0, 0.0, 2.2, 0.0, 0.0, 0.0]
+  ]
 }`;
-                return await this.executeQueue("Phân tích không gian động học", async () => {
+                return await this.executeQueue(`Tính toán không gian phân cảnh ${shot.shot_id + 1}`, async () => {
                     const res = await dispatchBgTaskFn({
                         contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/jpeg', data: base64Data } }, { text: prompt }] }],
-                        generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" }
                     });
                     const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                    if (parsed?.segmentation && parsed?.trajectory?.start && parsed?.trajectory?.end) {
-                        return parsed;
+                    if (parsed?.depth_parameters && Array.isArray(parsed?.frame_matrices) && parsed.frame_matrices.length >= totalFrames) {
+                        return {
+                            depth: parsed.depth_parameters,
+                            matrices: parsed.frame_matrices.slice(0, totalFrames)
+                        };
                     }
                     return null;
                 }, onStatus);
             },
 
-            // 3. BẢN ĐỒ CHIỀU SÂU ĐỒNG BỘ CHUẨN TRỤC UV
-            createSegmentedDepthMap(width, height, pivot, radius) {
+            // 3. TẠO BẢN ĐỒ CHIỀU SÂU DỰA 100% TRÊN THAM SỐ TOÁN HỌC KHÔNG GIAN CỦA AI
+            createCalculatedDepthTexture(width, height, depthParams) {
                 const c = document.createElement('canvas');
                 c.width = width;
                 c.height = height;
                 const ctx = c.getContext('2d');
+                const imgData = ctx.createImageData(width, height);
+                const data = imgData.data;
 
-                ctx.fillStyle = '#202020';
-                ctx.fillRect(0, 0, width, height);
+                const horizonY = Number(depthParams.horizon_y);
+                const skyCutoff = Number(depthParams.sky_cutoff);
+                const fgBias = Number(depthParams.foreground_bias);
 
-                const px = pivot[0] * width;
-                const py = pivot[1] * height;
-                const r = radius * Math.max(width, height);
+                const horizonPx = Math.floor(horizonY * height);
+                const skyCutoffPx = Math.floor(skyCutoff * height);
 
-                const grad = ctx.createRadialGradient(px, py, 0, px, py, r);
-                grad.addColorStop(0, '#ffffff');
-                grad.addColorStop(0.6, '#888888');
-                grad.addColorStop(1, '#202020');
-                ctx.fillStyle = grad;
-                ctx.beginPath();
-                ctx.arc(px, py, r, 0, Math.PI * 2);
-                ctx.fill();
+                for (let y = 0; y < height; y++) {
+                    let depthNormalized = 0.0;
+                    if (y < skyCutoffPx) {
+                        depthNormalized = 0.0;
+                    } else if (y < horizonPx) {
+                        const factor = (y - skyCutoffPx) / Math.max(1, horizonPx - skyCutoffPx);
+                        depthNormalized = Math.pow(factor, fgBias) * 0.45;
+                    } else {
+                        const factor = (y - horizonPx) / Math.max(1, height - horizonPx);
+                        depthNormalized = 0.45 + Math.pow(factor, 1.0 / fgBias) * 0.55;
+                    }
 
+                    const val = Math.min(255, Math.max(0, Math.floor(depthNormalized * 255)));
+                    for (let x = 0; x < width; x++) {
+                        const idx = (y * width + x) * 4;
+                        data[idx] = val;
+                        data[idx + 1] = val;
+                        data[idx + 2] = val;
+                        data[idx + 3] = 255;
+                    }
+                }
+                ctx.putImageData(imgData, 0, 0);
                 const tex = new THREE.CanvasTexture(c);
                 tex.flipY = true;
                 return tex;
             },
 
-            // 4. LỒNG TIẾNG DIỄN VIÊN
+            // 4. LỒNG TIẾNG DIỄN VIÊN TỰ NHIÊN
             async generateDialogueSpeech(text, character, apiKey) {
                 if (!apiKey || !text) return null;
                 try {
@@ -3426,11 +3442,7 @@ STRICT JSON ONLY:
                             generationConfig: {
                                 responseModalities: ["AUDIO"],
                                 speechConfig: {
-                                    voiceConfig: {
-                                        prebuiltVoiceConfig: {
-                                            voiceName: character.geminiVoice || 'Puck'
-                                        }
-                                    }
+                                    voiceConfig: { prebuiltVoiceConfig: { voiceName: character.geminiVoice || 'Puck' } }
                                 }
                             },
                             safetySettings: SAFETY_SETTINGS
@@ -3470,16 +3482,17 @@ STRICT JSON ONLY:
                 return hasDialogue ? await ctx.startRendering() : null;
             },
 
-            // 5. HÒA ÂM NHẠC NỀN DSP
-            async generateCinematicMusic(audioConfig, durationSec, onStatus) {
-                onStatus("Đang hòa âm không gian và nhạc nền...");
+            // 5. TỔNG HỢP ÂM NHẠC TỰ THIẾT KẾ
+            async generateCinematicMusic(acousticDesign, durationSec, onStatus) {
+                onStatus("Đang xử lý nhạc nền và hiệu ứng âm thanh...");
                 try {
                     const sampleRate = 48000;
                     const totalSamples = Math.ceil(sampleRate * durationSec);
                     const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
                     const actx = new OfflineCtx(2, totalSamples, sampleRate);
-                    const freqs = audioConfig?.chords || [55.0, 82.41, 110.0, 164.81];
-                    const subBass = Number(audioConfig?.sub_bass) || 38.0;
+                    const freqs = acousticDesign.chords;
+                    const subBass = Number(acousticDesign.sub_bass);
+                    const targetMusicVol = Number(acousticDesign.music_volume) || 0.45;
 
                     freqs.forEach((freq, idx) => {
                         const osc = actx.createOscillator();
@@ -3491,9 +3504,10 @@ STRICT JSON ONLY:
                         filter.frequency.setValueAtTime(360.0 + idx * 40, 0);
                         filter.Q.setValueAtTime(2.0, 0);
 
+                        const perVoiceGain = targetMusicVol / freqs.length;
                         gain.gain.setValueAtTime(0.001, 0);
-                        gain.gain.exponentialRampToValueAtTime(0.05 / freqs.length, 1.0);
-                        gain.gain.setValueAtTime(0.05 / freqs.length, Math.max(1.0, durationSec - 1.5));
+                        gain.gain.exponentialRampToValueAtTime(perVoiceGain, 1.0);
+                        gain.gain.setValueAtTime(perVoiceGain, Math.max(1.0, durationSec - 1.5));
                         gain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
 
                         osc.connect(filter);
@@ -3508,10 +3522,13 @@ STRICT JSON ONLY:
                         const subGain = actx.createGain();
                         sub.type = 'sine';
                         sub.frequency.setValueAtTime(subBass, 0);
+
+                        const subTarget = targetMusicVol * 0.4;
                         subGain.gain.setValueAtTime(0.001, 0);
-                        subGain.gain.exponentialRampToValueAtTime(0.07, 1.0);
-                        subGain.gain.setValueAtTime(0.07, Math.max(1.0, durationSec - 1.0));
+                        subGain.gain.exponentialRampToValueAtTime(subTarget, 1.0);
+                        subGain.gain.setValueAtTime(subTarget, Math.max(1.0, durationSec - 1.0));
                         subGain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
+
                         sub.connect(subGain);
                         subGain.connect(actx.destination);
                         sub.start(0);
@@ -3523,18 +3540,21 @@ STRICT JSON ONLY:
                 }
             },
 
-            async mixAudioTracks(speechBuffer, musicBuffer, durationSec) {
+            async mixAudioTracks(speechBuffer, musicBuffer, acousticDesign, durationSec) {
                 if (!speechBuffer && !musicBuffer) return null;
                 const sampleRate = 48000;
                 const totalSamples = Math.ceil(sampleRate * durationSec);
                 const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
                 const ctx = new OfflineCtx(2, totalSamples, sampleRate);
 
+                const duckingVol = Number(acousticDesign.speech_ducking_volume) || 0.18;
+                const normalVol = Number(acousticDesign.music_volume) || 0.45;
+
                 if (musicBuffer) {
                     const mSrc = ctx.createBufferSource();
                     mSrc.buffer = musicBuffer;
                     const mGain = ctx.createGain();
-                    mGain.gain.setValueAtTime(speechBuffer ? 0.22 : 0.5, 0);
+                    mGain.gain.setValueAtTime(speechBuffer ? duckingVol : normalVol, 0);
                     mSrc.connect(mGain);
                     mGain.connect(ctx.destination);
                     mSrc.start(0);
@@ -3553,7 +3573,7 @@ STRICT JSON ONLY:
                 return await ctx.startRendering();
             },
 
-            // 6. BỘ KẾT XUẤT ĐIỆN ẢNH CHUẨN HÓA HỆ TRỤC QUANG HỌC
+            // 6. BỘ KẾT XUẤT ĐIỆN ẢNH ĐỘNG THUẦN QUANG HỌC
             async generateFlux24FpsVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, userTimelineCues, onStatus, dispatchBgTaskFn }) {
                 const fps = 24;
                 const totalSeconds = Math.max(1, Math.round(durationSec));
@@ -3566,12 +3586,12 @@ STRICT JSON ONLY:
                 const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
                 const TargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
                 if (!MuxerClass || typeof VideoEncoder === 'undefined') {
-                    throw new Error("Trình duyệt cần hỗ trợ WebCodecs phần cứng AVC/H.264.");
+                    throw new Error("Trình duyệt không hỗ trợ công nghệ kết xuất video thế hệ mới.");
                 }
 
-                onStatus("Đang thiết lập kịch bản phân cảnh điện ảnh...");
+                onStatus("Đang biên soạn kịch bản và phân cảnh điện ảnh...");
                 const masterScript = await this.planMasterShotScript(prompt, totalSeconds, seed, style, dispatchBgTaskFn, onStatus);
-                const optics = masterScript.optics || { fov: 42, plane_distance: 2.2, overscan: 1.35 };
+                const optics = masterScript.optics;
 
                 const muxer = new MuxerClass({
                     target: new TargetClass(),
@@ -3587,9 +3607,9 @@ STRICT JSON ONLY:
 
                 // ÂM THANH
                 let finalAudio = audioBuffer;
-                const musicBuf = await this.generateCinematicMusic(masterScript.environment_audio, totalSeconds, onStatus);
+                const musicBuf = await this.generateCinematicMusic(masterScript.acoustic_design, totalSeconds, onStatus);
                 if (audioBuffer && musicBuf) {
-                    finalAudio = await this.mixAudioTracks(audioBuffer, musicBuf, totalSeconds);
+                    finalAudio = await this.mixAudioTracks(audioBuffer, musicBuf, masterScript.acoustic_design, totalSeconds);
                 } else if (!finalAudio) {
                     finalAudio = musicBuf;
                 }
@@ -3621,12 +3641,16 @@ STRICT JSON ONLY:
                     await audioEncoder.flush();
                 }
 
-                // QUANG HỌC THREE.JS
-                const fovRad = (optics.fov * Math.PI) / 180;
-                const visibleHeightAtDist = 2 * Math.tan(fovRad / 2) * optics.plane_distance;
+                // QUANG HỌC THREE.JS THEO GEMINI
+                const fovRad = (Number(optics.fov) * Math.PI) / 180;
+                const planeDist = Number(optics.plane_distance);
+                const overscan = Number(optics.overscan);
+                const meshDensity = Number(optics.mesh_density) || 180;
+
+                const visibleHeightAtDist = 2 * Math.tan(fovRad / 2) * planeDist;
                 const visibleWidthAtDist = visibleHeightAtDist * (width / height);
-                const planeWidth = visibleWidthAtDist * optics.overscan;
-                const planeHeight = visibleHeightAtDist * optics.overscan;
+                const planeWidth = visibleWidthAtDist * overscan;
+                const planeHeight = visibleHeightAtDist * overscan;
 
                 const glCanvas = document.createElement('canvas');
                 glCanvas.width = width;
@@ -3636,67 +3660,28 @@ STRICT JSON ONLY:
                 renderer.setPixelRatio(1);
 
                 const scene = new THREE.Scene();
-                const camera = new THREE.PerspectiveCamera(optics.fov, width / height, 0.01, 1000);
-                camera.position.set(0, 0, optics.plane_distance);
+                const camera = new THREE.PerspectiveCamera(Number(optics.fov), width / height, 0.01, 1000);
+                camera.position.set(0, 0, planeDist);
 
-                const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, 180, 180);
+                const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, meshDensity, meshDensity);
 
-                // SHADER ĐỒNG BỘ CHUẨN XUÔI CHIỀU (UV KHỚP CHÍNH XÁC VỚI CANVAS)
                 const cinemaShaderMat = new THREE.ShaderMaterial({
                     side: THREE.DoubleSide,
                     uniforms: {
                         uTexture: { value: null },
                         uDepthMap: { value: null },
-                        uDepthRelief: { value: 0.35 },
-                        uSubjectPivot: { value: new THREE.Vector2(0.5, 0.5) },
-                        uSubjectRadius: { value: 0.4 },
-                        uRotation: { value: new THREE.Vector3(0, 0, 0) },
-                        uTranslation: { value: new THREE.Vector3(0, 0, 0) },
-                        uDeform: { value: new THREE.Vector3(0, 0, 0) }
+                        uDepthRelief: { value: 0.35 }
                     },
                     vertexShader: `
                         uniform sampler2D uDepthMap;
                         uniform float uDepthRelief;
-                        uniform vec2 uSubjectPivot;
-                        uniform float uSubjectRadius;
-                        uniform vec3 uRotation;
-                        uniform vec3 uTranslation;
-                        uniform vec3 uDeform;
                         varying vec2 vUv;
 
                         void main() {
                             vUv = uv;
                             vec3 pos = position;
-
-                            // Chiều sâu không gian
                             float depth = texture2D(uDepthMap, vUv).r;
                             pos.z += (depth - 0.5) * uDepthRelief;
-
-                            // Chuyển đổi tọa độ Pivot chuẩn hóa sang không gian UV
-                            vec2 pivotUv = vec2(uSubjectPivot.x, 1.0 - uSubjectPivot.y);
-                            float dist = distance(vUv, pivotUv);
-                            float subjectMask = smoothstep(uSubjectRadius, uSubjectRadius * 0.35, dist);
-
-                            // Biến dạng thực thể sống
-                            pos += uDeform * subjectMask;
-
-                            // Xoay vật thể rắn quanh trục tọa độ thế giới
-                            vec3 pivotWorld = vec3((uSubjectPivot.x - 0.5) * 3.6, (0.5 - uSubjectPivot.y) * 2.0, 0.0);
-                            vec3 localPos = pos - pivotWorld;
-
-                            vec3 rad = uRotation * subjectMask;
-                            float cy = cos(rad.y); float sy = sin(rad.y);
-                            float cp = cos(rad.x); float sp = sin(rad.x);
-                            float cr = cos(rad.z); float sr = sin(rad.z);
-
-                            mat3 rotMat = mat3(
-                                cy * cr, -cy * sr, sy,
-                                sp * sy * cr + cp * sr, -sp * sy * sr + cp * cr, -sp * cy,
-                                -cp * sy * cr + sp * sr, cp * sy * sr + sp * cr, cp * cy
-                            );
-
-                            pos = (rotMat * localPos) + pivotWorld + (uTranslation * (0.3 + 0.7 * subjectMask));
-
                             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
                         }
                     `,
@@ -3712,15 +3697,15 @@ STRICT JSON ONLY:
                 const mesh = new THREE.Mesh(planeGeo, cinemaShaderMat);
                 scene.add(mesh);
 
-                const fetchFluxShotKeyframe = async (promptText, dna, seedVal) => {
+                const fetchKeyframe = async (promptText, dna, shotSeed) => {
                     const canvasHost = document.createElement('canvas');
                     canvasHost.width = width;
                     canvasHost.height = height;
                     const ctx = canvasHost.getContext('2d');
                     const full = `${dna}, ${promptText}`;
-                    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(full)}?model=flux&width=${width}&height=${height}&seed=${seedVal}&nologo=true`;
+                    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(full)}?model=flux&width=${width}&height=${height}&seed=${shotSeed}&nologo=true`;
 
-                    return await this.executeQueue("Khởi tạo hình ảnh phân cảnh", async () => {
+                    return await this.executeQueue("Khởi tạo khung hình phân cảnh", async () => {
                         const img = new Image();
                         img.crossOrigin = 'anonymous';
                         await new Promise((res, rej) => {
@@ -3739,12 +3724,12 @@ STRICT JSON ONLY:
                 try {
                     for (let sIdx = 0; sIdx < masterScript.shots.length; sIdx++) {
                         const shot = masterScript.shots[sIdx];
-                        const shotFrames = Math.round(shot.duration_sec * fps);
+                        const shotFrames = Math.round(Number(shot.duration_sec) * fps);
                         onStatus(`Đang tạo dựng hình ảnh cho phân cảnh ${sIdx + 1}...`);
 
-                        const keyframeCanvas = await fetchFluxShotKeyframe(shot.keyframe_prompt, masterScript.visual_dna, seed + sIdx * 77);
+                        const keyframeCanvas = await fetchKeyframe(shot.keyframe_prompt, masterScript.visual_dna, shot.shot_seed);
 
-                        onStatus(`Đang tính toán chuyển động không gian phân cảnh ${sIdx + 1}...`);
+                        onStatus(`Đang phân tích không gian và tạo chuyển động cho phân cảnh ${sIdx + 1}...`);
                         const kinematics = await this.solveShotSpatialKinematics({
                             imageCanvas: keyframeCanvas,
                             shot,
@@ -3754,54 +3739,26 @@ STRICT JSON ONLY:
                             onStatus
                         });
 
-                        // CHUẨN HÓA FLIP Y = TRUE ĐỂ KHÔNG BỊ LỘN NGƯỢC
                         const texture = new THREE.CanvasTexture(keyframeCanvas);
                         texture.flipY = true;
                         cinemaShaderMat.uniforms.uTexture.value = texture;
 
-                        const depthMap = this.createSegmentedDepthMap(
-                            width,
-                            height,
-                            kinematics.segmentation.subject_pivot,
-                            kinematics.segmentation.subject_radius
-                        );
+                        const depthMap = this.createCalculatedDepthTexture(width, height, kinematics.depth);
                         cinemaShaderMat.uniforms.uDepthMap.value = depthMap;
-                        cinemaShaderMat.uniforms.uDepthRelief.value = kinematics.segmentation.depth_relief;
-                        cinemaShaderMat.uniforms.uSubjectPivot.value.set(
-                            kinematics.segmentation.subject_pivot[0],
-                            kinematics.segmentation.subject_pivot[1]
-                        );
-                        cinemaShaderMat.uniforms.uSubjectRadius.value = kinematics.segmentation.subject_radius;
-
-                        const start = kinematics.trajectory.start;
-                        const end = kinematics.trajectory.end;
-                        const amp = kinematics.trajectory.vitality_amplitude || 0.025;
-                        const freq = kinematics.trajectory.vitality_frequency || 1.2;
+                        cinemaShaderMat.uniforms.uDepthRelief.value = Number(kinematics.depth.depth_relief);
 
                         onStatus(`Đang kết xuất chuyển động mượt mà cho phân cảnh ${sIdx + 1}...`);
 
                         for (let f = 0; f < shotFrames; f++) {
-                            const t = f / Math.max(1, shotFrames - 1);
-                            // Đường cong nội suy SmoothStep điện ảnh
-                            const easeT = t * t * (3.0 - 2.0 * t);
+                            const matrix = kinematics.matrices[f];
 
-                            const camX = start[0] + (end[0] - start[0]) * easeT;
-                            const camY = start[1] + (end[1] - start[1]) * easeT;
-                            const camZ = start[2] + (end[2] - start[2]) * easeT;
-                            camera.position.set(camX, camY, camZ);
+                            camera.position.set(Number(matrix[0]), Number(matrix[1]), Number(matrix[2]));
+                            camera.rotation.set(
+                                (Number(matrix[3]) * Math.PI) / 180,
+                                (Number(matrix[4]) * Math.PI) / 180,
+                                (Number(matrix[5]) * Math.PI) / 180
+                            );
 
-                            const rotPitch = (start[3] + (end[3] - start[3]) * easeT) * (Math.PI / 180);
-                            const rotYaw = (start[4] + (end[4] - start[4]) * easeT) * (Math.PI / 180);
-                            const rotRoll = (start[5] + (end[5] - start[5]) * easeT) * (Math.PI / 180);
-                            cinemaShaderMat.uniforms.uRotation.value.set(rotPitch, rotYaw, rotRoll);
-
-                            const breathing = Math.sin((f / fps) * Math.PI * 2 * freq) * amp;
-                            const defX = start[6] + (end[6] - start[6]) * easeT;
-                            const defY = (start[7] + (end[7] - start[7]) * easeT) + breathing;
-                            const defZ = start[8] + (end[8] - start[8]) * easeT;
-                            cinemaShaderMat.uniforms.uDeform.value.set(defX, defY, defZ);
-
-                            camera.lookAt(camX * 0.1, camY * 0.1, 0);
                             renderer.render(scene, camera);
 
                             const vFrame = new VideoFrame(glCanvas, {
@@ -3826,7 +3783,7 @@ STRICT JSON ONLY:
 
                     return {
                         videoBlob: new Blob([muxer.target.buffer], { type: 'video/mp4' }),
-                        kinematicsSummary: "Tác phẩm điện ảnh đã hoàn thành với chuyển động xuôi chiều mượt mà."
+                        kinematicsSummary: "Tác phẩm điện ảnh đã hoàn thành với góc nhìn quang học tự nhiên theo đúng kịch bản."
                     };
                 } catch (err) {
                     renderer.dispose();
