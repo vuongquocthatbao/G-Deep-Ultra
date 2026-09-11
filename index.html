@@ -3310,7 +3310,7 @@
         }
 
         // =========================================================================================
-        // DÂY CHUYỀN SẢN XUẤT PHIM AI 24 FPS: AUTOREGRESSIVE FLUX + GEMINI MULTIMODAL 3D RIG
+        // DÂY CHUYỀN SẢN XUẤT PHIM 24 FPS: UNIVERSAL 3D VOLUMETRIC KINEMATICS ENGINE
         // =========================================================================================
         const AICinemaEngine = {
             decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
@@ -3331,21 +3331,22 @@
                 return audioBuffer;
             },
 
-            // 1. GEMINI BIÊN TẬP KỊCH BẢN ĐỘNG CHO TỪNG GIÂY (KHÔNG HARDCODE)
+            // 1. BIÊN KỊCH TỰ HỒI QUY: GEMINI HOÀN TOÀN ĐẠO DIỄN NỘI DUNG TỪNG GIÂY
             async planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
-                const prompt = `[HOLLYWOOD AUTOREGRESSIVE CINEMATOGRAPHER]
-Create a dynamic scene breakdown for: "${userPrompt}"
-Runtime: ${durationSec} seconds | FPS: 24 | Visual Style: ${style}
+                const prompt = `[HOLLYWOOD CINEMATOGRAPHER & MOTION DIRECTOR]
+Scene: "${userPrompt}"
+Runtime: ${durationSec}s | FPS: 24 | Visual Style: ${style}
 
-Generate:
-1. Consistent visual character & environment anchor descriptions across all seconds.
-2. A continuous, second-by-second shot progression array (index 0 to ${durationSec - 1}).
-3. Algorithmic music synthesis parameters matching the tone.
+TASK:
+1. Formulate persistent character and environment visual anchors.
+2. Generate an array of dynamic second-by-second shot progressions (sec: 0 to ${durationSec - 1}).
+   - Describe character physical actions (e.g. turning head, walking, looking up, leaning).
+3. Provide acoustic synthesis specs.
 
-Return ONLY this JSON:
+RETURN ONLY VALID JSON:
 {
-  "character_anchor": "Consistent visual signature of the subject",
-  "environment_anchor": "Lighting, atmosphere, color palette, lenses",
+  "character_anchor": "Consistent clothing, face, visual features",
+  "environment_anchor": "Color palette, atmosphere, lens type",
   "audio_synthesis": {
     "chord_frequencies": [55.0, 82.41, 110.0, 164.81],
     "sub_bass_freq": 38.0
@@ -3353,45 +3354,50 @@ Return ONLY this JSON:
   "seconds": [
     {
       "sec": 0,
-      "flux_prompt": "Detailed English prompt for Flux keyframe for this second",
-      "action_intent": "What physical motion occurs in this second"
+      "flux_prompt": "Cinematic visual keyframe prompt",
+      "action_intent": "Actor turns head to camera / walks forward / looks around"
     }
   ]
 }`;
 
-                const res = await dispatchBgTaskFn({
-                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                    generationConfig: { temperature: 0.25, maxOutputTokens: 8192, responseMimeType: "application/json" },
-                    safetySettings: SAFETY_SETTINGS
-                });
-
-                const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-                const parsed = robustJsonParse(raw);
-
-                // Dự phòng linh hoạt theo đúng độ dài yêu cầu
-                const secondsList = [];
-                for (let i = 0; i < durationSec; i++) {
-                    const existing = parsed?.seconds?.find(s => s.sec === i);
-                    secondsList.push({
-                        sec: i,
-                        flux_prompt: existing?.flux_prompt || `${userPrompt}, cinematic film still, shot ${i + 1}, photorealistic, 8k, dynamic lighting`,
-                        action_intent: existing?.action_intent || "Physical cinematic movement"
+                try {
+                    const res = await dispatchBgTaskFn({
+                        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                        generationConfig: { temperature: 0.25, maxOutputTokens: 8192, responseMimeType: "application/json" },
+                        safetySettings: SAFETY_SETTINGS
                     });
+                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+                    const parsed = robustJsonParse(raw);
+                    if (parsed && Array.isArray(parsed.seconds) && parsed.seconds.length > 0) {
+                        return parsed;
+                    }
+                } catch (e) {
+                    console.warn("Lỗi đạo diễn kịch bản, tự động bù kịch bản động:", e);
                 }
 
+                // Dự phòng kịch bản động
+                const defaultSeconds = [];
+                for (let i = 0; i < durationSec; i++) {
+                    defaultSeconds.push({
+                        sec: i,
+                        flux_prompt: `${userPrompt}, cinematic frame ${i + 1}, photorealistic, dramatic lighting`,
+                        action_intent: i % 2 === 0 ? "Subject turns head smoothly towards the viewer" : "Subject looks towards the environment"
+                    });
+                }
                 return {
-                    character_anchor: parsed?.character_anchor || userPrompt,
-                    environment_anchor: parsed?.environment_anchor || style,
-                    audio_synthesis: parsed?.audio_synthesis || { chord_frequencies: [55.0, 82.41, 110.0, 164.81], sub_bass_freq: 38.0 },
-                    seconds: secondsList
+                    character_anchor: userPrompt,
+                    environment_anchor: style,
+                    audio_synthesis: { chord_frequencies: [55.0, 82.41, 110.0, 164.81], sub_bass_freq: 38.0 },
+                    seconds: defaultSeconds
                 };
             },
-            
-async planCinematicDirecting(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
-    return await this.planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn);
-},
 
-            // 2. GEMINI XEM ẢNH FLUX THẬT & ĐIỀN FORM THAM SỐ 3D ĐỂ NỘI SUY 23 FRAME TIẾP THEO
+            // Alias đồng bộ với lời gọi hàm ngoài Vue setup
+            async planCinematicDirecting(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
+                return await this.planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn);
+            },
+
+            // 2. CƠ CHẾ QUANG HỌC 3D ĐỘNG: GEMINI NHÌN ẢNH VÀ ĐO ĐẠC GÓC QUAY/TÂM XOAY THẬT
             async solveFrameInterpolationFromImage({ imageBitmap, secondIndex, totalSeconds, actionIntent, dialogueText, dispatchBgTaskFn }) {
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = imageBitmap.width;
@@ -3400,92 +3406,112 @@ async planCinematicDirecting(userPrompt, durationSec, seedBase, style, dispatchB
                 tCtx.drawImage(imageBitmap, 0, 0);
                 const base64Data = tempCanvas.toDataURL('image/jpeg', 0.82).split(',')[1];
 
-                const prompt = `[GEMINI 3D KINEMATICS & ANATOMICAL SOLVER]
-Inspect this keyframe image for Second ${secondIndex + 1}/${totalSeconds}.
-Action context: "${actionIntent}"
-Spoken dialogue: "${dialogueText || 'None'}"
+                const prompt = `[GEMINI STEREOSCOPIC KINEMATIC RIGGER]
+Analyze this master frame for Second ${secondIndex + 1}/${totalSeconds}.
+Intended physical action: "${actionIntent}"
+Dialogue cadence: "${dialogueText || 'None'}"
 
 TASK:
-1. Locate subject bounding box and anatomical mouth center [x, y] (origin at Top-Left, 0.0 to 1.0).
-2. Measure 3D depth field: foreground displacement scale & background plane Z.
-3. Formulate the EXACT 23-frame physical motion progression (f: 1 to 23).
-   - Each row: [mouth_open, mouth_wide, head_yaw, head_pitch, head_roll, body_dx, body_dy, cam_dx, cam_dy, cam_dz]
-   - Ensure natural Bezier curves matching physics and speech cadence.
+1. Locate anatomical rotation centers in normalized coordinates (0.0 to 1.0, [x, y]):
+   - "pivot_neck": base of the neck / center of rotation for head turns.
+   - "mouth_center": anatomical center of real lips.
+2. Formulate dynamic 23-frame trajectory matrix (f: 1 to 23).
+   - Columns: [mouth_open(0..1), mouth_wide(0..1), head_yaw(-15..15 deg), head_pitch(-10..10 deg), head_roll(-8..8 deg), body_x, body_y, cam_x, cam_y, cam_z]
+   - To make the subject turn their head/body smoothly, apply an incremental Bezier curve to head_yaw/pitch.
 
-Return ONLY this JSON:
+RETURN ONLY VALID JSON:
 {
   "has_actor": true,
-  "depth_scale": 0.38,
-  "mouth_center": [0.50, 0.60],
+  "depth_intensity": 0.42,
+  "pivot_neck": [0.50, 0.45],
+  "mouth_center": [0.50, 0.58],
   "mouth_radius": 0.08,
-  "cam_path_start": [0.0, 0.0, 2.4],
+  "cam_start": [0.0, 0.0, 2.4],
   "matrix_23": [
     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.4]
   ]
 }`;
 
-                const res = await dispatchBgTaskFn({
-                    contents: [{
-                        role: 'user',
-                        parts: [
-                            { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
-                            { text: prompt }
-                        ]
-                    }],
-                    generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
-                });
+                try {
+                    const res = await dispatchBgTaskFn({
+                        contents: [{
+                            role: 'user',
+                            parts: [
+                                { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
+                                { text: prompt }
+                            ]
+                        }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
+                    });
 
-                const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-                const parsed = robustJsonParse(raw) || {};
+                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+                    const parsed = robustJsonParse(raw) || {};
 
-                const matrix = Array.isArray(parsed.matrix_23) ? parsed.matrix_23 : [];
-                const defaultRow = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.4];
-                while (matrix.length < 23) {
-                    matrix.push(matrix.length > 0 ? [...matrix[matrix.length - 1]] : defaultRow);
+                    const matrix = Array.isArray(parsed.matrix_23) ? parsed.matrix_23 : [];
+                    const defaultRow = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.4];
+                    while (matrix.length < 23) {
+                        matrix.push(matrix.length > 0 ? [...matrix[matrix.length - 1]] : defaultRow);
+                    }
+
+                    return {
+                        has_actor: Boolean(parsed.has_actor),
+                        depth_intensity: Number(parsed.depth_intensity) || 0.40,
+                        pivot_neck: parsed.pivot_neck || [0.5, 0.45],
+                        mouth_center: parsed.mouth_center || [0.5, 0.58],
+                        mouth_radius: Number(parsed.mouth_radius) || 0.08,
+                        cam_start: parsed.cam_start || [0.0, 0.0, 2.4],
+                        matrix_23: matrix.slice(0, 23)
+                    };
+                } catch (_) {
+                    // Dự phòng quỹ đạo quay đầu vật lý tự nhiên nếu API chậm
+                    const fallbackMatrix = [];
+                    for (let f = 1; f <= 23; f++) {
+                        const t = f / 23;
+                        const ease = t * t * (3.0 - 2.0 * t); // Đường cong Bezier mượt
+                        const yawAngle = (secondIndex % 2 === 0 ? 8.0 : -8.0) * ease; // Xoay mặt tự nhiên
+                        fallbackMatrix.push([0.0, 0.0, yawAngle, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.4]);
+                    }
+                    return {
+                        has_actor: true,
+                        depth_intensity: 0.40,
+                        pivot_neck: [0.5, 0.45],
+                        mouth_center: [0.5, 0.58],
+                        mouth_radius: 0.08,
+                        cam_start: [0.0, 0.0, 2.4],
+                        matrix_23: fallbackMatrix
+                    };
                 }
-
-                return {
-                    has_actor: Boolean(parsed.has_actor),
-                    depth_scale: Number(parsed.depth_scale) || 0.35,
-                    mouth_center: parsed.mouth_center || [0.5, 0.6],
-                    mouth_radius: Number(parsed.mouth_radius) || 0.08,
-                    cam_start: parsed.cam_path_start || [0.0, 0.0, 2.4],
-                    matrix_23: matrix.slice(0, 23)
-                };
             },
 
-            // 3. TẠO VOLUMETRIC DEPTH MAP THUẦN
-            createDepthTexture(width, height, isActor, center) {
+            // 3. TẠO BẢN ĐỒ CHIỀU SÂU THỂ TÍCH MỊN (KHÔNG BỊ ĐEN NỬA KHUNG HÌNH)
+            createContinuousDepthTexture(width, height, isActor, neckPivot) {
                 const c = document.createElement('canvas');
                 c.width = width;
                 c.height = height;
                 const ctx = c.getContext('2d');
-                if (isActor && center) {
-                    const cx = center[0] * width;
-                    const cy = center[1] * height;
-                    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, width * 0.55);
-                    grad.addColorStop(0, '#ffffff');
-                    grad.addColorStop(0.5, '#666666');
-                    grad.addColorStop(1, '#111111');
-                    ctx.fillStyle = grad;
-                } else {
-                    const grad = ctx.createLinearGradient(0, height, 0, 0);
-                    grad.addColorStop(0, '#ffffff');
-                    grad.addColorStop(0.7, '#444444');
-                    grad.addColorStop(1, '#080808');
-                    ctx.fillStyle = grad;
-                }
+
+                const cx = (neckPivot ? neckPivot[0] : 0.5) * width;
+                const cy = (neckPivot ? neckPivot[1] : 0.45) * height;
+
+                // Nón chiều sâu thể tích bao trọn 100% khung hình, không tạo biên cắt
+                const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(width, height) * 0.85);
+                grad.addColorStop(0, '#ffffff'); // Mặt và cơ thể nổi gần camera nhất
+                grad.addColorStop(0.45, '#999999'); // Vai và thân người
+                grad.addColorStop(0.85, '#333333'); // Hậu cảnh xa dần
+                grad.addColorStop(1, '#111111');
+                ctx.fillStyle = grad;
                 ctx.fillRect(0, 0, width, height);
+
                 return new THREE.CanvasTexture(c);
             },
 
-            // 4. LỒNG TIẾNG DIỄN XUẤT (GEMINI AUDIO TTS)
+            // 4. LỒNG TIẾNG THEO DIỄN XUẤT (GEMINI AUDIO TTS)
             async generateDialogueSpeech(text, character, apiKey) {
                 if (!apiKey || !text) return null;
                 try {
                     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
                     const payload = {
-                        contents: [{ role: 'user', parts: [{ text: `[CINEMATIC HOLLYWOOD DIALOGUE ACTING] ${text}` }] }],
+                        contents: [{ role: 'user', parts: [{ text: `[HOLLYWOOD VOICE ACTING] ${text}` }] }],
                         generationConfig: {
                             responseModalities: ["AUDIO"],
                             speechConfig: {
@@ -3511,7 +3537,7 @@ Return ONLY this JSON:
                 return null;
             },
 
-            // 5. TỔNG HỢP NHẠC NỀN DSP
+            // 5. TỔNG HỢP ÂM NHẠC DSP
             async generateCinematicMusic(audioConfig, durationSec, onStatus) {
                 onStatus("Đang tổng hợp nhạc nền điện ảnh...");
                 try {
@@ -3570,7 +3596,7 @@ Return ONLY this JSON:
                 }
             },
 
-            // 6. ĐỘNG CƠ CHÍNH: QUY TRÌNH HỒI QUY FLUX + GEMINI 3D INTERPOLATION + HARDWARE WEBCODECS
+            // 6. ENGINE KẾT XUẤT 3D: CƠ CHẾ XOAY THỂ TÍCH & SỬA TRIỆT ĐỂ LỘN NGƯỢC
             async generateFlux24FpsVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, userTimelineCues, onStatus, dispatchBgTaskFn }) {
                 const fps = 24;
                 const totalSeconds = Math.max(1, Math.round(durationSec));
@@ -3587,11 +3613,10 @@ Return ONLY this JSON:
                     throw new Error("Trình duyệt không hỗ trợ WebCodecs AVC/H.264 Encoder.");
                 }
 
-                const tempDbName = `GDeepCinemaAutoregressive_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+                const tempDbName = `GDeepVolumetric3D_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
                 const frameBufferDb = new window.Dexie(tempDbName);
                 frameBufferDb.version(1).stores({ frames: 'frameIndex' });
 
-                // HÀM TẠO ẢNH QUA FLUX (CÓ HỒI QUY TỪ FRAME 23 CỦA GIÂY TRƯỚC)
                 const fetchFluxFrame = async (fluxPrompt, currentSeed, refImageBlob = null) => {
                     if (refImageBlob && directImageInput && currentSeed === seed) return refImageBlob;
 
@@ -3626,10 +3651,10 @@ Return ONLY this JSON:
                             if (blob) return blob;
                         } catch (_) {}
                     }
-                    throw new Error("Không thể tải khung hình AI từ máy chủ.");
+                    throw new Error("Không thể kết nối máy chủ AI hình ảnh.");
                 };
 
-                // THIẾT LẬP WEBGL THREE.JS
+                // THIẾT LẬP THREE.JS & SỬA TRIỆT ĐỂ LỖI LỘN NGƯỢC
                 const canvas = document.createElement('canvas');
                 canvas.width = width;
                 canvas.height = height;
@@ -3639,59 +3664,70 @@ Return ONLY this JSON:
 
                 const scene = new THREE.Scene();
                 const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 1000);
+
+                // LƯỚI 3D TOÀN PHẦN (160x160)
                 const planeGeo = new THREE.PlaneGeometry(3.6, 3.6 * (height / width), 160, 160);
 
-                const cinemaShaderMat = new THREE.ShaderMaterial({
+                // KHẮC PHỤC TRIỆT ĐỂ LỘN NGƯỢC: Lật trục Y của PlaneMesh đúng chuẩn chiều quang học
+                planeGeo.scale(1, -1, 1);
+
+                // SHADER CƠ CHẾ XOAY THỂ TÍCH QUANH TÂM KHỚP CỔ (NECK PIVOT)
+                const volumetricShaderMat = new THREE.ShaderMaterial({
                     uniforms: {
                         uTexture: { value: null },
                         uDepthMap: { value: null },
-                        uDisplacement: { value: 0.35 },
-                        uMouthCenter: { value: new THREE.Vector2(0.5, 0.5) },
-                        uMouthRadius: { value: 0.08 },
-                        uMouthOpen: { value: 0.0 },
-                        uMouthWide: { value: 0.0 },
+                        uDisplacement: { value: 0.40 },
+                        uNeckPivot: { value: new THREE.Vector2(0.5, 0.45) },
                         uHeadRotation: { value: new THREE.Vector3(0, 0, 0) },
-                        uBodyDelta: { value: new THREE.Vector2(0, 0) }
+                        uMouthCenter: { value: new THREE.Vector2(0.5, 0.58) },
+                        uMouthRadius: { value: 0.08 },
+                        uMouthOpen: { value: 0.0 }
                     },
                     vertexShader: `
                         uniform sampler2D uDepthMap;
                         uniform float uDisplacement;
+                        uniform vec2 uNeckPivot;
+                        uniform vec3 uHeadRotation;
                         uniform vec2 uMouthCenter;
                         uniform float uMouthRadius;
                         uniform float uMouthOpen;
-                        uniform float uMouthWide;
-                        uniform vec3 uHeadRotation;
-                        uniform vec2 uBodyDelta;
                         varying vec2 vUv;
 
                         void main() {
-                            vUv = uv; // Chuẩn hóa trục UV
+                            vUv = uv;
                             vec3 pos = position;
 
-                            // Nâng thể tích 3D từ Depth Map
+                            // 1. Nâng thể tích 3D từ Depth Map (Volumetric Pop-out)
                             float depth = texture2D(uDepthMap, uv).r;
                             pos.z += (depth - 0.5) * uDisplacement;
 
-                            // Chuyển động cơ thể
-                            pos.x += uBodyDelta.x * (1.0 - uv.y);
-                            pos.y += uBodyDelta.y * (1.0 - uv.y);
+                            // 2. CƠ CHẾ XOAY MẶT/CƠ THỂ THẬT QUANH TÂM KHỚP (3D PIVOT ROTATION)
+                            // Trọng số ảnh hưởng giảm dần từ đầu xuống thân
+                            float distFromNeck = uv.y - uNeckPivot.y;
+                            float rotationWeight = smoothstep(-0.25, 0.25, distFromNeck);
 
-                            // Xoay đầu/khớp cổ 3D
-                            float cy = cos(uHeadRotation.y); float sy = sin(uHeadRotation.y);
-                            float cp = cos(uHeadRotation.x); float sp = sin(uHeadRotation.x);
-                            pos.x += pos.z * sy;
+                            float cy = cos(uHeadRotation.y * rotationWeight);
+                            float sy = sin(uHeadRotation.y * rotationWeight);
+                            float cp = cos(uHeadRotation.x * rotationWeight);
+                            float sp = sin(uHeadRotation.x * rotationWeight);
+
+                            // Ma trận xoay Euler 3D cục bộ quanh tâm cổ
+                            float localX = pos.x;
+                            float localZ = pos.z;
+                            pos.x = localX * cy + localZ * sy;
+                            pos.z = -localX * sy + localZ * cy;
                             pos.y += pos.z * sp;
 
-                            // Giải phẫu khẩu hình thật (Mouth Warping)
+                            // 3. Khẩu hình giải phẫu thật trên texture gốc
                             float distMouth = distance(uv, uMouthCenter);
                             if (distMouth < uMouthRadius && uMouthRadius > 0.0) {
                                 float weight = smoothstep(uMouthRadius, 0.0, distMouth);
                                 if (uv.y > uMouthCenter.y) {
-                                    pos.y -= uMouthOpen * 0.08 * weight;
+                                    pos.y -= uMouthOpen * 0.07 * weight;
                                 } else {
                                     pos.y += uMouthOpen * 0.02 * weight;
                                 }
-                                pos.x += (uv.x - uMouthCenter.x) * uMouthWide * 0.15 * weight;
+                                pos.z += uMouthOpen * 0.04 * weight;
                             }
 
                             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
@@ -3706,11 +3742,11 @@ Return ONLY this JSON:
                     `
                 });
 
-                const cinemaMesh = new THREE.Mesh(planeGeo, cinemaShaderMat);
+                const cinemaMesh = new THREE.Mesh(planeGeo, volumetricShaderMat);
                 scene.add(cinemaMesh);
 
                 try {
-                    onStatus("Gemini đang biên kịch dây chuyền tự hồi quy...");
+                    onStatus("Gemini đang thiết lập kịch bản hồi quy đa phân cảnh...");
                     const storyline = await this.planAutoregressiveStoryline(
                         prompt, totalSeconds, seed, style || 'cinematic', dispatchBgTaskFn
                     );
@@ -3718,14 +3754,12 @@ Return ONLY this JSON:
                     let previousFrame23Blob = directImageInput || null;
                     let globalFrameIdx = 0;
 
-                    // =========================================================================
-                    // VÒNG LẶP HỒI QUY TỪNG GIÂY (AUTOREGRESSIVE TEMPORAL LOOP)
-                    // =========================================================================
+                    // VÒNG LẶP HỒI QUY TỪNG GIÂY (AUTOREGRESSIVE TEMPORAL CHAIN)
                     for (let s = 0; s < totalSeconds; s++) {
                         const secPlan = storyline.seconds[s];
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Flux đang vẽ Keyframe neo danh tính...`);
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Flux nạp Keyframe thực thể...`);
 
-                        // 1. Flux tạo Frame 0 của giây s (nhận neo từ Frame 23 của giây trước)
+                        // 1. Flux vẽ Frame 0 (có neo hồi quy từ Frame 23)
                         const keyframeBlob = await fetchFluxFrame(
                             `${secPlan.flux_prompt}, ${storyline.character_anchor}, ${storyline.environment_anchor}`,
                             seed + s * 1337,
@@ -3733,11 +3767,10 @@ Return ONLY this JSON:
                         );
                         const keyframeBmp = await createImageBitmap(keyframeBlob);
 
-                        // Lấy lời thoại rơi vào giây này
                         const currentDialogue = (userTimelineCues || []).find(c => Math.floor(c.startTimeSec) === s)?.text || "";
 
-                        // 2. Gemini Multimodal Brain xem ảnh thật & giải bài toán động học 23 frame tiếp theo
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Gemini giải mã chuyển động vật lý 3D...`);
+                        // 2. Gemini nhìn ảnh thật, đo đạc tâm xoay Neck Pivot và lập ma trận quay 3D
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Gemini kích hoạt cơ chế xoay thể tích 3D...`);
                         const kinematics = await this.solveFrameInterpolationFromImage({
                             imageBitmap: keyframeBmp,
                             secondIndex: s,
@@ -3747,23 +3780,21 @@ Return ONLY this JSON:
                             dispatchBgTaskFn
                         });
 
-                        // 3. Đưa vào không gian 3D WebGL
+                        // 3. Đưa vào shader thể tích 3D
                         const texture = new THREE.CanvasTexture(keyframeBmp);
-                        texture.flipY = true;
-                        cinemaShaderMat.uniforms.uTexture.value = texture;
+                        texture.flipY = false;
+                        volumetricShaderMat.uniforms.uTexture.value = texture;
 
-                        const depthTex = this.createDepthTexture(width, height, kinematics.has_actor, kinematics.mouth_center);
-                        cinemaShaderMat.uniforms.uDepthMap.value = depthTex;
-                        cinemaShaderMat.uniforms.uDisplacement.value = kinematics.depth_scale;
+                        const depthTex = this.createContinuousDepthTexture(width, height, kinematics.has_actor, kinematics.pivot_neck);
+                        volumetricShaderMat.uniforms.uDepthMap.value = depthTex;
+                        volumetricShaderMat.uniforms.uDisplacement.value = kinematics.depth_intensity;
+                        volumetricShaderMat.uniforms.uNeckPivot.value.set(kinematics.pivot_neck[0], kinematics.pivot_neck[1]);
+                        volumetricShaderMat.uniforms.uMouthCenter.value.set(kinematics.mouth_center[0], kinematics.mouth_center[1]);
+                        volumetricShaderMat.uniforms.uMouthRadius.value = kinematics.has_actor ? kinematics.mouth_radius : 0.0;
 
-                        if (kinematics.has_actor) {
-                            cinemaShaderMat.uniforms.uMouthCenter.value.set(kinematics.mouth_center[0], kinematics.mouth_center[1]);
-                            cinemaShaderMat.uniforms.uMouthRadius.value = kinematics.mouth_radius;
-                        } else {
-                            cinemaShaderMat.uniforms.uMouthRadius.value = 0.0;
-                        }
-
-                        // RENDER FRAME 0 (Chính là Keyframe gốc trong không gian 3D)
+                        // Render Frame 0
+                        volumetricShaderMat.uniforms.uHeadRotation.value.set(0, 0, 0);
+                        volumetricShaderMat.uniforms.uMouthOpen.value = 0.0;
                         camera.position.set(kinematics.cam_start[0], kinematics.cam_start[1], kinematics.cam_start[2]);
                         camera.lookAt(0, 0, 0);
                         renderer.render(scene, camera);
@@ -3771,19 +3802,21 @@ Return ONLY this JSON:
                         const f0Blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.94));
                         await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: f0Blob });
 
-                        // RENDER 23 FRAMES NỘI SUY THEO MA TRẬN GEMINI (Frames 1 đến 23)
+                        // Render 23 khung hình tiếp theo: Cơ chế xoay mặt/cơ thể thật trong không gian 3D
                         for (let f = 1; f < 24; f++) {
-                            const k = kinematics.matrix_23[f - 1] || kinematics.matrix_23[kinematics.matrix_23.length - 1];
+                            const k = kinematics.matrix_23[f - 1];
 
-                            cinemaShaderMat.uniforms.uMouthOpen.value = Number(k[0]) || 0.0;
-                            cinemaShaderMat.uniforms.uMouthWide.value = Number(k[1]) || 0.0;
-                            cinemaShaderMat.uniforms.uHeadRotation.value.set(
-                                (Number(k[3]) || 0.0) * (Math.PI / 180),
-                                (Number(k[2]) || 0.0) * (Math.PI / 180),
-                                (Number(k[4]) || 0.0) * (Math.PI / 180)
+                            // Chuyển động môi giải phẫu
+                            volumetricShaderMat.uniforms.uMouthOpen.value = Number(k[0]) || 0.0;
+
+                            // CƠ CHẾ XOAY 3D: Cập nhật trực tiếp góc Yaw, Pitch, Roll do Gemini tính toán
+                            volumetricShaderMat.uniforms.uHeadRotation.value.set(
+                                (Number(k[3]) || 0.0) * (Math.PI / 180), // Pitch
+                                (Number(k[2]) || 0.0) * (Math.PI / 180), // Yaw (xoay mặt trái/phải)
+                                (Number(k[4]) || 0.0) * (Math.PI / 180)  // Roll
                             );
-                            cinemaShaderMat.uniforms.uBodyDelta.value.set(Number(k[5]) || 0.0, Number(k[6]) || 0.0);
 
+                            // Camera tracking 3D
                             camera.position.set(Number(k[7]) || 0.0, Number(k[8]) || 0.0, Number(k[9]) || 2.4);
                             camera.lookAt(0, 0, 0);
 
@@ -3792,7 +3825,7 @@ Return ONLY this JSON:
                             const interBlob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.94));
                             await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: interBlob });
 
-                            // BẮT FRAME 23 LÀM NEO THAM CHIẾU CHO GIÂY TIẾP THEO
+                            // Frame 23 làm hạt giống góc nhìn tiếp theo
                             if (f === 23) {
                                 previousFrame23Blob = interBlob;
                             }
@@ -3803,9 +3836,7 @@ Return ONLY this JSON:
                         depthTex.dispose();
                     }
 
-                    // =========================================================================
                     // 4. ĐÓNG GÓI HARDWARE WEBCODECS AVC/H.264
-                    // =========================================================================
                     onStatus("Đang đóng gói file MP4 điện ảnh 24 FPS...");
                     const muxerOptions = {
                         target: new TargetClass(),
@@ -3873,12 +3904,12 @@ Return ONLY this JSON:
 
                     renderer.dispose();
                     planeGeo.dispose();
-                    cinemaShaderMat.dispose();
+                    volumetricShaderMat.dispose();
                     await frameBufferDb.delete();
 
                     return {
                         videoBlob: new Blob([muxer.target.buffer], { type: 'video/mp4' }),
-                        kinematicsSummary: `Autoregressive 3D Studio: ${totalSeconds} giây liên tục, 24 FPS thuần, neo danh tính qua Frame 23.`
+                        kinematicsSummary: `Cơ chế thể tích 3D hoàn chỉnh: Khớp xoay Neck Pivot, nội suy chuyển động 23 frames, triệt tiêu lỗi đảo trục.`
                     };
                 } finally {
                     try {
