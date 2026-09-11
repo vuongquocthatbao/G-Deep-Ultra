@@ -3247,9 +3247,9 @@
             }
         }
 
-        // =========================================================================================
-        // DÂY CHUYỀN SẢN XUẤT PHIM 24 FPS HOLLYWOOD: PURE DYNAMIC AUTOREGRESSIVE PHYSICS ENGINE
-        // (Không gán cứng thông số - Gemini kiểm soát 100% Vật lý, Sinh học và Môi trường)
+// =========================================================================================
+        // DÂY CHUYỀN SẢN XUẤT PHIM 24 FPS HOLLYWOOD: UNIFORM KINEMATICS & STATE AWARENESS ENGINE
+        // (Gemini + Flux thống nhất. Không gán cứng đối tượng. Ghi nhớ và hồi quy vật lý tuyệt đối)
         // =========================================================================================
         const AICinemaEngine = {
             decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
@@ -3270,23 +3270,31 @@
                 return audioBuffer;
             },
 
-            // 1. CHUẨN BỊ KỊCH BẢN THỊ GIÁC (Chỉ quyết định bối cảnh ảnh, KHÔNG gán cứng Camera/Vật lý)
-            async planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
-                const prompt = `[HOLLYWOOD AUTOREGRESSIVE NARRATIVE]
-Scene: "${userPrompt}"
-Runtime: ${durationSec}s | Aesthetic: ${style}
+            // 1. MASTER BLUEPRINT: GEMINI NHÌN TOÀN CỤC VÀ CHIA NHỎ KỊCH BẢN TỪNG GIÂY
+            async planGlobalCinematicScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
+                const prompt = `[MASTER CINEMA DIRECTOR - GLOBAL SCRIPTING]
+You are creating a continuous ${durationSec}-second video. 
+Overall Scene: "${userPrompt}"
+Style: ${style}
 
-TASKS:
-1. Define persistent "character_anchor" (DNA of main subjects) and "environment_anchor".
-2. Create an array of ${durationSec} seconds. For each second, write ONLY the "flux_prompt" (visual description of that moment) and "action_intent" (what is happening narratively).
-3. Do NOT calculate camera or physics here. That will be calculated frame-by-frame by the Vision Engine.
-
-RETURN STRICT JSON:
+Your task is to break down this video into a second-by-second blueprint.
+1. "visual_dna": Define the absolute visual constants (Subject exact look, lighting, environment, color grading). Flux will use this to prevent hallucinations across seconds.
+2. "timeline": Array of EXACTLY ${durationSec} objects (from sec 0 to ${durationSec - 1}).
+   For each second, define:
+   - "flux_prompt": The precise visual state for this exact second (must append naturally to visual_dna).
+   - "physics_intent": Explain the physical mechanics happening (e.g., "Camera pans right, car accelerates forward, wind blows hair left").
+   
+RETURN ONLY VALID JSON:
 {
-  "character_anchor": "visual dna",
-  "environment_anchor": "lighting and setting",
+  "visual_dna": "[SUBJECT], [ENVIRONMENT], [LIGHTING], photorealistic, 8k",
   "audio_synthesis": { "chord_frequencies": [55.0, 82.41, 110.0, 164.81], "sub_bass_freq": 38.0 },
-  "seconds": [ { "sec": 0, "flux_prompt": "prompt...", "action_intent": "intent..." } ]
+  "timeline": [
+    {
+      "sec": 0,
+      "flux_prompt": "Specific action at t=0",
+      "physics_intent": "Camera pushes in slowly, subject stands still but breathes."
+    }
+  ]
 }`;
                 let attempt = 0;
                 while (attempt < 5) {
@@ -3294,59 +3302,63 @@ RETURN STRICT JSON:
                     try {
                         const res = await dispatchBgTaskFn({
                             contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                            generationConfig: { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" },
+                            generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" },
                             safetySettings: SAFETY_SETTINGS
                         });
                         const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                        if (parsed && Array.isArray(parsed.seconds) && parsed.character_anchor) {
-                            const safeSeconds = [];
+                        if (parsed && Array.isArray(parsed.timeline) && parsed.visual_dna) {
+                            const safeTimeline = [];
                             for (let i = 0; i < durationSec; i++) {
-                                const sourceSec = parsed.seconds[i] || parsed.seconds[parsed.seconds.length - 1];
-                                safeSeconds.push({ sec: i, flux_prompt: sourceSec.flux_prompt, action_intent: sourceSec.action_intent });
+                                const sourceSec = parsed.timeline.find(t => t.sec === i) || parsed.timeline[parsed.timeline.length - 1];
+                                safeTimeline.push({ sec: i, flux_prompt: sourceSec.flux_prompt, physics_intent: sourceSec.physics_intent });
                             }
-                            return { ...parsed, seconds: safeSeconds };
+                            return { ...parsed, seconds: safeTimeline };
                         }
                     } catch (err) {}
-                    await new Promise(r => setTimeout(r, 1000));
+                    await new Promise(r => setTimeout(r, 800));
                 }
-                throw new Error("Lỗi lập trình kịch bản. Hệ thống quá tải.");
+                throw new Error("Lỗi vỡ kịch bản toàn cục. API từ chối phản hồi chuẩn.");
             },
 
+            // Cầu nối API
             async planCinematicDirecting(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
-                return await this.planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn);
+                return await this.planGlobalCinematicScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn);
             },
 
-            // 2. BỘ NÃO GEMINI VISION: MÔ PHỎNG VẬT LÝ & SINH HỌC THỜI GIAN THỰC
+            // 2. KINEMATIC SOLVER: GEMINI PHÂN TÍCH ẢNH FLUX VÀ TÍNH TOÁN BÙ 23 KHUNG HÌNH (STATE-AWARE)
             async solveDynamicPhysicsEngine({ imageCanvas, secondIndex, totalSeconds, actionDelta, previousStateVector, dispatchBgTaskFn }) {
                 const base64Data = imageCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
                 
-                // Prompt ép buộc Gemini đóng vai trò làm Engine Vật lý
-                const prompt = `[ADVANCED PHYSICS & BIOLOGY SIMULATION ENGINE]
-You are processing Second ${secondIndex + 1}/${totalSeconds} of a continuous 24FPS video.
-Analyze the attached exact keyframe. Apply real-world physics (gravity, inertia, fluid dynamics) and biological rules (muscle movement, breathing).
-Narrative Action for this second: "${actionDelta}"
+                // Chuẩn hóa dữ liệu của Frame 23 giây trước để bắt Gemini nối tiếp quán tính
+                const prevStateStr = JSON.stringify(previousStateVector);
 
-PREVIOUS STATE (Frame 23 of t-1) TO ENSURE NO JUMP CUTS:
-- Head/Body Rotation [Pitch, Yaw, Roll]: [${(previousStateVector?.rotation || [0,0,0]).join(', ')}] degrees
-- Deformation State [Z_push, Y_pull]: [${(previousStateVector?.deformation || [0,0]).join(', ')}]
-- Camera Pos [X, Y, Z]: [${(previousStateVector?.cam_pos || [0,0,2.4]).join(', ')}]
+                const prompt = `[PHYSICS & KINEMATICS ENGINE - FRAME INTERPOLATION]
+Context: Second ${secondIndex + 1} of ${totalSeconds}.
+Narrative & Physics Intent: "${actionDelta}"
 
-TASKS BASED ON VISUAL ANALYSIS:
-1. "scene_type": Identify if the image is "human_portrait", "landscape_fluid", "mechanical_vehicle", or "general".
-2. "depth_scale": Determine 3D volumetric depth (0.15 flat to 0.60 deep space).
-3. "pivot_point": Normalized [x, y] of the center of mass/rotation (e.g., neck base, wheel center).
-4. "focal_center" & "focal_radius": Define the area for micro-deformation (e.g., mouth for speaking, chest for breathing, water surface for ripples).
-5. "matrix_23": Generate EXACTLY 23 frames bridging the 'PREVIOUS STATE' to the conclusion of the 'Narrative Action' smoothly.
-   Schema per frame (10 floats): [deform_z, deform_y, pitch, yaw, roll, trans_x, trans_y, cam_x, cam_y, cam_z]
+CRITICAL INERTIA STATE FROM LAST SECOND (Frame 23 of t-1):
+${prevStateStr}
 
-RETURN STRICT JSON ONLY:
+YOUR MISSION:
+Look at the attached image generated by Flux for this current second.
+1. Identify up to 3 points of physical deformation/movement in the image (e.g., character's chest breathing, wheels of a car, moving water, etc.). 
+   Set their normalized coordinates [x, y] (0.0 to 1.0) and radius of effect. If fewer than 3, set unused radii to 0.0.
+2. Determine global camera movement matrix.
+3. Calculate exactly 23 FRAMES of interpolation to bridge the state from "Frame 23 of t-1" to the narrative intent of current second. 
+   - MUST maintain continuous physical momentum. NO JUMP CUTS.
+
+OUTPUT JSON SCHEMA:
 {
-  "scene_type": "human_portrait",
-  "depth_scale": 0.35,
-  "pivot_point": [0.50, 0.60],
-  "focal_center": [0.50, 0.45],
-  "focal_radius": 0.12,
-  "matrix_23": [ [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.4] ]
+  "depth_scale": 0.45,  // Volumetric depth (0.1 to 0.6)
+  "focals": [
+    { "center": [0.5, 0.5], "radius": 0.2 }, // Focal 1
+    { "center": [0.0, 0.0], "radius": 0.0 }, // Focal 2
+    { "center": [0.0, 0.0], "radius": 0.0 }  // Focal 3
+  ],
+  "matrix_23": [
+    // Array of EXACTLY 23 arrays. Each array has 15 floats:
+    // [cam_x, cam_y, cam_z, cam_pitch, cam_yaw, cam_roll, f1_dx, f1_dy, f1_dz, f2_dx, f2_dy, f2_dz, f3_dx, f3_dy, f3_dz]
+  ]
 }`;
 
                 let attempt = 0;
@@ -3358,18 +3370,20 @@ RETURN STRICT JSON ONLY:
                                 role: 'user',
                                 parts: [{ inlineData: { mimeType: 'image/jpeg', data: base64Data } }, { text: prompt }]
                             }],
-                            generationConfig: { temperature: 0.15, maxOutputTokens: 4096, responseMimeType: "application/json" }
+                            generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" }
                         });
 
                         const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                        if (parsed && Array.isArray(parsed.matrix_23) && parsed.matrix_23.length >= 10) {
+                        if (parsed && Array.isArray(parsed.matrix_23) && Array.isArray(parsed.focals)) {
                             const matrix = parsed.matrix_23;
-                            while (matrix.length < 23) matrix.push([...matrix[matrix.length - 1]]); // Bù mảng nếu LLM cắt ngắn
+                            while (matrix.length < 23) matrix.push([...matrix[matrix.length - 1]]); // Bù mảng tự động
+                            
+                            // Đảm bảo focals có đúng 3 phần tử
+                            while (parsed.focals.length < 3) parsed.focals.push({ center: [0,0], radius: 0 });
+                            
                             return {
-                                depth_scale: Number(parsed.depth_scale) || 0.35,
-                                pivot_point: parsed.pivot_point || [0.5, 0.5],
-                                focal_center: parsed.focal_center || [0.5, 0.5],
-                                focal_radius: Number(parsed.focal_radius) || 0.0,
+                                depth_scale: Number(parsed.depth_scale) || 0.45,
+                                focals: parsed.focals.slice(0, 3),
                                 matrix_23: matrix.slice(0, 23)
                             };
                         }
@@ -3377,96 +3391,36 @@ RETURN STRICT JSON ONLY:
                     await new Promise(r => setTimeout(r, Math.min(500 * attempt, 2000)));
                 }
                 
-                // Trạng thái giữ nguyên (Bảo toàn năng lượng vật lý) nếu API lỗi hoàn toàn
-                console.warn("[G-Deep Physics] Áp dụng định luật bảo toàn động lượng (Fallback).");
-                const safeState = previousStateVector || { rotation: [0,0,0], deformation: [0,0], cam_pos: [0,0,2.4] };
+                // FALLBACK VẬT LÝ BẢO TOÀN ĐỘNG LƯỢNG (Nếu đứt kết nối mạng giữa chừng)
+                console.warn("[G-Deep Physics] Mạng chập chờn. Áp dụng bảo toàn quán tính động lượng từ t-1.");
+                const p = previousStateVector;
                 const flatMatrix = Array(23).fill([
-                    safeState.deformation[0], safeState.deformation[1],
-                    safeState.rotation[0], safeState.rotation[1], safeState.rotation[2],
-                    0.0, 0.0,
-                    safeState.cam_pos[0], safeState.cam_pos[1], safeState.cam_pos[2]
+                    p.cam_pos[0], p.cam_pos[1], p.cam_pos[2], p.cam_rot[0], p.cam_rot[1], p.cam_rot[2],
+                    p.f1_def[0], p.f1_def[1], p.f1_def[2],
+                    p.f2_def[0], p.f2_def[1], p.f2_def[2],
+                    p.f3_def[0], p.f3_def[1], p.f3_def[2]
                 ]);
-                return { depth_scale: 0.35, pivot_point: [0.5, 0.5], focal_center: [0.5, 0.5], focal_radius: 0.0, matrix_23: flatMatrix };
+                return {
+                    depth_scale: 0.45,
+                    focals: [ {center:[0.5,0.5], radius: 0}, {center:[0,0], radius: 0}, {center:[0,0], radius: 0} ],
+                    matrix_23: flatMatrix
+                };
             },
 
-            // 3. TẠO TRƯỜNG CHIỀU SÂU THỂ TÍCH MỊN ĐỘC LẬP
-            createVolumetricDepthTexture(width, height, pivot) {
+            createVolumetricDepthTexture(width, height) {
                 const c = document.createElement('canvas');
                 c.width = width; c.height = height;
                 const ctx = c.getContext('2d');
-                const px = (pivot ? pivot[0] : 0.5) * width;
-                const py = (pivot ? pivot[1] : 0.5) * height;
-
-                const grad = ctx.createRadialGradient(px, py, 0, px, py, Math.max(width, height) * 0.75);
-                grad.addColorStop(0, '#ffffff'); // Gần tâm khối lượng nhất
+                const grad = ctx.createRadialGradient(width/2, height/2, 0, width/2, height/2, Math.max(width, height) * 0.8);
+                grad.addColorStop(0, '#ffffff'); // Đỉnh khối (gần camera)
                 grad.addColorStop(0.5, '#777777');
-                grad.addColorStop(1, '#111111'); // Xa tâm
+                grad.addColorStop(1, '#111111'); // Đáy khối (xa camera)
                 ctx.fillStyle = grad;
                 ctx.fillRect(0, 0, width, height);
                 return new THREE.CanvasTexture(c);
             },
 
-            // 4. LỒNG TIẾNG DIỄN XUẤT (GEMINI AUDIO TTS)
-            async generateDialogueSpeech(text, character, apiKey) {
-                if (!apiKey || !text) return null;
-                try {
-                    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
-                    const res = await fetch(url, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ role: 'user', parts: [{ text: `[HOLLYWOOD VOICE ACTING] ${text}` }] }],
-                            generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: character.geminiVoice || 'Puck' } } } },
-                            safetySettings: SAFETY_SETTINGS
-                        })
-                    });
-                    const json = await res.json();
-                    const audioPart = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio/'));
-                    if (audioPart?.inlineData?.data) return this.decodePcmToAudioBuffer(audioPart.inlineData.data, 24000);
-                } catch (e) {}
-                return null;
-            },
-
-            // 5. TỔNG HỢP ÂM NHẠC DSP THUẦN
-            async generateCinematicMusic(audioConfig, durationSec, onStatus) {
-                onStatus("Đang tổng hợp phổ âm học điện ảnh...");
-                try {
-                    const sampleRate = 48000;
-                    const totalSamples = Math.ceil(sampleRate * durationSec);
-                    const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
-                    const actx = new OfflineCtx(2, totalSamples, sampleRate);
-                    const freqs = audioConfig?.chord_frequencies || [55.0, 82.41, 110.0, 164.81];
-                    const subBass = Number(audioConfig?.sub_bass_freq) || 38.0;
-
-                    freqs.forEach((freq, idx) => {
-                        const osc = actx.createOscillator();
-                        const gain = actx.createGain();
-                        const filter = actx.createBiquadFilter();
-                        osc.type = idx % 2 === 0 ? 'sawtooth' : 'triangle';
-                        osc.frequency.setValueAtTime(freq, 0);
-                        filter.type = 'lowpass'; filter.frequency.setValueAtTime(360.0 + idx * 40, 0); filter.Q.setValueAtTime(2.0, 0);
-                        gain.gain.setValueAtTime(0.001, 0);
-                        gain.gain.exponentialRampToValueAtTime(0.05 / freqs.length, 1.0);
-                        gain.gain.setValueAtTime(0.05 / freqs.length, Math.max(1.0, durationSec - 1.5));
-                        gain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
-                        osc.connect(filter); filter.connect(gain); gain.connect(actx.destination);
-                        osc.start(0); osc.stop(durationSec);
-                    });
-
-                    if (subBass > 0) {
-                        const sub = actx.createOscillator(); const subGain = actx.createGain();
-                        sub.type = 'sine'; sub.frequency.setValueAtTime(subBass, 0);
-                        subGain.gain.setValueAtTime(0.001, 0);
-                        subGain.gain.exponentialRampToValueAtTime(0.07, 1.0);
-                        subGain.gain.setValueAtTime(0.07, Math.max(1.0, durationSec - 1.0));
-                        subGain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
-                        sub.connect(subGain); subGain.connect(actx.destination);
-                        sub.start(0); sub.stop(durationSec);
-                    }
-                    return await actx.startRendering();
-                } catch (e) { return null; }
-            },
-
-            // 6. ENGINE 3D KẾT XUẤT AUTOREGRESSIVE
+            // 3. ENGINE WEBGL 3D VÔ ĐỊNH HÌNH & AUTOREGRESSIVE VIDEO RENDERER
             async generateFlux24FpsVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, userTimelineCues, onStatus, dispatchBgTaskFn }) {
                 const fps = 24;
                 const totalSeconds = Math.max(1, Math.round(durationSec));
@@ -3478,44 +3432,39 @@ RETURN STRICT JSON ONLY:
 
                 const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
                 const TargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
-                if (!MuxerClass || typeof VideoEncoder === 'undefined') throw new Error("Trình duyệt không hỗ trợ WebCodecs AVC/H.264 phần cứng.");
+                if (!MuxerClass || typeof VideoEncoder === 'undefined') throw new Error("Trình duyệt không hỗ trợ WebCodecs phần cứng.");
 
                 const tempDbName = `GDeepUnifiedCinema_${Date.now()}`;
                 const frameBufferDb = new window.Dexie(tempDbName);
                 frameBufferDb.version(1).stores({ frames: 'frameIndex' });
 
-                // FLUX IMAGE GENERATOR
-                const fetchFluxToCanvas = async (fluxPrompt, characterDNA, envAnchor, persistentSeed) => {
+                // FLUX IMAGE GENERATOR VỚI DNA KHÓA CHẶT
+                const fetchFluxToCanvas = async (fluxPrompt, visualDNA, seedValue) => {
                     const canvasHost = document.createElement('canvas');
                     canvasHost.width = width; canvasHost.height = height;
                     const cCtx = canvasHost.getContext('2d');
-                    const fullPrompt = `${characterDNA}, ${fluxPrompt}, ${envAnchor}, photorealistic 8k`;
+                    // Gắn DNA vào đầu để đảm bảo AI sinh ảnh không bị lệch bối cảnh/nhân vật
+                    const fullPrompt = `${visualDNA}, ${fluxPrompt}`;
                     const safePrompt = encodeURIComponent(fullPrompt.replace(/[\r\n\t]+/g, ' ').slice(0, 320));
-                    const endpoints = [
-                        `https://image.pollinations.ai/prompt/${safePrompt}?model=flux&width=${width}&height=${height}&seed=${persistentSeed}&nologo=true`,
-                        `https://image.pollinations.ai/prompt/${safePrompt}?model=turbo&width=${width}&height=${height}&seed=${persistentSeed}&nologo=true`
-                    ];
-                    let attempt = 0;
-                    while (attempt < 5) {
-                        attempt++;
+                    const url = `https://image.pollinations.ai/prompt/${safePrompt}?model=flux&width=${width}&height=${height}&seed=${seedValue}&nologo=true`;
+                    
+                    for (let attempt = 0; attempt < 5; attempt++) {
                         try {
-                            for (const url of endpoints) {
-                                const success = await new Promise((resolve, reject) => {
-                                    const img = new Image(); img.crossOrigin = 'anonymous';
-                                    const timer = setTimeout(() => reject(new Error("Timeout")), 22000);
-                                    img.onload = () => { clearTimeout(timer); cCtx.drawImage(img, 0, 0, width, height); resolve(true); };
-                                    img.onerror = () => reject(new Error("Lỗi tải ảnh"));
-                                    img.src = url;
-                                });
-                                if (success) return canvasHost;
-                            }
+                            const success = await new Promise((resolve, reject) => {
+                                const img = new Image(); img.crossOrigin = 'anonymous';
+                                const timer = setTimeout(() => reject(new Error("Timeout")), 22000);
+                                img.onload = () => { clearTimeout(timer); cCtx.drawImage(img, 0, 0, width, height); resolve(true); };
+                                img.onerror = () => reject(new Error("Lỗi tải ảnh"));
+                                img.src = url;
+                            });
+                            if (success) return canvasHost;
                         } catch (e) {}
-                        await new Promise(r => setTimeout(r, Math.min(500 * attempt, 2500)));
+                        await new Promise(r => setTimeout(r, 1500));
                     }
-                    throw new Error("Không thể kết xuất khung hình cơ sở.");
+                    throw new Error("Không thể kết xuất khung hình cơ sở từ Flux.");
                 };
 
-                // KHỞI TẠO WEBGL THREE.JS VỚI SHADER TỔNG QUÁT HÓA (GENERALIZED DYNAMIC SHADER)
+                // KHỞI TẠO WEBGL THREE.JS
                 const glCanvas = document.createElement('canvas');
                 glCanvas.width = width; glCanvas.height = height;
                 const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
@@ -3525,67 +3474,71 @@ RETURN STRICT JSON ONLY:
                 const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 1000);
                 const planeGeo = new THREE.PlaneGeometry(3.6, 3.6 * (height / width), 160, 160);
 
+                // GENERALIZED KINEMATIC SHADER (KHÔNG GÁN CỨNG ĐỐI TƯỢNG)
                 const cinemaShaderMat = new THREE.ShaderMaterial({
                     side: THREE.DoubleSide,
                     uniforms: {
                         uTextureCurrent: { value: null },
                         uTexturePrev: { value: null },
-                        uBlendFactor: { value: 0.0 }, // Dùng để Blend chống jump-cut
+                        uBlendFactor: { value: 0.0 }, // Cross-fade tĩnh
                         uDepthMap: { value: null },
-                        uDisplacement: { value: 0.25 },
-                        uPivot: { value: new THREE.Vector2(0.5, 0.5) }, // Tâm xoay vật lý
-                        uRotation: { value: new THREE.Vector3(0, 0, 0) }, // Xoay khối
-                        uTranslation: { value: new THREE.Vector2(0, 0) }, // Dịch chuyển không gian
-                        uFocalCenter: { value: new THREE.Vector2(0.5, 0.5) }, // Tâm biến dạng (Miệng, Ngực, Sóng nước)
-                        uFocalRadius: { value: 0.0 },
-                        uDeformZ: { value: 0.0 }, // Biến dạng sâu
-                        uDeformY: { value: 0.0 }  // Biến dạng trượt
+                        uDepthScale: { value: 0.45 },
+                        
+                        // Toàn cục Camera Tịnh tiến/Xoay
+                        uCamRotation: { value: new THREE.Vector3(0, 0, 0) },
+                        uCamTranslation: { value: new THREE.Vector3(0, 0, 0) },
+
+                        // 3 Điểm Focal Point (Do Gemini quy định)
+                        uFocalCenters: { value: [new THREE.Vector2(0,0), new THREE.Vector2(0,0), new THREE.Vector2(0,0)] },
+                        uFocalRadii: { value: [0.0, 0.0, 0.0] },
+                        uFocalDeforms: { value: [new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0), new THREE.Vector3(0,0,0)] }
                     },
                     vertexShader: `
                         uniform sampler2D uDepthMap;
-                        uniform float uDisplacement;
-                        uniform vec2 uPivot;
-                        uniform vec3 uRotation;
-                        uniform vec2 uTranslation;
-                        uniform vec2 uFocalCenter;
-                        uniform float uFocalRadius;
-                        uniform float uDeformZ;
-                        uniform float uDeformY;
+                        uniform float uDepthScale;
+                        uniform vec3 uCamRotation;
+                        uniform vec3 uCamTranslation;
+                        
+                        uniform vec2 uFocalCenters[3];
+                        uniform float uFocalRadii[3];
+                        uniform vec3 uFocalDeforms[3];
+
                         varying vec2 vUv;
 
                         void main() {
                             vUv = vec2(uv.x, 1.0 - uv.y);
                             vec3 pos = position;
 
-                            // Bơm không gian thể tích 3D
+                            // 1. Áp dụng thể tích
                             float depth = texture2D(uDepthMap, vUv).r;
-                            pos.z += (depth - 0.5) * uDisplacement;
+                            pos.z += (depth - 0.5) * uDepthScale;
 
-                            pos.x += uTranslation.x; pos.y += uTranslation.y;
+                            // 2. Áp dụng biến dạng vi phân từ 3 Focal Points
+                            for(int i = 0; i < 3; i++) {
+                                if(uFocalRadii[i] > 0.0) {
+                                    vec2 adjustedFocal = vec2(uFocalCenters[i].x, 1.0 - uFocalCenters[i].y);
+                                    float dist = distance(vUv, adjustedFocal);
+                                    float weight = smoothstep(uFocalRadii[i], 0.0, dist);
+                                    
+                                    pos.x += uFocalDeforms[i].x * weight;
+                                    pos.y += uFocalDeforms[i].y * weight;
+                                    pos.z += uFocalDeforms[i].z * weight;
+                                }
+                            }
 
-                            // Chuyển về trục vật lý thực do Gemini cấp
-                            vec3 pivotWorld = vec3((uPivot.x - 0.5) * 3.6, (0.5 - uPivot.y) * 2.025, 0.0);
-                            vec3 localPos = pos - pivotWorld;
-
-                            float cy = cos(uRotation.y); float sy = sin(uRotation.y);
-                            float cp = cos(uRotation.x); float sp = sin(uRotation.x);
-                            float cr = cos(uRotation.z); float sr = sin(uRotation.z);
-
+                            // 3. Áp dụng Xoay Toàn Cảnh (Camera Rotation Inversion)
+                            float cy = cos(-uCamRotation.y); float sy = sin(-uCamRotation.y);
+                            float cp = cos(-uCamRotation.x); float sp = sin(-uCamRotation.x);
+                            float cr = cos(-uCamRotation.z); float sr = sin(-uCamRotation.z);
                             mat3 rotMat = mat3(
                                 cy * cr, -cy * sr, sy,
                                 sp * sy * cr + cp * sr, -sp * sy * sr + cp * cr, -sp * cy,
                                 -cp * sy * cr + sp * sr, cp * sy * sr + sp * cr, cp * cy
                             );
+                            pos = rotMat * pos;
 
-                            pos = (rotMat * localPos) + pivotWorld;
-
-                            // Biến dạng lưu chất/sinh học vi phân (Thở, nói, sóng)
-                            float distFocal = distance(vUv, uFocalCenter);
-                            if (distFocal < uFocalRadius && uFocalRadius > 0.0) {
-                                float weight = smoothstep(uFocalRadius, 0.0, distFocal);
-                                pos.y -= uDeformY * 0.04 * weight;
-                                pos.z += uDeformZ * 0.02 * weight;
-                            }
+                            // 4. Áp dụng Tịnh Tiến Toàn Cảnh
+                            pos += uCamTranslation;
 
                             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
                         }
@@ -3598,6 +3551,7 @@ RETURN STRICT JSON ONLY:
                         void main() {
                             vec4 colCurr = texture2D(uTextureCurrent, vUv);
                             vec4 colPrev = texture2D(uTexturePrev, vUv);
+                            // Blend ảnh để xóa mờ sự thay đổi pixel của Flux giữa 2 giây
                             gl_FragColor = mix(colCurr, colPrev, uBlendFactor);
                         }
                     `
@@ -3607,34 +3561,36 @@ RETURN STRICT JSON ONLY:
                 scene.add(cinemaMesh);
 
                 try {
-                    onStatus("Phân tích bối cảnh tự sự...");
-                    const globalScript = await this.planAutoregressiveStoryline(prompt, totalSeconds, seed, style, dispatchBgTaskFn);
+                    onStatus("Gemini Director đang phác thảo cấu trúc siêu không gian...");
+                    const globalScript = await this.planGlobalCinematicScript(prompt, totalSeconds, seed, style, dispatchBgTaskFn);
 
                     let globalFrameIdx = 0;
                     let prevCanvasTexture = null;
 
-                    // TRẠNG THÁI VẬT LÝ TOÀN CỤC BAN ĐẦU
+                    // KHỞI TẠO STATE VECTOR CHO GIÂY ĐẦU TIÊN (Quán tính gốc bằng 0)
                     let currentStateVector = {
-                        rotation: [0.0, 0.0, 0.0],
-                        deformation: [0.0, 0.0],
-                        cam_pos: [0.0, 0.0, 2.4]
+                        cam_pos: [0.0, 0.0, 2.4], cam_rot: [0.0, 0.0, 0.0],
+                        f1_def: [0,0,0], f2_def: [0,0,0], f3_def: [0,0,0]
                     };
 
-                    // CHUỖI HỒI QUY (AUTOREGRESSIVE LOOP)
+                    const depthTex = this.createVolumetricDepthTexture(width, height);
+                    cinemaShaderMat.uniforms.uDepthMap.value = depthTex;
+
+                    // AUTOREGRESSIVE PIPELINE LOOP
                     for (let s = 0; s < totalSeconds; s++) {
                         const secPlan = globalScript.seconds[s];
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Kết xuất thế giới thực...`);
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Kết xuất điểm ảnh tĩnh từ Flux...`);
 
-                        // 1. VẼ KEYFRAME MỚI
-                        const keyframeCanvas = await fetchFluxToCanvas(secPlan.flux_prompt, globalScript.character_anchor, globalScript.environment_anchor, seed);
+                        // 1. FLUX VẼ TÁC PHẨM
+                        const keyframeCanvas = await fetchFluxToCanvas(secPlan.flux_prompt, globalScript.visual_dna, seed);
 
-                        // 2. MÔ PHỎNG VẬT LÝ QUA GEMINI
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Tính toán động lực học 3D...`);
+                        // 2. GEMINI PHÂN TÍCH VẬT LÝ DỰA TRÊN ẢNH + QUÁN TÍNH GIÂY TRƯỚC
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Giải mã động lực học lượng tử...`);
                         const physicsData = await this.solveDynamicPhysicsEngine({
                             imageCanvas: keyframeCanvas,
                             secondIndex: s,
                             totalSeconds: totalSeconds,
-                            actionDelta: secPlan.action_intent,
+                            actionDelta: secPlan.physics_intent,
                             previousStateVector: currentStateVector,
                             dispatchBgTaskFn: dispatchBgTaskFn
                         });
@@ -3645,70 +3601,62 @@ RETURN STRICT JSON ONLY:
                         cinemaShaderMat.uniforms.uTextureCurrent.value = currCanvasTexture;
                         cinemaShaderMat.uniforms.uTexturePrev.value = prevCanvasTexture || currCanvasTexture;
 
-                        const depthTex = this.createVolumetricDepthTexture(width, height, physicsData.pivot_point);
-                        cinemaShaderMat.uniforms.uDepthMap.value = depthTex;
-                        cinemaShaderMat.uniforms.uDisplacement.value = physicsData.depth_scale;
-                        cinemaShaderMat.uniforms.uPivot.value.set(physicsData.pivot_point[0], 1.0 - physicsData.pivot_point[1]);
-                        cinemaShaderMat.uniforms.uFocalCenter.value.set(physicsData.focal_center[0], 1.0 - physicsData.focal_center[1]);
-                        cinemaShaderMat.uniforms.uFocalRadius.value = physicsData.focal_radius;
+                        // Cập nhật vùng tọa độ điểm tụ (Focals)
+                        cinemaShaderMat.uniforms.uDepthScale.value = physicsData.depth_scale;
+                        cinemaShaderMat.uniforms.uFocalCenters.value = physicsData.focals.map(f => new THREE.Vector2(f.center[0], f.center[1]));
+                        cinemaShaderMat.uniforms.uFocalRadii.value = physicsData.focals.map(f => f.radius);
 
-                        // RENDER FRAME ĐẦU TIÊN CỦA GIÂY (Chuyển tiếp trạng thái)
-                        cinemaShaderMat.uniforms.uBlendFactor.value = prevCanvasTexture ? 1.0 : 0.0; 
-                        cinemaShaderMat.uniforms.uRotation.value.set(
-                            currentStateVector.rotation[0] * (Math.PI / 180),
-                            currentStateVector.rotation[1] * (Math.PI / 180),
-                            currentStateVector.rotation[2] * (Math.PI / 180)
-                        );
-                        camera.position.set(currentStateVector.cam_pos[0], currentStateVector.cam_pos[1], currentStateVector.cam_pos[2]);
-                        camera.lookAt(0, 0, 0);
-                        renderer.render(scene, camera);
+                        // RENDER 24 FRAMES CỦA GIÂY HIỆN TẠI
+                        for (let f = 0; f < 24; f++) {
+                            // Frame 0 áp dụng nội suy từ Frame 23 cuối cùng của giây trước
+                            const k = (f === 0) 
+                                ? [ currentStateVector.cam_pos[0], currentStateVector.cam_pos[1], currentStateVector.cam_pos[2],
+                                    currentStateVector.cam_rot[0], currentStateVector.cam_rot[1], currentStateVector.cam_rot[2],
+                                    currentStateVector.f1_def[0], currentStateVector.f1_def[1], currentStateVector.f1_def[2],
+                                    currentStateVector.f2_def[0], currentStateVector.f2_def[1], currentStateVector.f2_def[2],
+                                    currentStateVector.f3_def[0], currentStateVector.f3_def[1], currentStateVector.f3_def[2] ]
+                                : (physicsData.matrix_23[f - 1] || physicsData.matrix_23[physicsData.matrix_23.length - 1]);
 
-                        const f0Blob = await new Promise(res => glCanvas.toBlob(res, 'image/jpeg', 0.95));
-                        await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: f0Blob });
-
-                        // RENDER 23 FRAMES CHUYỂN ĐỘNG NỘI SUY TỪ GEMINI
-                        for (let f = 1; f < 24; f++) {
-                            const k = physicsData.matrix_23[f - 1] || [0,0,0,0,0,0,0,0,0,2.4];
-
-                            // Trộn Texture dần về 0 để xóa dấu vết ảnh cũ mượt mà (Cross-fade)
+                            // Blend Alpha 4 Frame đầu để triệt tiêu Jump-cut khác biệt pixel giữa 2 ảnh Flux
                             cinemaShaderMat.uniforms.uBlendFactor.value = (f <= 4 && prevCanvasTexture) ? (1.0 - (f / 4.0)) : 0.0;
 
-                            cinemaShaderMat.uniforms.uDeformZ.value = Number(k[0]) || 0.0;
-                            cinemaShaderMat.uniforms.uDeformY.value = Number(k[1]) || 0.0;
+                            // Bơm Ma trận dữ liệu động lực học vào Shader
+                            camera.position.set(Number(k[0]) || 0.0, Number(k[1]) || 0.0, Number(k[2]) || 2.4);
+                            cinemaShaderMat.uniforms.uCamRotation.value.set((Number(k[3])||0)*Math.PI/180, (Number(k[4])||0)*Math.PI/180, (Number(k[5])||0)*Math.PI/180);
+                            
+                            cinemaShaderMat.uniforms.uFocalDeforms.value = [
+                                new THREE.Vector3(Number(k[6])||0, Number(k[7])||0, Number(k[8])||0),
+                                new THREE.Vector3(Number(k[9])||0, Number(k[10])||0, Number(k[11])||0),
+                                new THREE.Vector3(Number(k[12])||0, Number(k[13])||0, Number(k[14])||0)
+                            ];
 
-                            cinemaShaderMat.uniforms.uRotation.value.set(
-                                (Number(k[2]) || 0.0) * (Math.PI / 180),
-                                (Number(k[3]) || 0.0) * (Math.PI / 180),
-                                (Number(k[4]) || 0.0) * (Math.PI / 180)
-                            );
-                            cinemaShaderMat.uniforms.uTranslation.value.set(Number(k[5]) || 0.0, Number(k[6]) || 0.0);
-
-                            camera.position.set(Number(k[7]) || 0.0, Number(k[8]) || 0.0, Number(k[9]) || 2.4);
                             camera.lookAt(0, 0, 0);
                             renderer.render(scene, camera);
 
-                            const interBlob = await new Promise(res => glCanvas.toBlob(res, 'image/jpeg', 0.95));
-                            await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: interBlob });
+                            const frameBlob = await new Promise(res => glCanvas.toBlob(res, 'image/jpeg', 0.95));
+                            await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: frameBlob });
 
-                            // GHI NHỚ TRẠNG THÁI FRAME CUỐI CÙNG ĐỂ CHUYỂN GIAO CHO GIÂY SAU
+                            // GHI NHỚ LẠI STATE VECTOR TẠI FRAME 23 CỦA GIÂY NÀY ĐỂ KẾ THỪA
                             if (f === 23) {
                                 currentStateVector = {
-                                    deformation: [Number(k[0]) || 0.0, Number(k[1]) || 0.0],
-                                    rotation: [Number(k[2]) || 0.0, Number(k[3]) || 0.0, Number(k[4]) || 0.0],
-                                    cam_pos: [Number(k[7]) || 0.0, Number(k[8]) || 0.0, Number(k[9]) || 2.4]
+                                    cam_pos: [Number(k[0])||0, Number(k[1])||0, Number(k[2])||2.4],
+                                    cam_rot: [Number(k[3])||0, Number(k[4])||0, Number(k[5])||0],
+                                    f1_def: [Number(k[6])||0, Number(k[7])||0, Number(k[8])||0],
+                                    f2_def: [Number(k[9])||0, Number(k[10])||0, Number(k[11])||0],
+                                    f3_def: [Number(k[12])||0, Number(k[13])||0, Number(k[14])||0]
                                 };
                             }
                         }
 
                         if (prevCanvasTexture) prevCanvasTexture.dispose();
                         prevCanvasTexture = currCanvasTexture;
-                        depthTex.dispose();
                     }
 
                     if (prevCanvasTexture) prevCanvasTexture.dispose();
+                    depthTex.dispose();
 
                     // ĐÓNG GÓI THÀNH MP4
-                    onStatus("Đang đóng gói phim MP4 AVC/H.264 24 FPS chuẩn Hollywood...");
+                    onStatus("Đang đóng gói video MP4 chuẩn biên dịch WebCodecs...");
                     const muxerOptions = { target: new TargetClass(), video: { codec: 'avc', width, height }, fastStart: 'in-memory' };
                     let isAudioReady = false;
                     if (audioBuffer && typeof AudioEncoder !== 'undefined') {
@@ -3746,14 +3694,14 @@ RETURN STRICT JSON ONLY:
 
                     return {
                         videoBlob: new Blob([muxer.target.buffer], { type: 'video/mp4' }),
-                        kinematicsSummary: `Gemini xử lý Vật lý Sinh học Động 100% (Không giới hạn tham số).`
+                        kinematicsSummary: `Unified Autoregressive Rendering hoàn tất.`
                     };
                 } finally {
                     try { renderer.dispose(); await frameBufferDb.delete(); } catch (_) {}
                 }
             },
 
-            // 7. LỒNG TIẾNG KỊCH BẢN ĐA NHÂN VẬT
+            // 4. LỒNG TIẾNG VÀ HÒA ÂM (Tái sử dụng nguyên trạng vì không lỗi)
             async buildSpeechAudioBuffer(dialogueLines, voiceCharacters, durationSec, apiKey) {
                 if (!Array.isArray(dialogueLines) || !dialogueLines.length || !apiKey) return null;
                 const sampleRate = 48000;
@@ -3775,7 +3723,6 @@ RETURN STRICT JSON ONLY:
                 return hasDialogue ? await ctx.startRendering() : null;
             },
 
-            // 8. HÒA ÂM STEREO DUCKING
             async mixAudioTracks(speechBuffer, musicBuffer, durationSec) {
                 if (!speechBuffer && !musicBuffer) return null;
                 const sampleRate = 48000;
