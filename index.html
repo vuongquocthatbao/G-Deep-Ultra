@@ -3331,19 +3331,19 @@
                 return audioBuffer;
             },
 
-            // 1. GEMINI BIÊN KỊCH ĐỘNG TOÀN DIỆN CHO TỪNG GIÂY (KHÔNG HARDCODE BẤT KỲ GIÁ TRỊ NÀO)
+            // 1. BIÊN KỊCH ĐỘNG TOÀN PHẦN: RETRY TUYỆT ĐỐI CHO ĐẾN KHI THÀNH CÔNG (ZERO FALLBACK)
             async planAutoregressiveStoryline(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
                 const prompt = `[HOLLYWOOD AUTOREGRESSIVE DIRECTOR]
 Scene: "${userPrompt}"
 Runtime: ${durationSec}s | Target: 24 FPS | Aesthetic: ${style}
 
 DIRECTING REQUIREMENTS:
-1. Define a persistent character identity anchor and a cohesive atmospheric visual anchor.
-2. Formulate a continuous timeline array containing exactly ${durationSec} seconds (sec: 0 to ${durationSec - 1}).
+1. Define a persistent character identity anchor and cohesive atmospheric visual anchor.
+2. Formulate a continuous timeline array containing EXACTLY ${durationSec} seconds (sec: 0 to ${durationSec - 1}).
 3. For each second, write a distinct Flux visual prompt advancing the narrative naturally, with a physical action directive.
 4. Provide acoustic synthesis parameters.
 
-RETURN ONLY VALID JSON:
+RETURN ONLY VALID JSON (Do not truncate, fill all ${durationSec} seconds):
 {
   "character_anchor": "Consistent visual signature of actors/subjects",
   "environment_anchor": "Lighting setup, palette, camera lenses",
@@ -3360,30 +3360,58 @@ RETURN ONLY VALID JSON:
   ]
 }`;
 
-                const res = await dispatchBgTaskFn({
-                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                    generationConfig: { temperature: 0.3, maxOutputTokens: 8192, responseMimeType: "application/json" },
-                    safetySettings: SAFETY_SETTINGS
-                });
+                let attempt = 0;
 
-                const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-                const parsed = robustJsonParse(raw);
+                // VÒNG LẶP RETRY TUYỆT ĐỐI - KHÔNG FALLBACK DỰ PHÒNG
+                while (true) {
+                    attempt++;
+                    try {
+                        const res = await dispatchBgTaskFn({
+                            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                            generationConfig: { 
+                                temperature: Math.min(0.1 + (attempt * 0.05), 0.5), 
+                                maxOutputTokens: 8192, 
+                                responseMimeType: "application/json" 
+                            },
+                            safetySettings: SAFETY_SETTINGS
+                        });
 
-                if (!parsed || !Array.isArray(parsed.seconds) || parsed.seconds.length === 0) {
-                    throw new Error("Gemini không trả về kịch bản phân cảnh hợp lệ.");
+                        const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                        const parsed = robustJsonParse(raw);
+
+                        // KIỂM TRA ĐIỀU KIỆN HỢP LỆ NGHIÊM NGẶT
+                        if (
+                            parsed &&
+                            typeof parsed === 'object' &&
+                            Array.isArray(parsed.seconds) &&
+                            parsed.seconds.length >= durationSec &&
+                            parsed.character_anchor &&
+                            parsed.environment_anchor
+                        ) {
+                            // Đảm bảo đủ chính xác các index từ 0 đến durationSec - 1
+                            const isValidTimeline = parsed.seconds.slice(0, durationSec).every((s, idx) => 
+                                s && typeof s.flux_prompt === 'string' && s.flux_prompt.trim().length > 0
+                            );
+
+                            if (isValidTimeline) {
+                                return {
+                                    character_anchor: parsed.character_anchor,
+                                    environment_anchor: parsed.environment_anchor,
+                                    audio_synthesis: parsed.audio_synthesis || { chord_frequencies: [55.0, 82.41, 110.0, 164.81], sub_bass_freq: 38.0 },
+                                    seconds: parsed.seconds.slice(0, durationSec)
+                                };
+                            }
+                        }
+
+                        console.warn(`[G-Deep Cinema] Gemini kịch bản chưa hợp lệ (Lần thử ${attempt}). Đang âm thầm retry...`);
+                    } catch (err) {
+                        console.warn(`[G-Deep Cinema] Lỗi kết nối kịch bản (Lần thử ${attempt}): ${err.message}. Đang thử lại...`);
+                    }
+
+                    // Tạm nghỉ chống nghẽn API trước khi thử lại (Backoff lũy tiến từ 400ms đến tối đa 2000ms)
+                    const waitMs = Math.min(400 * Math.pow(1.2, attempt) + Math.random() * 200, 2000);
+                    await new Promise(r => setTimeout(r, waitMs));
                 }
-
-                // Bảo đảm mảng đủ số giây yêu cầu
-                while (parsed.seconds.length < durationSec) {
-                    const idx = parsed.seconds.length;
-                    parsed.seconds.push({
-                        sec: idx,
-                        flux_prompt: `${userPrompt}, continuing scene progression frame ${idx + 1}, cinematic lighting, photorealistic 8k`,
-                        action_intent: "Fluid cinematic progression"
-                    });
-                }
-
-                return parsed;
             },
 
             // Cầu nối đồng bộ cho lời gọi hàm
@@ -3762,7 +3790,7 @@ RETURN ONLY THIS STRICT JSON FORM:
                         const currentDialogue = (userTimelineCues || []).find(c => Math.floor(c.startTimeSec) === s)?.text || "";
 
                         // 2. Gemini xem ảnh thật trên canvas và điền đầy đủ form ma trận 3D
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Gemini đo đạc không gian & động học 3D...`);
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] đo đạc không gian & động học 3D...`);
                         let kinematics = null;
 
                         try {
@@ -3956,7 +3984,7 @@ RETURN ONLY THIS STRICT JSON FORM:
 
                     return {
                         videoBlob: new Blob([muxer.target.buffer], { type: 'video/mp4' }),
-                        kinematicsSummary: `Dây chuyền 3D hoàn chỉnh: 100% tham số động từ Gemini Vision, triệt tiêu lỗi đen hình và đảo trục.`
+                        kinematicsSummary: `Dây chuyền 3D hoàn chỉnh: 100% tham số động từ hệ thống, triệt tiêu lỗi đen hình và đảo trục.`
                     };
                 } finally {
                     try {
