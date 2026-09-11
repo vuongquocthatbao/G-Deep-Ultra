@@ -3237,6 +3237,76 @@
             }
         }
 
+                // =========================================================================================
+        // BỘ GIẢI MÃ VÀ PHỤC HỒI CẤU TRÚC JSON ĐỘNG HỌC THỜI GIAN THỰC
+        // =========================================================================================
+        function robustJsonParse(rawString) {
+            if (!rawString || typeof rawString !== 'string') return null;
+            let clean = rawString.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+            // 1. Thử parse trực tiếp nếu JSON chuẩn
+            try {
+                return JSON.parse(clean);
+            } catch (_) {}
+
+            // 2. Dọn dẹp lỗi cú pháp phổ biến của LLM (trailing commas, số dính chữ)
+            clean = clean.replace(/,\s*([\]}])/g, '$1');
+            clean = clean.replace(/([0-9])\s*"\s*([a-zA-Z0-9_]+)"\s*:/g, '$1, "$2":');
+
+            try {
+                return JSON.parse(clean);
+            } catch (_) {}
+
+            // 3. Phục hồi JSON bị cắt cụt do chạm trần Token (Truncated JSON Recovery)
+            let inString = false;
+            let escaped = false;
+            const stack = [];
+
+            for (let i = 0; i < clean.length; i++) {
+                const char = clean[i];
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (char === '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (char === '"') {
+                    inString = !inString;
+                    continue;
+                }
+                if (!inString) {
+                    if (char === '{' || char === '[') {
+                        stack.push(char);
+                    } else if (char === '}') {
+                        if (stack[stack.length - 1] === '{') stack.pop();
+                    } else if (char === ']') {
+                        if (stack[stack.length - 1] === '[') stack.pop();
+                    }
+                }
+            }
+
+            // Nếu đang dở dang chuỗi ký tự, đóng chuỗi lại
+            if (inString) clean += '"';
+
+            // Đóng lần lượt các mảng và đối tượng chưa hoàn tất
+            while (stack.length > 0) {
+                const openChar = stack.pop();
+                if (openChar === '{') clean += '}';
+                else if (openChar === '[') clean += ']';
+            }
+
+            // Dọn dẹp dấu phẩy thừa trước các ngoặc đóng vừa thêm
+            clean = clean.replace(/,\s*([\]}])/g, '$1');
+
+            try {
+                return JSON.parse(clean);
+            } catch (finalErr) {
+                throw new Error(`Không thể khôi phục cú pháp JSON: ${finalErr.message}`);
+            }
+        }
+
         // =========================================================================================
         // XƯỞNG PHIM ĐIỆN ẢNH 24 FPS: GEMINI NATIVE MULTIMODAL BRAIN + WEBGL 3D SHADER ENGINE
         // =========================================================================================
@@ -3284,12 +3354,13 @@ Context: "${scenePrompt}" | Aspect Ratio: ${aspectRatio}
 Dialogue in this second: "${currentDialogue || 'None'}"
 
 TASK:
-1. Native Spatial Grounding: Locate the primary character's facial features or focal anchors in normalized UV coordinates (0.0 to 1.0, UV origin at bottom-left).
-2. Deduce 3D space configuration tailored to this visual composition (camera FOV, distance, relief depth scale, dynamic lighting, deformation bounds).
-3. Compute an exact non-linear 24-frame kinematic trajectory array (f: 0 to 23).
-   - mouth_open: 0.0 to 1.0 cadence matching the dialogue.
-   - eye_blink: 0.0 to 1.0 natural biological intervals.
-   - head_yaw, head_pitch, head_roll: realistic micro-rotations in degrees (-5 to +5).
+1. Native Spatial Grounding: Locate primary facial features/anchors in normalized UV (0.0 to 1.0, UV origin at bottom-left).
+2. Deduce 3D space configuration tailored to this visual composition.
+3. Compute an exact 24-frame kinematic trajectory array (f: 0 to 23).
+   - Format: Format all floating numbers to max 3 decimal places (e.g. 0.125) to prevent JSON truncations.
+   - mouth_open: 0.0 to 1.0 matching dialogue cadence.
+   - eye_blink: 0.0 to 1.0 natural intervals.
+   - head_yaw, head_pitch, head_roll: realistic micro-rotations in degrees (-5.0 to +5.0).
    - cam_zoom, cam_pan_x, cam_pan_y: cinematic camera path.
 
 Return ONLY valid JSON:
@@ -3341,14 +3412,41 @@ Return ONLY valid JSON:
                             { text: promptText }
                         ]
                     }],
-                    generationConfig: { temperature: 0.15, maxOutputTokens: 3500, responseMimeType: "application/json" }
+                    generationConfig: { 
+                        temperature: 0.15, 
+                        maxOutputTokens: 8192,
+                        responseMimeType: "application/json" 
+                    }
                 });
 
                 const rawJson = res?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-                const parsed = JSON.parse(rawJson.replace(/```json/gi, '').replace(/```/g, '').trim());
+                const parsed = robustJsonParse(rawJson);
 
-                if (!parsed || !parsed.space_config || !Array.isArray(parsed.frames_24) || parsed.frames_24.length < 24) {
-                    throw new Error(`Gemini Multimodal Brain không trả về đủ ma trận động học 24 frame tại giây thứ ${secondIndex + 1}.`);
+                if (!parsed || !parsed.space_config) {
+                    throw new Error(`Gemini Multimodal Brain không trả về không gian 3D hợp lệ tại giây thứ ${secondIndex + 1}.`);
+                }
+
+                if (!Array.isArray(parsed.frames_24) || parsed.frames_24.length === 0) {
+                    throw new Error(`Ma trận động học frames_24 trống tại giây thứ ${secondIndex + 1}.`);
+                }
+
+                if (parsed.frames_24.length < 24) {
+                    const existing = parsed.frames_24;
+                    const lastValid = existing[existing.length - 1];
+                    for (let i = existing.length; i < 24; i++) {
+                        existing.push({
+                            f: i,
+                            mouth_open: lastValid.mouth_open || 0.0,
+                            eye_blink: 0.0,
+                            head_yaw: lastValid.head_yaw || 0.0,
+                            head_pitch: lastValid.head_pitch || 0.0,
+                            head_roll: lastValid.head_roll || 0.0,
+                            cam_zoom: lastValid.cam_zoom || 1.0,
+                            cam_pan_x: lastValid.cam_pan_x || 0.0,
+                            cam_pan_y: lastValid.cam_pan_y || 0.0,
+                            light_intensity_pulse: lastValid.light_intensity_pulse || 1.0
+                        });
+                    }
                 }
 
                 return parsed;
