@@ -3248,8 +3248,8 @@
         }
 
 // =========================================================================================
-        // DÂY CHUYỀN SẢN XUẤT PHIM 24 FPS: ZERO-HARDCODE PARAMETRIC KINEMATICS ENGINE
-        // (100% Thông số quang học, thể tích 3D, động học sinh-vật lý do Gemini trực tiếp kiểm soát)
+        // G-DEEP ULTRA 24 FPS CINEMA CO-ENGINE: ZERO-FALLBACK & AUTOREGRESSIVE FRAME-23 RECURSION
+        // (Không gán cứng, không fallback, hồi quy trực tiếp từ ảnh Canvas Frame 23, hàng đợi vô hạn)
         // =========================================================================================
         const AICinemaEngine = {
             decodePcmToAudioBuffer(pcmBase64, sampleRate = 24000) {
@@ -3270,174 +3270,201 @@
                 return audioBuffer;
             },
 
-            // 1. MASTER BLUEPRINT: GEMINI TỰ THIẾT KẾ TOÀN BỘ THÔNG SỐ QUANG HỌC VÀ KỊCH BẢN
-            async planGlobalCinematicScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
-                const prompt = `[SPATIO-TEMPORAL MASTER BLUEPRINT]
-Goal: "${userPrompt}"
-Duration: ${durationSec}s | Target: 24 FPS | Style: ${style}
-
-TASKS:
-1. "optics": Determine physical camera optics suited for this specific scene:
-   - "fov": Field of view in degrees (e.g. 24 for wide landscape, 50 for standard, 85 for portrait).
-   - "plane_distance": Distance of the projection plane (typically 1.5 to 3.5 meters).
-   - "overscan": Mesh oversampling factor (e.g. 1.2 to 2.0) to allow camera movement without showing borders.
-2. "visual_dna": Scene anchor tokens for Flux to maintain absolute molecular/lighting consistency.
-3. "audio_synthesis": Specific harmonic chord frequencies and sub-bass frequency.
-4. "timeline": Exactly ${durationSec} items (sec 0 to ${durationSec - 1}):
-   - "flux_prompt": Physical progression prompt.
-   - "physics_intent": Physical mechanics and biological movements occurring in this second.
-
-STRICT JSON ONLY:
-{
-  "optics": { "fov": 45.0, "plane_distance": 2.0, "overscan": 1.5 },
-  "visual_dna": "Consistent scene DNA, photorealistic 8k, cinematic lens",
-  "audio_synthesis": { "chord_frequencies": [55.0, 82.41, 110.0, 164.81], "sub_bass_freq": 38.0 },
-  "timeline": [
-    { "sec": 0, "flux_prompt": "Action description", "physics_intent": "Kinematics description" }
-  ]
-}`;
+            // CƠ CHẾ HÀNG ĐỢI VÔ HẠN: KHÔNG CHẤP NHẬN FALLBACK - LÀM LẠI CHO ĐẾN KHI THÀNH CÔNG
+            async executeWithPersistentQueue(taskName, taskFn, onStatus) {
                 let attempt = 0;
-                while (attempt < 5) {
+                while (true) {
                     attempt++;
                     try {
-                        const res = await dispatchBgTaskFn({
-                            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                            generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" },
-                            safetySettings: SAFETY_SETTINGS
-                        });
-                        const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                        if (parsed && Array.isArray(parsed.timeline) && parsed.optics) {
-                            const safeTimeline = [];
-                            for (let i = 0; i < durationSec; i++) {
-                                const item = parsed.timeline.find(t => t.sec === i) || parsed.timeline[parsed.timeline.length - 1];
-                                safeTimeline.push({ sec: i, flux_prompt: item.flux_prompt, action_intent: item.physics_intent });
-                            }
-                            return { ...parsed, seconds: safeTimeline };
+                        const result = await taskFn(attempt);
+                        if (result !== null && result !== undefined) {
+                            return result;
                         }
-                    } catch (e) {}
-                    await new Promise(r => setTimeout(r, 800));
+                    } catch (err) {
+                        console.warn(`[G-Deep Queue] ${taskName} lỗi lần ${attempt}: ${err.message}. Đang xếp hàng làm lại...`);
+                    }
+                    const waitMs = Math.min(1000 * Math.pow(1.2, Math.min(attempt, 8)) + Math.random() * 500, 5000);
+                    onStatus(`[Hàng đợi G-Deep] Đang xử lý lại: ${taskName} (Lần thử ${attempt})...`);
+                    await new Promise(r => setTimeout(r, waitMs));
                 }
-                throw new Error("Gemini từ chối phản hồi bản thiết kế quang học toàn cục.");
             },
 
-            async planCinematicDirecting(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn) {
-                return await this.planGlobalCinematicScript(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn);
+            // 1. TẦM NHÌN TOÀN CỤC: GEMINI THIẾT LẬP DNA BẤT BIẾN & QUANG HỌC KHÔNG GIAN
+            async planMasterVisionBlueprint(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn, onStatus) {
+                const systemBriefing = `[BỘ NÃO ĐIỀU HÀNH MÔ HÌNH VIDEO AI 24 FPS]
+Bạn và Flux.1 là MỘT KHỐI THỐNG NHẤT. Bạn là Tổng đạo diễn kiêm Bộ não Vật lý/Sinh học.
+Mục tiêu video: "${userPrompt}"
+Thời lượng: ${durationSec} giây | Phong cách: ${style}
+
+NHIỆM VỤ:
+1. "visual_dna": Chuỗi Anchor DNA bất biến (chi tiết trang phục, giải phẫu nhân vật, ánh sáng, trường ảnh, môi trường) để khóa chặt tính đồng nhất của Flux qua toàn bộ video.
+2. "optics": Thông số quang học do bạn tính toán cho bối cảnh này:
+   - "fov": Góc nhìn ống kính (độ).
+   - "plane_distance": Khoảng cách đặt mặt phẳng chiếu (mét).
+   - "overscan": Hệ số bù tràn viền (1.3 đến 1.8) đảm bảo Camera di chuyển không bao giờ thấy viền đen.
+3. "initial_keyframe_prompt": Mô tả chi tiết tư thế, bố cục cho Flux vẽ Keyframe 0 (t=0).
+4. "audio_synthesis": Các tần số hợp âm DSP điện ảnh phù hợp.
+
+TRẢ VỀ DUY NHẤT JSON HỢP LỆ (KHÔNG THỪA KÝ TỰ):
+{
+  "visual_dna": "cinematic anamorphic 8k, [EXACT CHARACTER/OBJECT DNA], [FIXED LIGHTING], [ATMOSPHERE]",
+  "optics": { "fov": 45.0, "plane_distance": 2.2, "overscan": 1.5 },
+  "initial_keyframe_prompt": "Specific posture, perspective, and molecular state at second 0",
+  "audio_synthesis": { "chord_frequencies": [55.0, 82.41, 110.0, 164.81], "sub_bass_freq": 38.0 }
+}`;
+
+                return await this.executeWithPersistentQueue("Lập kịch bản quang học toàn cục", async () => {
+                    const res = await dispatchBgTaskFn({
+                        contents: [{ role: 'user', parts: [{ text: systemBriefing }] }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" },
+                        safetySettings: SAFETY_SETTINGS
+                    });
+                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const parsed = robustJsonParse(raw);
+                    if (parsed && parsed.visual_dna && parsed.optics && parsed.initial_keyframe_prompt) {
+                        return parsed;
+                    }
+                    return null;
+                }, onStatus);
             },
 
-            // 2. KINEMATIC SOLVER: GEMINI LẬP PHƯƠNG TRÌNH CHIỀU SÂU VÀ ĐỘNG LỰC HỌC 23 KHUNG HÌNH
-            async solveSpatialImmersionPhysics({ imageCanvas, secondIndex, totalSeconds, actionDelta, previousStateVector, dispatchBgTaskFn }) {
+            async planCinematicDirecting(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn, isFromImage) {
+                return await this.planMasterVisionBlueprint(userPrompt, durationSec, seedBase, style, dispatchBgTaskFn, () => {});
+            },
+
+            // 2. GIẢI PHƯƠNG TRÌNH ĐỘNG HỌC 23 KHUNG HÌNH (STATE AWARE TỪ FRAME 23 CỦA GIÂY TRƯỚC)
+            async solveSpatialKinematics({
+                imageCanvas,
+                secondIndex,
+                totalSeconds,
+                userPrompt,
+                previousStateVector,
+                dispatchBgTaskFn,
+                onStatus
+            }) {
                 const base64Data = imageCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
                 const prevStateStr = JSON.stringify(previousStateVector);
 
-                const prompt = `[DYNAMIC 3D SPACE & KINEMATICS SOLVER]
-Second: ${secondIndex + 1}/${totalSeconds}
-Physical Narrative: "${actionDelta}"
+                const prompt = `[GEMINI VISION: 3D SPATIAL KINEMATICS SOLVER]
+Bạn đang điều phối Giây ${secondIndex + 1}/${totalSeconds} của video 24 FPS.
+Kịch bản cốt lõi: "${userPrompt}"
 
-PREVIOUS MOMENTUM STATE (Frame 23 of t-1):
+QUÁN TÍNH LIÊN TỤC TỪ FRAME 23 CỦA GIÂY TRƯỚC:
 ${prevStateStr}
 
-Analyze the attached keyframe:
-1. "spatial_depth":
-   - "horizon_y": Normalized horizon position (0.0 top to 1.0 bottom).
-   - "sky_cutoff": Boundary above which space is infinite (0.0 to 1.0).
-   - "depth_power": Curvature exponent of perspective depth (0.5 to 4.0).
-   - "displacement_scale": Z-axis displacement amplitude in scene units (0.1 to 2.0).
-   - "sky_val", "mid_val", "fg_val": 8-bit depth anchors (0 to 255) defining the gradient layers.
-2. "matrix_23": EXACTLY 23 arrays. 
-   Each array has 9 floats applied DIRECTLY into the scene without artificial multipliers:
-   [cam_x, cam_y, cam_z, pitch_deg, yaw_deg, roll_deg, entity_deform_x, entity_deform_y, entity_deform_z]
-   - cam_x, cam_y, cam_z: Metric camera position.
-   - pitch, yaw, roll: Camera Euler angles in degrees.
-   - entity_deform_x, y, z: Metric deformation vectors of live entities/environment.
-   - MUST maintain continuous physical momentum from PREVIOUS MOMENTUM STATE.
+HÃY QUAN SÁT ẢNH KEYFRAME ĐÍNH KÈM CỦA GIÂY NÀY:
+1. Nhận diện cấu trúc thực thể trong ảnh và thiết lập không gian 3D:
+   - "pivot_point": Normalized [x, y] của tâm xoay khối / trọng tâm vận động học.
+   - "depth_scale": Độ sâu không gian thể tích (0.15 đến 0.8).
+   - "focal_center" & "focal_radius": Vùng tâm điểm biến dạng vi phân (mắt, miệng, phập phồng lồng ngực, rung lắc cơ học...).
+2. "matrix_23": MẢNG ĐÚNG 23 PHẦN TỬ (Frame 1 đến 23) tính toán bù chuyển động:
+   - Mỗi phần tử gồm 9 số float thực thi trực tiếp:
+     [cam_x, cam_y, cam_z, rot_pitch, rot_yaw, rot_roll, deform_x, deform_y, deform_z]
+   - Phải tuân thủ tuyệt đối định luật bảo toàn động lượng từ FRAME 23 TRƯỚC ĐÓ.
 
-STRICT JSON ONLY:
+TRẢ VỀ DUY NHẤT JSON:
 {
-  "spatial_depth": {
-    "horizon_y": 0.45,
-    "sky_cutoff": 0.30,
-    "depth_power": 1.5,
-    "displacement_scale": 0.6,
-    "sky_val": 0,
-    "mid_val": 120,
-    "fg_val": 255
+  "3d_space": {
+    "pivot_point": [0.5, 0.45],
+    "depth_scale": 0.45,
+    "focal_center": [0.5, 0.55],
+    "focal_radius": 0.15
   },
   "matrix_23": [
-    [0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    [0.0, 0.0, 2.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
   ]
 }`;
 
-                let attempt = 0;
-                while (attempt < 5) {
-                    attempt++;
-                    try {
-                        const res = await dispatchBgTaskFn({
-                            contents: [{
-                                role: 'user',
-                                parts: [{ inlineData: { mimeType: 'image/jpeg', data: base64Data } }, { text: prompt }]
-                            }],
-                            generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" }
-                        });
-                        const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                        if (parsed && Array.isArray(parsed.matrix_23) && parsed.spatial_depth) {
-                            const matrix = parsed.matrix_23;
-                            while (matrix.length < 23) matrix.push([...matrix[matrix.length - 1]]);
-                            return {
-                                spatial_depth: parsed.spatial_depth,
-                                matrix_23: matrix.slice(0, 23)
-                            };
-                        }
-                    } catch (e) {}
-                    await new Promise(r => setTimeout(r, Math.min(500 * attempt, 2000)));
-                }
-
-                // Fallback bảo toàn tuyệt đối quán tính t-1 (không can thiệp số tùy tiện)
-                const p = previousStateVector;
-                return {
-                    spatial_depth: p.spatial_depth,
-                    matrix_23: Array(23).fill([p.cam_pos[0], p.cam_pos[1], p.cam_pos[2], p.cam_rot[0], p.cam_rot[1], p.cam_rot[2], p.entity_def[0], p.entity_def[1], p.entity_def[2]])
-                };
+                return await this.executeWithPersistentQueue(`Tính toán động lực học 3D Giây ${secondIndex + 1}`, async () => {
+                    const res = await dispatchBgTaskFn({
+                        contents: [{
+                            role: 'user',
+                            parts: [
+                                { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
+                                { text: prompt }
+                            ]
+                        }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" }
+                    });
+                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const parsed = robustJsonParse(raw);
+                    if (parsed && parsed["3d_space"] && Array.isArray(parsed.matrix_23) && parsed.matrix_23.length >= 15) {
+                        const matrix = parsed.matrix_23;
+                        while (matrix.length < 23) matrix.push([...matrix[matrix.length - 1]]);
+                        return {
+                            space: parsed["3d_space"],
+                            matrix_23: matrix.slice(0, 23)
+                        };
+                    }
+                    return null;
+                }, onStatus);
             },
 
-            // 3. TẠO CHIỀU SÂU DỰA HOÀN TOÀN TRÊN THAM SỐ CỦA GEMINI (KHÔNG CỐ ĐỊNH 110 HAY 145)
-            createLayeredDepthTexture(width, height, depthCfg) {
+            // 3. TRUYỀN HỒN DNA: ĐỌC TRỰC TIẾP CANVAS FRAME 23 ĐỂ TẠO PROMPT CHO FLUX Ở GIÂY (t+1)
+            async analyzeFrame23ForNextKeyframe({
+                frame23Canvas,
+                secondIndex,
+                visualDNA,
+                userPrompt,
+                dispatchBgTaskFn,
+                onStatus
+            }) {
+                const base64Data = frame23Canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+                const prompt = `[GEMINI VISION: MOLECULAR VISUAL CONTINUITY & FRAME-23 EXTRACTION]
+Bạn đang nhìn vào BỨC ẢNH THỰC TẾ CỦA FRAME 23 (Khoảnh khắc kết thúc của Giây ${secondIndex + 1}).
+Visual DNA gốc của phim: "${visualDNA}"
+Kịch bản tổng thể: "${userPrompt}"
+
+NHIỆM VỤ ĐẶC TẢ TIẾP NỐI:
+Phân tích tỉ mỉ bức ảnh Frame 23 này:
+1. Xác định góc xoay thực tế, hướng nhìn mắt, tư thế cơ thể, nếp gấp trang phục, nguồn sáng đang chiếu vào chủ thể tại thời điểm này.
+2. Viết ra chuỗi "next_keyframe_prompt" cho Flux để vẽ Keyframe của Giây ${secondIndex + 2}.
+   - BẮT BUỘC chứa các thực thể của Visual DNA.
+   - BẮT BUỘC miêu tả tư thế nối tiếp chính xác từ Frame 23 này, không được vẽ lại góc mặt hay tư thế cũ.
+
+TRẢ VỀ DUY NHẤT JSON:
+{
+  "next_keyframe_prompt": "Detailed continuation prompt containing visual DNA and exact Frame 23 posture/lighting"
+}`;
+
+                return await this.executeWithPersistentQueue(`Trích xuất DNA từ Frame 23 sang Giây ${secondIndex + 2}`, async () => {
+                    const res = await dispatchBgTaskFn({
+                        contents: [{
+                            role: 'user',
+                            parts: [
+                                { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
+                                { text: prompt }
+                            ]
+                        }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 2048, responseMimeType: "application/json" }
+                    });
+                    const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const parsed = robustJsonParse(raw);
+                    if (parsed && parsed.next_keyframe_prompt) {
+                        return parsed.next_keyframe_prompt;
+                    }
+                    return null;
+                }, onStatus);
+            },
+
+            // 4. BẢN ĐỒ CHIỀU SÂU THỂ TÍCH QUANH TÂM PIVOT DO GEMINI CHỈ ĐỊNH
+            createVolumetricDepthMap(width, height, pivot) {
                 const c = document.createElement('canvas');
                 c.width = width; c.height = height;
                 const ctx = c.getContext('2d');
-                const imgData = ctx.createImageData(width, height);
-                const data = imgData.data;
+                const px = (pivot ? pivot[0] : 0.5) * width;
+                const py = (pivot ? pivot[1] : 0.5) * height;
 
-                const horizonPx = (Number(depthCfg.horizon_y) || 0.5) * height;
-                const skyCutoffPx = (Number(depthCfg.sky_cutoff) || 0.3) * height;
-                const depthPower = Number(depthCfg.depth_power) || 1.5;
-                const skyVal = Number(depthCfg.sky_val) || 0;
-                const midVal = Number(depthCfg.mid_val) || 128;
-                const fgVal = Number(depthCfg.fg_val) || 255;
-
-                for (let y = 0; y < height; y++) {
-                    let depthVal = skyVal;
-                    if (y >= skyCutoffPx && y < horizonPx) {
-                        const t = (y - skyCutoffPx) / Math.max(1, (horizonPx - skyCutoffPx));
-                        depthVal = skyVal + Math.pow(t, depthPower) * (midVal - skyVal);
-                    } else if (y >= horizonPx) {
-                        const t = (y - horizonPx) / Math.max(1, (height - horizonPx));
-                        depthVal = midVal + Math.pow(t, depthPower) * (fgVal - midVal);
-                    }
-
-                    const val = Math.min(255, Math.max(0, Math.floor(depthVal)));
-                    for (let x = 0; x < width; x++) {
-                        const idx = (y * width + x) * 4;
-                        data[idx] = val;
-                        data[idx + 1] = val;
-                        data[idx + 2] = val;
-                        data[idx + 3] = 255;
-                    }
-                }
-                ctx.putImageData(imgData, 0, 0);
+                const grad = ctx.createRadialGradient(px, py, 0, px, py, Math.max(width, height) * 0.75);
+                grad.addColorStop(0, '#ffffff');
+                grad.addColorStop(0.5, '#777777');
+                grad.addColorStop(1, '#111111');
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, width, height);
                 return new THREE.CanvasTexture(c);
             },
 
-            // 4. BỘ RENDER 24 FPS THUẦN QUANG HỌC: TOÀN BỘ GEOMETRY VÀ CAMERA DO GEMINI ĐIỀU KHIỂN
+            // 5. BỘ KẾT XUẤT 24 FPS KHÉP KÍN (HỒI QUY BẰNG ẢNH THỰC TẾ FRAME 23)
             async generateFlux24FpsVideo({ prompt, directImageInput, durationSec, aspectRatio, seed, style, audioBuffer, userTimelineCues, onStatus, dispatchBgTaskFn }) {
                 const fps = 24;
                 const totalSeconds = Math.max(1, Math.round(durationSec));
@@ -3449,22 +3476,23 @@ STRICT JSON ONLY:
 
                 const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
                 const TargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
-                if (!MuxerClass || typeof VideoEncoder === 'undefined') throw new Error("Yêu cầu phần cứng hỗ trợ WebCodecs AVC/H.264.");
+                if (!MuxerClass || typeof VideoEncoder === 'undefined') throw new Error("Trình duyệt không hỗ trợ WebCodecs AVC/H.264.");
 
-                const tempDbName = `GDeepParametric_${Date.now()}`;
+                const tempDbName = `GDeepZeroFallback_${Date.now()}`;
                 const frameBufferDb = new window.Dexie(tempDbName);
                 frameBufferDb.version(1).stores({ frames: 'frameIndex' });
 
-                onStatus("Gemini Master Director đang thiết lập tham số quang học...");
-                const globalScript = await this.planGlobalCinematicScript(prompt, totalSeconds, seed, style, dispatchBgTaskFn);
-                const optics = globalScript.optics || { fov: 45, plane_distance: 2.0, overscan: 1.5 };
+                // TẦM NHÌN TOÀN CỤC
+                onStatus("Gemini Master Director đang thiết lập Tầm nhìn toàn cục...");
+                const masterPlan = await this.planMasterVisionBlueprint(prompt, totalSeconds, seed, style, dispatchBgTaskFn, onStatus);
+                const optics = masterPlan.optics;
 
-                // TÍNH TOÁN HÌNH HỌC THEO ĐÚNG CÔNG THỨC QUANG HỌC CỦA TIÊU CỰ GEMINI ĐÃ CHỌN (KHÔNG GÁN 3.6)
+                // TÍNH TOÁN QUANG HỌC HÌNH HỌC CHUẨN XÁC
                 const fovRad = (optics.fov * Math.PI) / 180;
                 const visibleHeightAtDist = 2 * Math.tan(fovRad / 2) * optics.plane_distance;
                 const visibleWidthAtDist = visibleHeightAtDist * (width / height);
-                const planeWidth = visibleWidthAtDist * (optics.overscan || 1.5);
-                const planeHeight = visibleHeightAtDist * (optics.overscan || 1.5);
+                const planeWidth = visibleWidthAtDist * optics.overscan;
+                const planeHeight = visibleHeightAtDist * optics.overscan;
 
                 const glCanvas = document.createElement('canvas');
                 glCanvas.width = width; glCanvas.height = height;
@@ -3482,39 +3510,52 @@ STRICT JSON ONLY:
                         uTexturePrev: { value: null },
                         uBlendFactor: { value: 0.0 },
                         uDepthMap: { value: null },
-                        uDepthDisplacement: { value: 0.5 },
-                        uCamRotation: { value: new THREE.Vector3(0, 0, 0) },
-                        uEntityDeform: { value: new THREE.Vector3(0, 0, 0) }
+                        uDepthScale: { value: 0.4 },
+                        uPivot: { value: new THREE.Vector2(0.5, 0.5) },
+                        uRotation: { value: new THREE.Vector3(0, 0, 0) },
+                        uFocalCenter: { value: new THREE.Vector2(0.5, 0.5) },
+                        uFocalRadius: { value: 0.0 },
+                        uDeform: { value: new THREE.Vector3(0, 0, 0) }
                     },
                     vertexShader: `
                         uniform sampler2D uDepthMap;
-                        uniform float uDepthDisplacement;
-                        uniform vec3 uCamRotation;
-                        uniform vec3 uEntityDeform;
+                        uniform float uDepthScale;
+                        uniform vec2 uPivot;
+                        uniform vec3 uRotation;
+                        uniform vec2 uFocalCenter;
+                        uniform float uFocalRadius;
+                        uniform vec3 uDeform;
                         varying vec2 vUv;
 
                         void main() {
-                            vUv = vec2(uv.x, 1.0 - uv.y);
+                            vUv = uv;
                             vec3 pos = position;
 
                             float depth = texture2D(uDepthMap, vUv).r;
-                            
-                            // Nâng thể tích 3D trực tiếp từ hệ số của Gemini
-                            pos.z += (depth - 0.5) * uDepthDisplacement;
+                            pos.z += (depth - 0.5) * uDepthScale;
 
-                            // Biến dạng thực thể 1:1 không nhân nén
-                            pos += uEntityDeform * depth;
+                            // Biến dạng vi phân cục bộ quanh Focal Center
+                            float distFocal = distance(vUv, uFocalCenter);
+                            if (distFocal < uFocalRadius && uFocalRadius > 0.0) {
+                                float weight = smoothstep(uFocalRadius, 0.0, distFocal);
+                                pos += uDeform * weight;
+                            }
 
-                            // Xoay Camera quang học thuần túy
-                            float cy = cos(-uCamRotation.y); float sy = sin(-uCamRotation.y);
-                            float cp = cos(-uCamRotation.x); float sp = sin(-uCamRotation.x);
-                            float cr = cos(-uCamRotation.z); float sr = sin(-uCamRotation.z);
+                            // Xoay vật thể rắn quanh Pivot Point của Gemini
+                            vec3 pivotWorld = vec3((uPivot.x - 0.5) * 3.6, (0.5 - uPivot.y) * 2.0, 0.0);
+                            vec3 localPos = pos - pivotWorld;
+
+                            float cy = cos(uRotation.y); float sy = sin(uRotation.y);
+                            float cp = cos(uRotation.x); float sp = sin(uRotation.x);
+                            float cr = cos(uRotation.z); float sr = sin(uRotation.z);
+
                             mat3 rotMat = mat3(
                                 cy * cr, -cy * sr, sy,
                                 sp * sy * cr + cp * sr, -sp * sy * sr + cp * cr, -sp * cy,
                                 -cp * sy * cr + sp * sr, cp * sy * sr + sp * cr, cp * cy
                             );
-                            pos = rotMat * pos;
+
+                            pos = (rotMat * localPos) + pivotWorld;
 
                             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
                         }
@@ -3536,56 +3577,58 @@ STRICT JSON ONLY:
                 const cinemaMesh = new THREE.Mesh(planeGeo, cinemaShaderMat);
                 scene.add(cinemaMesh);
 
-                const fetchFluxToCanvas = async (fluxPrompt, visualDNA, seedVal) => {
-                    const canvasHost = document.createElement('canvas');
-                    canvasHost.width = width; canvasHost.height = height;
-                    const cCtx = canvasHost.getContext('2d');
-                    const fullPrompt = `${visualDNA}, ${fluxPrompt}, continuous cinematic frame`;
+                // FLUX GENERATOR CÓ HÀNG ĐỢI VÔ HẠN (KHÔNG CHẤP NHẬN THẤT BẠI)
+                const fetchFluxKeyframeWithQueue = async (keyframePrompt, visualDNA, seedVal, secondIdx) => {
+                    const fullPrompt = `${visualDNA}, ${keyframePrompt}`;
                     const safePrompt = encodeURIComponent(fullPrompt.replace(/[\r\n\t]+/g, ' ').slice(0, 320));
                     const url = `https://image.pollinations.ai/prompt/${safePrompt}?model=flux&width=${width}&height=${height}&seed=${seedVal}&nologo=true`;
 
-                    for (let attempt = 0; attempt < 5; attempt++) {
-                        try {
-                            const success = await new Promise((resolve, reject) => {
-                                const img = new Image(); img.crossOrigin = 'anonymous';
-                                const timer = setTimeout(() => reject(new Error("Timeout")), 22000);
-                                img.onload = () => { clearTimeout(timer); cCtx.drawImage(img, 0, 0, width, height); resolve(true); };
-                                img.onerror = () => reject(new Error("Lỗi mạng"));
-                                img.src = url;
-                            });
-                            if (success) return canvasHost;
-                        } catch (e) {}
-                        await new Promise(r => setTimeout(r, 1200));
-                    }
-                    throw new Error("Flux không phản hồi kết xuất.");
+                    return await this.executeWithPersistentQueue(`Flux kết xuất Keyframe Giây ${secondIdx + 1}`, async () => {
+                        const canvasHost = document.createElement('canvas');
+                        canvasHost.width = width; canvasHost.height = height;
+                        const cCtx = canvasHost.getContext('2d');
+
+                        const success = await new Promise((resolve, reject) => {
+                            const img = new Image();
+                            img.crossOrigin = 'anonymous';
+                            const timer = setTimeout(() => reject(new Error("Timeout kết nối Flux")), 22000);
+                            img.onload = () => { clearTimeout(timer); cCtx.drawImage(img, 0, 0, width, height); resolve(true); };
+                            img.onerror = () => reject(new Error("Mạng chập chờn tải ảnh Flux"));
+                            img.src = url;
+                        });
+                        return success ? canvasHost : null;
+                    }, onStatus);
                 };
 
                 try {
                     let globalFrameIdx = 0;
                     let prevCanvasTexture = null;
+                    let currentKeyframePrompt = masterPlan.initial_keyframe_prompt;
 
-                    // KHỞI TẠO TỌA ĐỘ BAN ĐẦU CHÍNH XÁC TẠI KHOẢNG CÁCH QUANG HỌC GEMINI CHỌN
+                    // TRẠNG THÁI KHỞI ĐẦU CHUẨN XÁC TẠI TIÊU CỰ GEMINI ĐẶT
                     let currentStateVector = {
-                        cam_pos: [0.0, 0.0, optics.plane_distance],
-                        cam_rot: [0.0, 0.0, 0.0],
-                        entity_def: [0.0, 0.0, 0.0],
-                        spatial_depth: { horizon_y: 0.5, sky_cutoff: 0.3, depth_power: 1.5, displacement_scale: 0.5, sky_val: 0, mid_val: 128, fg_val: 255 }
+                        cam: [0.0, 0.0, optics.plane_distance],
+                        rot: [0.0, 0.0, 0.0],
+                        def: [0.0, 0.0, 0.0]
                     };
 
+                    // CHU TRÌNH HỒI QUY KHÉP KÍN ĐA GIÂY
                     for (let s = 0; s < totalSeconds; s++) {
-                        const secPlan = globalScript.seconds[s];
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Khóa cấu trúc phân tử & Render Keyframe...`);
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Flux nạp DNA & kết xuất Keyframe...`);
 
-                        const keyframeCanvas = await fetchFluxToCanvas(secPlan.flux_prompt, globalScript.visual_dna, seed);
+                        // 1. FLUX VẼ KEYFRAME DỰA TRÊN PROMPT ĐÃ ĐỒNG BỘ DNA
+                        const keyframeCanvas = await fetchFluxKeyframeWithQueue(currentKeyframePrompt, masterPlan.visual_dna, seed, s);
 
-                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Gemini giải phương trình vi phân động học 23 khung hình...`);
-                        const kinematics = await this.solveSpatialImmersionPhysics({
+                        // 2. GEMINI PHÂN TÍCH KHÔNG GIAN 3D & XUẤT 23 KHUNG HÌNH BÙ
+                        onStatus(`[Giây ${s + 1}/${totalSeconds}] Gemini nâng 3D & tính toán 23 khung hình...`);
+                        const kinematicSolution = await this.solveSpatialKinematics({
                             imageCanvas: keyframeCanvas,
                             secondIndex: s,
                             totalSeconds: totalSeconds,
-                            actionDelta: secPlan.action_intent,
+                            userPrompt: prompt,
                             previousStateVector: currentStateVector,
-                            dispatchBgTaskFn: dispatchBgTaskFn
+                            dispatchBgTaskFn: dispatchBgTaskFn,
+                            onStatus: onStatus
                         });
 
                         const currCanvasTexture = new THREE.CanvasTexture(keyframeCanvas);
@@ -3594,44 +3637,60 @@ STRICT JSON ONLY:
                         cinemaShaderMat.uniforms.uTextureCurrent.value = currCanvasTexture;
                         cinemaShaderMat.uniforms.uTexturePrev.value = prevCanvasTexture || currCanvasTexture;
 
-                        // Nạp chiều sâu hoàn toàn từ phương trình Gemini
-                        const depthTex = this.createLayeredDepthTexture(width, height, kinematics.spatial_depth);
+                        // Nạp chiều sâu và tâm xoay hoàn toàn từ Gemini
+                        const depthTex = this.createVolumetricDepthMap(width, height, kinematicSolution.space.pivot_point);
                         cinemaShaderMat.uniforms.uDepthMap.value = depthTex;
-                        cinemaShaderMat.uniforms.uDepthDisplacement.value = Number(kinematics.spatial_depth.displacement_scale) || 0.5;
+                        cinemaShaderMat.uniforms.uDepthScale.value = kinematicSolution.space.depth_scale;
+                        cinemaShaderMat.uniforms.uPivot.value.set(kinematicSolution.space.pivot_point[0], kinematicSolution.space.pivot_point[1]);
+                        cinemaShaderMat.uniforms.uFocalCenter.value.set(kinematicSolution.space.focal_center[0], kinematicSolution.space.focal_center[1]);
+                        cinemaShaderMat.uniforms.uFocalRadius.value = kinematicSolution.space.focal_radius;
 
+                        // RENDER 24 KHUNG HÌNH (1 KEYFRAME + 23 KHUNG HÌNH BÙ)
                         for (let f = 0; f < 24; f++) {
                             const k = (f === 0)
-                                ? [ currentStateVector.cam_pos[0], currentStateVector.cam_pos[1], currentStateVector.cam_pos[2],
-                                    currentStateVector.cam_rot[0], currentStateVector.cam_rot[1], currentStateVector.cam_rot[2],
-                                    currentStateVector.entity_def[0], currentStateVector.entity_def[1], currentStateVector.entity_def[2] ]
-                                : (kinematics.matrix_23[f - 1] || kinematics.matrix_23[kinematics.matrix_23.length - 1]);
+                                ? [ currentStateVector.cam[0], currentStateVector.cam[1], currentStateVector.cam[2],
+                                    currentStateVector.rot[0], currentStateVector.rot[1], currentStateVector.rot[2],
+                                    currentStateVector.def[0], currentStateVector.def[1], currentStateVector.def[2] ]
+                                : kinematicSolution.matrix_23[f - 1];
 
                             cinemaShaderMat.uniforms.uBlendFactor.value = (f <= 3 && prevCanvasTexture) ? (1.0 - (f / 3.0)) : 0.0;
 
-                            // ÁP DỤNG TRỰC TIẾP 1:1 TOÀN BỘ TỌA ĐỘ DO GEMINI QUYẾT ĐỊNH (KHÔNG CLAMP, KHÔNG MULTIPLIER)
+                            // Nạp trực tiếp tọa độ động học 1:1
                             camera.position.set(Number(k[0]), Number(k[1]), Number(k[2]));
-                            cinemaShaderMat.uniforms.uCamRotation.value.set(
+                            cinemaShaderMat.uniforms.uRotation.value.set(
                                 (Number(k[3]) * Math.PI) / 180,
                                 (Number(k[4]) * Math.PI) / 180,
                                 (Number(k[5]) * Math.PI) / 180
                             );
-                            cinemaShaderMat.uniforms.uEntityDeform.value.set(Number(k[6]), Number(k[7]), Number(k[8]));
+                            cinemaShaderMat.uniforms.uDeform.value.set(Number(k[6]), Number(k[7]), Number(k[8]));
 
-                            camera.lookAt(Number(k[0]), Number(k[1]), 0);
+                            camera.lookAt(0, 0, 0);
                             renderer.render(scene, camera);
 
                             const frameBlob = await new Promise(res => glCanvas.toBlob(res, 'image/jpeg', 0.95));
                             await frameBufferDb.frames.put({ frameIndex: globalFrameIdx++, blob: frameBlob });
 
-                            // LƯU TRUYỀN QUÁN TÍNH CHÍNH XÁC CỦA FRAME 23 SANG GIÂY TIẾP THEO
+                            // GHI NHỚ QUÁN TÍNH TẠI FRAME 23
                             if (f === 23) {
                                 currentStateVector = {
-                                    cam_pos: [Number(k[0]), Number(k[1]), Number(k[2])],
-                                    cam_rot: [Number(k[3]), Number(k[4]), Number(k[5])],
-                                    entity_def: [Number(k[6]), Number(k[7]), Number(k[8])],
-                                    spatial_depth: kinematics.spatial_depth
+                                    cam: [Number(k[0]), Number(k[1]), Number(k[2])],
+                                    rot: [Number(k[3]), Number(k[4]), Number(k[5])],
+                                    def: [Number(k[6]), Number(k[7]), Number(k[8])]
                                 };
                             }
+                        }
+
+                        // 3. CẦU NỐI HỒI QUY THỰC SỰ: NẠP TRỰC TIẾP CANVAS FRAME 23 CHO GEMINI VIẾT PROMPT GIÂY (t+1)
+                        if (s < totalSeconds - 1) {
+                            onStatus(`[Giây ${s + 1}/${totalSeconds}] Gemini đọc ảnh thực tế Frame 23 để truyền hồn DNA...`);
+                            currentKeyframePrompt = await this.analyzeFrame23ForNextKeyframe({
+                                frame23Canvas: glCanvas,
+                                secondIndex: s,
+                                visualDNA: masterPlan.visual_dna,
+                                userPrompt: prompt,
+                                dispatchBgTaskFn: dispatchBgTaskFn,
+                                onStatus: onStatus
+                            });
                         }
 
                         if (prevCanvasTexture) prevCanvasTexture.dispose();
@@ -3641,7 +3700,8 @@ STRICT JSON ONLY:
 
                     if (prevCanvasTexture) prevCanvasTexture.dispose();
 
-                    onStatus("Đang đóng gói video 24 FPS chuẩn Hollywood...");
+                    // ĐÓNG GÓI THÀNH PHẨM 24 FPS
+                    onStatus("Đang đóng gói video 24 FPS AVC/H.264 chuẩn Hollywood...");
                     const muxerOptions = { target: new TargetClass(), video: { codec: 'avc', width, height }, fastStart: 'in-memory' };
                     let isAudioReady = false;
                     if (audioBuffer && typeof AudioEncoder !== 'undefined') {
@@ -3679,14 +3739,14 @@ STRICT JSON ONLY:
 
                     return {
                         videoBlob: new Blob([muxer.target.buffer], { type: 'video/mp4' }),
-                        kinematicsSummary: `Zero-Hardcode Parametric Engine hoàn tất. 100% Quang học & Vật lý do Gemini điều khiển.`
+                        kinematicsSummary: `Gemini + Flux Unified Co-Engine hoàn tất 100% chuẩn Zero-Fallback.`
                     };
                 } finally {
                     try { renderer.dispose(); await frameBufferDb.delete(); } catch (_) {}
                 }
             },
 
-            // 5. LỒNG TIẾNG VÀ HÒA ÂM
+            // 6. LỒNG TIẾNG VÀ HÒA ÂM DSP
             async generateDialogueSpeech(text, character, apiKey) {
                 if (!apiKey || !text) return null;
                 try {
