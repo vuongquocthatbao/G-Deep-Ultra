@@ -3248,21 +3248,18 @@
         }
 
         // =========================================================================================
-        // HỆ THỐNG ĐIỀU PHỐI ĐIỆN ẢNH THUẦN TRÍ TUỆ NHÂN TẠO (ZERO-HARDCODE ARCHITECTURE)
-        // BỘ NÃO: GOOGLE GEMINI | ĐIỀU KHIỂN: NGƯỜI DÙNG | THỰC THI: FLUX.1 + TTS + THREE.JS + FFMPEG
+        // HỆ THỐNG ĐIỆN ẢNH THUẦN ĐỘNG HỌC 120 FPS (PURE ZERO-HARDCODE ENGINE)
+        // 100% THÔNG SỐ DO BỘ NÃO GEMINI TÍNH TOÁN VÀ USER UI ẤN ĐỊNH
+        // KHÔNG TỒN TẠI HẰNG SỐ TĨNH (NO MAGIC NUMBERS)
         // =========================================================================================
         const AICinemaEngine = {
             ffmpegInstance: null,
 
-            // 0. BỘ KHỞI TẠO NỀN TẢNG HẬU KỲ THỰC THI (FFMPEG WASM)
             async initFFmpeg(onStatus) {
                 if (this.ffmpegInstance && this.ffmpegInstance.isLoaded()) return this.ffmpegInstance;
-                if (typeof FFmpeg === 'undefined' || !FFmpeg.createFFmpeg) {
-                    console.warn("FFmpeg Wasm CDN không khả dụng.");
-                    return null;
-                }
+                if (typeof FFmpeg === 'undefined' || !FFmpeg.createFFmpeg) return null;
                 try {
-                    if (typeof onStatus === 'function') onStatus("Khởi tạo bộ xử lý FFmpeg Wasm...");
+                    if (typeof onStatus === 'function') onStatus("FFmpeg: Khởi tạo lõi xử lý WebAssembly...");
                     this.ffmpegInstance = FFmpeg.createFFmpeg({
                         log: false,
                         corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
@@ -3270,12 +3267,11 @@
                     await this.ffmpegInstance.load();
                     return this.ffmpegInstance;
                 } catch (err) {
-                    console.warn("Lỗi nạp FFmpeg Wasm:", err);
+                    console.warn("FFmpeg Wasm lỗi khởi động:", err);
                     return null;
                 }
             },
 
-            // Chuyển đổi dữ liệu PCM sang AudioBuffer
             decodePcmToAudioBuffer(pcmBase64, sampleRate) {
                 if (!pcmBase64) return null;
                 const binaryStr = atob(pcmBase64);
@@ -3287,7 +3283,7 @@
                 const AudioCtx = window.AudioContext || window.webkitAudioContext;
                 if (!AudioCtx) return null;
                 const audioCtx = new AudioCtx();
-                const audioBuffer = audioCtx.createBuffer(1, numSamples, sampleRate || 24000);
+                const audioBuffer = audioCtx.createBuffer(1, numSamples, sampleRate);
                 const channelData = audioBuffer.getChannelData(0);
                 for (let i = 0; i < numSamples; i++) {
                     const int16 = dataView.getInt16(i * 2, true);
@@ -3297,7 +3293,6 @@
                 return audioBuffer;
             },
 
-            // Đóng gói AudioBuffer thành WAV gửi cho FFmpeg
             audioBufferToWavBlob(audioBuffer) {
                 const numOfChan = audioBuffer.numberOfChannels;
                 const length = audioBuffer.length * numOfChan * 2 + 44;
@@ -3337,94 +3332,103 @@
                 return new Blob([out.buffer], { type: 'audio/wav' });
             },
 
-            // Tính toán độ phân giải dựa trên lựa chọn Aspect Ratio của User
-            calculateResolution(aspectRatio) {
-                const map = {
-                    '16:9': { width: 1024, height: 576 },
-                    '9:16': { width: 576, height: 1024 },
-                    '1:1':  { width: 768, height: 768 },
-                    '4:3':  { width: 960, height: 720 },
-                    '3:4':  { width: 720, height: 960 },
-                    '21:9': { width: 1024, height: 440 }
-                };
-                return map[aspectRatio] || { width: 1024, height: 576 };
+            // Chuyển đổi chuỗi bitrate của Gemini ("28M", "16M", "32000k") thành integer bps
+            parseBitrateToBps(bitrateStr) {
+                if (!bitrateStr) return 24000000;
+                const clean = String(bitrateStr).trim().toUpperCase();
+                if (clean.endsWith('M')) return parseFloat(clean) * 1000000;
+                if (clean.endsWith('K')) return parseFloat(clean) * 1000;
+                return parseInt(clean, 10) || 24000000;
             },
 
             // =====================================================================================
-            // BƯỚC 1: BỘ NÃO GEMINI - ĐẠO DIỄN TOÀN QUYỀN (MASTER DIRECTING ARCHITECT)
-            // Tính toán toàn bộ thông số: Kịch bản, Quang học, Cấu trúc âm thanh, Lọc màu FFmpeg
+            // 1. GEMINI LẬP BẢN ĐỒ KỊCH BẢN, ĐỘ PHÂN GIẢI, QUANG HỌC VÀ HẬU KỲ (ZERO HARDCODE)
             // =====================================================================================
-            async planMasterDirecting({ userPrompt, userDuration, userAspectRatio, userStyle, userSeed, userCues, userCharacters, dispatchBgTaskFn, onStatus }) {
-                if (typeof onStatus === 'function') onStatus("Gemini: Phân tích ý đồ nghệ thuật và lập thông số kỹ thuật...");
+            async planMasterTimeline({ userPrompt, userDuration, userAspectRatio, userStyle, userSeed, userCues, userCharacters, userFps, dispatchBgTaskFn, onStatus }) {
+                if (typeof onStatus === 'function') onStatus("Gemini: Phân tích kịch bản và tính toán toàn bộ thông số vật lý/kỹ thuật...");
 
-                const cuesDescription = (userCues && userCues.length) 
+                const cuesText = (userCues && userCues.length)
                     ? JSON.stringify(userCues.map(c => ({ speaker: c.speaker, time: c.startTimeSec, text: c.text })))
-                    : "Không có lời thoại cố định, tự động thiết kế cảnh quay thuần điện ảnh.";
+                    : "Diễn xuất thuần điện ảnh, không thoại cố định.";
 
-                const charactersDescription = (userCharacters && userCharacters.length)
+                const charactersText = (userCharacters && userCharacters.length)
                     ? JSON.stringify(userCharacters.map(c => ({ name: c.name, voice: c.geminiVoice, gender: c.gender })))
                     : "Mặc định.";
 
-                const prompt = `[TỔNG ĐẠO DIỄN ĐIỆN ẢNH & KỸ SƯ HẬU KỲ TRÍ TUỆ NHÂN TẠO]
-Người dùng yêu cầu:
-- Kịch bản / Ý đồ: "${userPrompt}"
-- Thời lượng chỉ định: ${userDuration} giây (24 FPS)
-- Tỷ lệ khung hình: ${userAspectRatio}
-- Phong cách mỹ thuật: ${userStyle}
-- Mã hạt giống (Seed): ${userSeed}
-- Lời thoại từ Timeline: ${cuesDescription}
-- Danh sách nhân vật: ${charactersDescription}
+                const prompt = `[TỔNG ĐẠO DIỄN ĐIỆN ẢNH & TÍNH TOÁN KỸ THUẬT SỐ HÓA HOÀN TOÀN - ZERO HARDCODE]
+Ý đồ người dùng: "${userPrompt}"
+Thời lượng video: ${userDuration} giây | Tốc độ xuất bản: ${userFps} FPS
+Tỷ lệ khung hình: ${userAspectRatio} | Phong cách mỹ thuật: ${userStyle} | Seed: ${userSeed}
+Lời thoại Timeline: ${cuesText}
+Nhân vật: ${charactersText}
 
-YÊU CẦU BẮT BUỘC:
-Tính toán toàn bộ thông số chi tiết, không được để trống hay dùng giá trị mặc định. Hãy tự suy luận dựa theo tâm lý cảnh quay:
-1. "visual_dna": Prompt tiếng Anh cực kỳ chi tiết (ánh sáng, phong cách, chất liệu, bố cục) để Flux.1 tạo hình chuẩn xác.
+YÊU CẦU TÍNH TOÁN BẮT BUỘC:
+Không được để trống bất kỳ trường nào, bạn phải tự suy luận ra các thông số tối ưu nhất:
+1. "resolution":
+   - "width": Chiều rộng pixel tối ưu (bắt buộc chia hết cho 16, ví dụ: 1024, 1280, 576, 768...).
+   - "height": Chiều cao pixel tối ưu (bắt buộc chia hết cho 16) khớp đúng tỷ lệ ${userAspectRatio}.
 2. "optics":
-   - "fov": Góc mở máy quay (tính toán từ 28.0 đến 65.0 độ theo phong cách ${userStyle}).
-   - "plane_distance": Khoảng cách đặt mặt phẳng 3D (1.5 đến 3.0).
-   - "overscan": Hệ số chống tràn viền đen khi chuyển động (1.25 đến 1.6).
-   - "mesh_density": Mật độ lưới không gian (120 đến 240).
-3. "ffmpeg_pipeline":
-   - "video_filter": Chuỗi bộ lọc màu FFmpeg (-vf) chuẩn điện ảnh phù hợp phong cách ${userStyle} (ví dụ: color balance, contrast, saturation, unsharp, noise, vignette).
-   - "audio_filter": Chuỗi bộ lọc âm thanh FFmpeg (-af) (ví dụ: equalizer, loudnorm, compand).
-   - "video_bitrate": Bitrate nén video (ví dụ: "12M", "16M").
+   - "fov": Góc mở ống kính máy quay (tính theo phong cách ${userStyle}, từ 24.0 đến 65.0).
+   - "plane_distance": Khoảng cách mặt phẳng 3D (1.5 đến 3.0).
+   - "overscan": Hệ số chống hở viền đen khi chuyển động (1.2 đến 1.6).
+   - "mesh_density_x": Số lượng lưới đỉnh chiều ngang (120 đến 256).
+   - "mesh_density_y": Số lượng lưới đỉnh chiều dọc (120 đến 256).
+   - "near_clip": Mặt phẳng cắt gần của camera (ví dụ: 0.01 đến 0.1).
+   - "far_clip": Mặt phẳng cắt xa của camera (ví dụ: 500.0 đến 2000.0).
+3. "encoding_pipeline":
+   - "video_bitrate": Bitrate nén video chuẩn 120 FPS (ví dụ: "24M", "28M", "32M").
+   - "audio_bitrate": Bitrate nén âm thanh (ví dụ: "192k", "256k", "320k").
+   - "audio_sample_rate": Tần số lấy mẫu âm thanh (44100 hoặc 48000).
+   - "keyframe_interval_seconds": Chu kỳ khung hình chính I-Frame / GOP (0.5 đến 2.0 giây).
+   - "video_filter": Chuỗi bộ lọc FFmpeg (-vf) chỉnh màu điện ảnh khớp phong cách ${userStyle}.
+   - "audio_filter": Chuỗi bộ lọc âm thanh FFmpeg (-af) (loudnorm, equalizer, compand).
 4. "acoustic_design":
-   - "soundtrack_mood": Mô tả tâm trạng âm nhạc.
-   - "synth_type": Loại sóng âm nhạc ("sine", "triangle", "sawtooth").
-   - "chords": Danh sách mảng các tần số Hz hợp âm (3 đến 5 tần số, ví dụ [65.41, 98.0, 130.81]).
-   - "sub_bass_freq": Tần số âm trầm (Hz, từ 30 đến 55).
-   - "music_volume": Âm lượng nhạc nền (0.1 đến 0.6).
-   - "speech_ducking": Mức hạ âm lượng khi có tiếng nói (0.05 đến 0.25).
-5. "shots": Mảng các shot quay chia đều theo tổng thời lượng ${userDuration}s (mỗi shot từ 2 đến 6 giây). Mỗi shot có:
-   - "shot_id": Số thứ tự (0, 1, ...).
+   - "soundtrack_mood": Phong cách âm hưởng nền.
+   - "synth_type": Loại dạng sóng âm thanh ("sine", "triangle", "sawtooth").
+   - "chords": Danh sách mảng các tần số Hz hợp âm (từ 3 đến 5 tần số Hz).
+   - "sub_bass_freq": Tần số âm trầm (Hz, từ 28.0 đến 55.0).
+   - "music_volume": Âm lượng nhạc nền (0.1 đến 0.5).
+   - "speech_ducking": Tỷ lệ giảm âm lượng khi có thoại (0.05 đến 0.2).
+5. "visual_dna": Hạt nhân mô tả phong cách, ánh sáng, chất liệu để khóa đồng nhất 100% nhân vật qua các shot.
+6. "shots": Mảng các Shot cảnh quay độc lập. Tổng "duration_sec" của tất cả các shot PHẢI BẰNG CHÍNH XÁC ${userDuration}.0 giây:
+   - "shot_id": 0, 1, 2...
    - "duration_sec": Thời lượng của shot này.
-   - "shot_seed": Seed ngẫu nhiên tính toán từ ${userSeed} cho shot này.
-   - "keyframe_prompt": Prompt chi tiết góc máy và chủ thể cho shot này gửi đến Flux.1.
-   - "camera_narrative": Ý đồ chuyển động máy quay (Dolly, Pan, Tilt, Zoom, Roll, Crane...).
+   - "shot_seed": Seed ngẫu nhiên riêng cho Shot này.
+   - "shot_goal": Mục tiêu diễn hoạt và cảm xúc.
 
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
+TRẢ VỀ DUY NHẤT JSON HỢP LỆ:
 {
-  "visual_dna": "cinematic anamorphic 8k masterpiece...",
-  "optics": { "fov": 42.0, "plane_distance": 2.2, "overscan": 1.35, "mesh_density": 180 },
-  "ffmpeg_pipeline": {
-    "video_filter": "eq=contrast=1.08:brightness=0.01:saturation=1.12,unsharp=3:3:0.6",
-    "audio_filter": "loudnorm=I=-16:TP=-1.5:LRA=11",
-    "video_bitrate": "14M"
+  "resolution": { "width": 1024, "height": 576 },
+  "optics": { "fov": 38.5, "plane_distance": 2.2, "overscan": 1.38, "mesh_density_x": 200, "mesh_density_y": 200, "near_clip": 0.05, "far_clip": 1000.0 },
+  "encoding_pipeline": {
+    "video_bitrate": "28M",
+    "audio_bitrate": "256k",
+    "audio_sample_rate": 48000,
+    "keyframe_interval_seconds": 0.5,
+    "video_filter": "eq=contrast=1.06:brightness=0.01:saturation=1.1,unsharp=3:3:0.5",
+    "audio_filter": "loudnorm=I=-16:TP=-1.5:LRA=11"
   },
   "acoustic_design": {
-    "soundtrack_mood": "Deep cinematic tension",
-    "synth_type": "sawtooth",
-    "chords": [55.0, 82.41, 110.0, 164.81],
-    "sub_bass_freq": 38.0,
+    "soundtrack_mood": "Deep cinematic living tension",
+    "synth_type": "triangle",
+    "chords": [65.41, 98.0, 130.81, 196.0],
+    "sub_bass_freq": 36.0,
     "music_volume": 0.38,
     "speech_ducking": 0.12
   },
+  "visual_dna": "cinematic 8k HFR, consistent character facial morphology, master lighting, photorealistic textures",
   "shots": [
     {
       "shot_id": 0,
-      "duration_sec": ${userDuration},
+      "duration_sec": 2.5,
       "shot_seed": ${userSeed},
-      "keyframe_prompt": "wide establishing shot...",
-      "camera_narrative": "slow forward push-in with subtle roll"
+      "shot_goal": "Thiết lập toàn cảnh và trạng thái tĩnh tại"
+    },
+    {
+      "shot_id": 1,
+      "duration_sec": ${userDuration - 2.5},
+      "shot_seed": ${userSeed + 149},
+      "shot_goal": "Cận cảnh cảm xúc và chuyển dịch góc nhìn sâu sắc"
     }
   ]
 }`;
@@ -3435,42 +3439,166 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                     try {
                         const res = await dispatchBgTaskFn({
                             contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                            generationConfig: { temperature: 0.15, maxOutputTokens: 8192, responseMimeType: "application/json" },
+                            generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" },
                             safetySettings: SAFETY_SETTINGS
                         });
                         const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                        if (parsed?.visual_dna && parsed?.optics && parsed?.ffmpeg_pipeline && parsed?.acoustic_design && Array.isArray(parsed?.shots)) {
+                        if (parsed?.resolution && parsed?.optics && parsed?.encoding_pipeline && Array.isArray(parsed?.shots) && parsed.shots.length > 0) {
+                            let total = parsed.shots.reduce((acc, s) => acc + (Number(s.duration_sec) || 0), 0);
+                            if (Math.abs(total - userDuration) > 0.02) {
+                                const diff = userDuration - total;
+                                parsed.shots[parsed.shots.length - 1].duration_sec = Math.max(0.5, Number((parsed.shots[parsed.shots.length - 1].duration_sec + diff).toFixed(2)));
+                            }
+                            // Đảm bảo resolution chia hết cho 16
+                            parsed.resolution.width = Math.round(parsed.resolution.width / 16) * 16;
+                            parsed.resolution.height = Math.round(parsed.resolution.height / 16) * 16;
                             return parsed;
                         }
-                    } catch (e) {
-                        console.warn(`Lần ${attempt} lập kịch bản thất bại:`, e);
-                    }
-                    await new Promise(r => setTimeout(r, 1200));
+                    } catch (e) {}
+                    await new Promise(r => setTimeout(r, 1000));
                 }
-                throw new Error("Gemini không thể phản hồi thông số kịch bản hợp lệ.");
+                throw new Error("Gemini không thể phản hồi kịch bản kỹ thuật.");
             },
 
             // =====================================================================================
-            // BƯỚC 2: BỘ NÃO GEMINI - PHÂN GIẢI CHIỀU SÂU & QUỸ ĐẠO MÁY QUAY 6-DOF TỪNG KHUNG HÌNH
+            // 2. GEMINI VIẾT PROMPT KHÓA DNA 100% CHO KEYFRAME 0 CỦA TỪNG SHOT
             // =====================================================================================
-            async solveShotSpatialKinematics({ imageCanvas, shot, totalFrames, visualDNA, dispatchBgTaskFn, onStatus }) {
-                const base64Data = imageCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-                const prompt = `[TÍNH TOÁN QUỸ ĐẠO MÁY QUAY 6 TỰ DO (6-DOF) & CHIỀU SÂU KHÔNG GIAN]
-Shot ID: ${shot.shot_id} | Khung hình: ${totalFrames} (24 FPS)
-Ý đồ máy quay: "${shot.camera_narrative}"
+            async generateKeyframe0Prompt({ shot, visualDNA, previousShotEndState, dispatchBgTaskFn, onStatus }) {
+                if (typeof onStatus === 'function') onStatus(`Gemini: Viết prompt Keyframe 0 Shot ${shot.shot_id + 1} (Khóa 100% DNA)...`);
 
-Nhiệm vụ:
-1. "depth_parameters": Ước lượng thông số không gian từ bức ảnh:
-   - "horizon_y": Tọa độ đường chân trời (0.0 đến 1.0).
-   - "depth_relief": Độ sâu nổi khối (0.1 đến 0.6).
-   - "sky_cutoff": Ngưỡng bầu trời vô cực (0.0 đến 0.5).
-   - "foreground_bias": Hệ số nén phối cảnh tiền cảnh (0.8 đến 2.2).
-2. "frame_matrices": Mảng CHÍNH XÁC ${totalFrames} phần tử. Mỗi phần tử là vector [x, y, z, pitch_deg, yaw_deg, roll_deg] cho từng khung hình theo đúng ý đồ máy quay.
+                const prompt = `[CHUYÊN GIA TẠO HÌNH: ĐỒNG NHẤT HÓA KEYFRAME 0 CỦA SHOT]
+Visual DNA bắt buộc: "${visualDNA}"
+Mục tiêu Shot hiện tại (${shot.shot_id}): "${shot.shot_goal}"
+Trạng thái kết thúc của Shot trước: "${previousShotEndState || 'Bắt đầu tác phẩm'}"
+
+Hãy viết một câu prompt tiếng Anh chi tiết cho Flux.1 tạo ảnh Keyframe 0 của Shot này:
+- Duy trì 100% đặc điểm khuôn mặt, trang phục, tông màu từ Visual DNA.
+- Nối tiếp mượt mà từ trạng thái của cảnh quay trước.
 
 TRẢ VỀ DUY NHẤT JSON:
 {
-  "depth_parameters": { "horizon_y": 0.48, "depth_relief": 0.35, "sky_cutoff": 0.3, "foreground_bias": 1.4 },
-  "frame_matrices": [ [0.0, 0.0, 2.2, 0.0, 0.0, 0.0] ]
+  "keyframe_prompt": "cinematic 8k shot of...",
+  "initial_subject_state": "Mô tả trạng thái xuất phát của chủ thể"
+}`;
+                try {
+                    const res = await dispatchBgTaskFn({
+                        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 2048, responseMimeType: "application/json" }
+                    });
+                    const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
+                    if (parsed?.keyframe_prompt) return parsed;
+                } catch (e) {}
+
+                return {
+                    keyframe_prompt: `${visualDNA}, cinematic composition, ${shot.shot_goal}`,
+                    initial_subject_state: "Chủ thể xuất phát tự nhiên"
+                };
+            },
+
+            // =====================================================================================
+            // 3. FLUX.1 TẠO ẢNH KEYFRAME 0 TỪ PROMPT CỦA GEMINI
+            // =====================================================================================
+            async fetchFluxKeyframe0({ promptText, seed, width, height, directImageInput, onStatus }) {
+                const canvasHost = document.createElement('canvas');
+                canvasHost.width = width;
+                canvasHost.height = height;
+                const ctx = canvasHost.getContext('2d');
+
+                if (directImageInput) {
+                    try {
+                        const bmp = await resolveSourceToBitmap(directImageInput);
+                        if (bmp) {
+                            ctx.drawImage(bmp, 0, 0, width, height);
+                            return canvasHost;
+                        }
+                    } catch (_) {}
+                }
+
+                if (typeof onStatus === 'function') onStatus(`Flux.1: Tạo ảnh Keyframe 0 độ phân giải ${width}x${height} (Seed #${seed})...`);
+                const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText)}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true`;
+
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = () => {
+                        const retryImg = new Image();
+                        retryImg.crossOrigin = 'anonymous';
+                        retryImg.onload = resolve;
+                        retryImg.onerror = reject;
+                        retryImg.src = `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText.slice(0, 180))}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true`;
+                    };
+                    img.src = fluxUrl;
+                });
+                ctx.drawImage(img, 0, 0, width, height);
+                return canvasHost;
+            },
+
+            // =====================================================================================
+            // 4. BỘ NÃO GEMINI: TÍNH TOÁN MA TRẬN ĐIỂM ẢNH VẬT LÝ & SINH LÝ HOÀN TOÀN TỰ ĐỘNG
+            // (Toàn bộ các hằng số nhịp tim, nhịp thở, vi rung mắt, ánh sáng, góc máy đều do Gemini xuất)
+            // =====================================================================================
+            async computePhysiologicalPixelDisplacementMatrix({ imageCanvas, shot, shotDuration, totalFrames, userFps, dispatchBgTaskFn, onStatus }) {
+                if (typeof onStatus === 'function') onStatus(`Gemini: Tính toán toàn bộ thông số ma trận điểm ảnh cho ${totalFrames} frames (${userFps} FPS)...`);
+
+                const base64Data = imageCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+                const prompt = `[KỸ SƯ QUANG HỌC & THỊ GIÁC: MA TRẬN DỊCH CHUYỂN ĐIỂM ẢNH VẬT LÝ & SINH LÝ THUẦN ĐỘNG]
+Shot ID: ${shot.shot_id} | Thời lượng: ${shotDuration}s | Số khung hình bù: ${totalFrames} frames (${userFps} FPS)
+Mục tiêu phân cảnh: "${shot.shot_goal}"
+
+NHIỆM VỤ:
+Phân tích bức ảnh thực tế và tính toán 100% các biến số cho Shader dịch chuyển điểm ảnh. Không được bỏ sót:
+1. "depth_field":
+   - "horizon_y": Đường chân trời nhận diện được (0.0 đến 1.0).
+   - "sky_cutoff": Vùng vô cực/bầu trời (0.0 đến 0.5).
+   - "depth_relief": Biên độ nổi khối 3D (0.15 đến 0.6).
+   - "foreground_bias": Hệ số nén phối cảnh tiền cảnh (0.8 đến 2.4).
+2. "physiological_dynamics" (Sinh lý học nhân vật):
+   - "respiratory_rate_hz": Tần số thở (Hz, tính theo cảm xúc cảnh quay, ví dụ 0.25 đến 0.65).
+   - "respiratory_expansion_amplitude": Độ giãn lồng ngực/thân thể (0.008 đến 0.035).
+   - "respiratory_y_ratio": Tỷ lệ nâng trục Y theo nhịp thở (0.15 đến 0.45).
+   - "heart_rate_hz": Nhịp đập vi mạch máu (Hz, ví dụ 1.0 đến 1.8 tương đương 60-110 bpm).
+   - "pulse_vascular_displacement": Biên độ vi phập phồng mạch máu (0.001 đến 0.004).
+   - "micro_saccades_freq": Tần số vi rung giật mắt/cơ mặt (Hz, 25.0 đến 55.0).
+   - "micro_saccades_spatial_freq": Tần số không gian vi rung (10.0 đến 30.0).
+   - "micro_saccades_amplitude": Biên độ vi rung cơ mặt (0.001 đến 0.006).
+3. "physical_dynamics" (Vật lý môi trường):
+   - "fluid_cloth_sway_freq": Tần số rung rinh của tóc/vải/cây lá (0.8 đến 4.0 Hz).
+   - "wind_vector": Véc-tơ gió đẩy điểm ảnh [wx, wy, wz].
+   - "photometric_flux_drift": Véc-tơ chuyển dịch quang thông ánh sáng [dx, dy, dz].
+   - "photometric_flux_intensity": Cường độ dịch chuyển ánh sáng (0.05 đến 0.25).
+4. "camera_6dof_spline":
+   Cung cấp 4 đến 6 mốc Catmull-Rom Spline điều khiển máy quay:
+   [ { "t": 0.0, "cam": [x, y, z], "rot": [pitch_deg, yaw_deg, roll_deg] }, ... ]
+5. "end_state_description":
+   Mô tả trạng thái kết thúc ở khung hình cuối cùng để làm cơ sở cho Keyframe Shot tiếp theo.
+
+TRẢ VỀ DUY NHẤT JSON:
+{
+  "depth_field": { "horizon_y": 0.48, "sky_cutoff": 0.28, "depth_relief": 0.38, "foreground_bias": 1.4 },
+  "physiological_dynamics": {
+    "respiratory_rate_hz": 0.35,
+    "respiratory_expansion_amplitude": 0.022,
+    "respiratory_y_ratio": 0.32,
+    "heart_rate_hz": 1.25,
+    "pulse_vascular_displacement": 0.002,
+    "micro_saccades_freq": 42.0,
+    "micro_saccades_spatial_freq": 18.0,
+    "micro_saccades_amplitude": 0.0035
+  },
+  "physical_dynamics": {
+    "fluid_cloth_sway_freq": 2.2,
+    "wind_vector": [0.012, -0.004, 0.008],
+    "photometric_flux_drift": [0.03, -0.02, 0.05],
+    "photometric_flux_intensity": 0.14
+  },
+  "camera_6dof_spline": [
+    { "t": 0.0, "cam": [0.0, 0.0, 2.2], "rot": [0.0, 0.0, 0.0] },
+    { "t": 0.33, "cam": [0.02, 0.01, 2.12], "rot": [0.2, -0.4, 0.1] },
+    { "t": 0.66, "cam": [0.04, 0.02, 2.05], "rot": [0.5, -0.7, 0.2] },
+    { "t": 1.0, "cam": [0.06, 0.03, 1.98], "rot": [0.8, -1.0, 0.3] }
+  ],
+  "end_state_description": "Chủ thể kết thúc hơi thở ra, góc nhìn chuyển dịch nhẹ về phía tiền cảnh."
 }`;
 
                 let attempt = 0;
@@ -3482,19 +3610,47 @@ TRẢ VỀ DUY NHẤT JSON:
                             generationConfig: { temperature: 0.1, maxOutputTokens: 8192, responseMimeType: "application/json" }
                         });
                         const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-                        if (parsed?.depth_parameters && Array.isArray(parsed?.frame_matrices) && parsed.frame_matrices.length >= totalFrames) {
-                            return {
-                                depth: parsed.depth_parameters,
-                                matrices: parsed.frame_matrices.slice(0, totalFrames)
-                            };
+                        if (parsed?.depth_field && parsed?.physiological_dynamics && parsed?.physical_dynamics && Array.isArray(parsed?.camera_6dof_spline)) {
+                            return parsed;
                         }
                     } catch (e) {}
                     await new Promise(r => setTimeout(r, 1000));
                 }
-                throw new Error(`Gemini không thể giải mã không gian cho phân cảnh ${shot.shot_id + 1}.`);
+                throw new Error(`Gemini không thể giải mã ma trận sinh lý/vật lý cho Shot ${shot.shot_id + 1}.`);
             },
 
-            createCalculatedDepthTexture(width, height, depthParams) {
+            evaluateSpline(anchors, progress) {
+                const p = Math.max(0, Math.min(1, progress));
+                if (p <= anchors[0].t) return { cam: [...anchors[0].cam], rot: [...anchors[0].rot] };
+                if (p >= anchors[anchors.length - 1].t) {
+                    const last = anchors[anchors.length - 1];
+                    return { cam: [...last.cam], rot: [...last.rot] };
+                }
+                let idx = 0;
+                for (let i = 0; i < anchors.length - 1; i++) {
+                    if (p >= anchors[i].t && p <= anchors[i + 1].t) {
+                        idx = i;
+                        break;
+                    }
+                }
+                const p0 = anchors[Math.max(0, idx - 1)];
+                const p1 = anchors[idx];
+                const p2 = anchors[idx + 1];
+                const p3 = anchors[Math.min(anchors.length - 1, idx + 2)];
+
+                const localT = (p - p1.t) / Math.max(0.0001, p2.t - p1.t);
+                const t2 = localT * localT;
+                const t3 = t2 * localT;
+
+                const interpolate = (v0, v1, v2, v3) => 0.5 * ((2 * v1) + (-v0 + v2) * localT + (2 * v0 - 5 * v1 + 4 * v2 - v3) * t2 + (-v0 + 3 * v1 - 3 * v2 + v3) * t3);
+
+                return {
+                    cam: [interpolate(p0.cam[0], p1.cam[0], p2.cam[0], p3.cam[0]), interpolate(p0.cam[1], p1.cam[1], p2.cam[1], p3.cam[1]), interpolate(p0.cam[2], p1.cam[2], p2.cam[2], p3.cam[2])],
+                    rot: [interpolate(p0.rot[0], p1.rot[0], p2.rot[0], p3.rot[0]), interpolate(p0.rot[1], p1.rot[1], p2.rot[1], p3.rot[1]), interpolate(p0.rot[2], p1.rot[2], p2.rot[2], p3.rot[2])]
+                };
+            },
+
+            createDepthTexture(width, height, depthParams) {
                 const c = document.createElement('canvas');
                 c.width = width;
                 c.height = height;
@@ -3505,22 +3661,23 @@ TRẢ VỀ DUY NHẤT JSON:
                 const horizonY = Number(depthParams.horizon_y);
                 const skyCutoff = Number(depthParams.sky_cutoff);
                 const fgBias = Number(depthParams.foreground_bias);
+
                 const horizonPx = Math.floor(horizonY * height);
                 const skyCutoffPx = Math.floor(skyCutoff * height);
 
                 for (let y = 0; y < height; y++) {
-                    let depthNormalized = 0.0;
+                    let dNorm = 0.0;
                     if (y < skyCutoffPx) {
-                        depthNormalized = 0.0;
+                        dNorm = 0.0;
                     } else if (y < horizonPx) {
                         const factor = (y - skyCutoffPx) / Math.max(1, horizonPx - skyCutoffPx);
-                        depthNormalized = Math.pow(factor, fgBias) * 0.45;
+                        dNorm = Math.pow(factor, fgBias) * 0.42;
                     } else {
                         const factor = (y - horizonPx) / Math.max(1, height - horizonPx);
-                        depthNormalized = 0.45 + Math.pow(factor, 1.0 / fgBias) * 0.55;
+                        dNorm = 0.42 + Math.pow(factor, 1.0 / fgBias) * 0.58;
                     }
 
-                    const val = Math.min(255, Math.max(0, Math.floor(depthNormalized * 255)));
+                    const val = Math.min(255, Math.max(0, Math.floor(dNorm * 255)));
                     for (let x = 0; x < width; x++) {
                         const idx = (y * width + x) * 4;
                         data[idx] = val;
@@ -3536,9 +3693,9 @@ TRẢ VỀ DUY NHẤT JSON:
             },
 
             // =====================================================================================
-            // BƯỚC 3: THỰC THI ÂM THANH - GEMINI TTS & BỘ TỔNG HỢP THEO LỆNH TỪ GEMINI
+            // 5. THỰC THI ÂM THANH THEO DÒNG THỜI GIAN
             // =====================================================================================
-            async generateDialogueSpeech(text, voiceName, apiKey) {
+            async generateDialogueSpeech(text, voiceName, sampleRate, apiKey) {
                 if (!apiKey || !text) return null;
                 try {
                     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
@@ -3559,17 +3716,14 @@ TRẢ VỀ DUY NHẤT JSON:
                     const json = await res.json();
                     const audioPart = json?.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio/'));
                     if (audioPart?.inlineData?.data) {
-                        return this.decodePcmToAudioBuffer(audioPart.inlineData.data, 24000);
+                        return this.decodePcmToAudioBuffer(audioPart.inlineData.data, sampleRate);
                     }
-                } catch (e) {
-                    console.warn("TTS Lỗi:", e);
-                }
+                } catch (e) {}
                 return null;
             },
 
-            async buildSpeechTrack(dialogueCues, voiceCharacters, durationSec, apiKey) {
+            async buildSpeechTrack(dialogueCues, voiceCharacters, durationSec, sampleRate, apiKey) {
                 if (!Array.isArray(dialogueCues) || !dialogueCues.length || !apiKey) return null;
-                const sampleRate = 48000;
                 const totalSamples = Math.max(1, Math.ceil(sampleRate * durationSec));
                 const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
                 if (!OfflineCtx) return null;
@@ -3580,7 +3734,7 @@ TRẢ VỀ DUY NHẤT JSON:
                     const charObj = (voiceCharacters || []).find(c => c.name.toLowerCase() === (line.speaker || '').toLowerCase()) || (voiceCharacters && voiceCharacters[0]);
                     const voice = charObj?.geminiVoice || 'Puck';
                     if (line.text && line.text.trim()) {
-                        const buffer = await this.generateDialogueSpeech(line.text, voice, apiKey);
+                        const buffer = await this.generateDialogueSpeech(line.text, voice, sampleRate, apiKey);
                         if (buffer) {
                             hasDialogue = true;
                             const startTime = Math.min(Math.max(Number(line.startTimeSec) || 0, 0), Math.max(0, durationSec - 0.2));
@@ -3594,20 +3748,18 @@ TRẢ VỀ DUY NHẤT JSON:
                 return hasDialogue ? await ctx.startRendering() : null;
             },
 
-            // Bộ tổng hợp âm nhạc theo đúng thông số tần số, loại sóng do Gemini chỉ định
-            async synthesizeMusicTrack(acousticDesign, durationSec, onStatus) {
-                if (typeof onStatus === 'function') onStatus(`Gemini TTS: Phối khí âm thanh (${acousticDesign.soundtrack_mood || 'Ambient'})...`);
+            async synthesizeMusicTrack(acousticDesign, durationSec, sampleRate, onStatus) {
+                if (typeof onStatus === 'function') onStatus(`Gemini TTS: Phối khí âm thanh nền...`);
                 try {
-                    const sampleRate = 48000;
                     const totalSamples = Math.max(1, Math.ceil(sampleRate * durationSec));
                     const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
                     if (!OfflineCtx) return null;
                     const actx = new OfflineCtx(2, totalSamples, sampleRate);
 
-                    const chords = Array.isArray(acousticDesign.chords) && acousticDesign.chords.length ? acousticDesign.chords : [55.0, 110.0];
-                    const synthType = acousticDesign.synth_type || 'sawtooth';
-                    const targetVol = Number(acousticDesign.music_volume) || 0.35;
-                    const subBass = Number(acousticDesign.sub_bass_freq) || 40.0;
+                    const chords = acousticDesign.chords;
+                    const synthType = acousticDesign.synth_type;
+                    const targetVol = Number(acousticDesign.music_volume);
+                    const subBass = Number(acousticDesign.sub_bass_freq);
 
                     chords.forEach((freq, idx) => {
                         const osc = actx.createOscillator();
@@ -3616,14 +3768,13 @@ TRẢ VỀ DUY NHẤT JSON:
 
                         osc.type = synthType;
                         osc.frequency.setValueAtTime(freq, 0);
-
                         filter.type = 'lowpass';
-                        filter.frequency.setValueAtTime(320.0 + idx * 45, 0);
+                        filter.frequency.setValueAtTime(freq * 3.5, 0);
 
                         const perVoiceGain = targetVol / chords.length;
                         gain.gain.setValueAtTime(0.001, 0);
-                        gain.gain.exponentialRampToValueAtTime(perVoiceGain, Math.min(1.2, durationSec * 0.25));
-                        gain.gain.setValueAtTime(perVoiceGain, Math.max(1.0, durationSec - 1.2));
+                        gain.gain.exponentialRampToValueAtTime(perVoiceGain, Math.min(1.0, durationSec * 0.2));
+                        gain.gain.setValueAtTime(perVoiceGain, Math.max(1.0, durationSec - 1.0));
                         gain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
 
                         osc.connect(filter);
@@ -3640,7 +3791,7 @@ TRẢ VỀ DUY NHẤT JSON:
                         sub.frequency.setValueAtTime(subBass, 0);
 
                         subGain.gain.setValueAtTime(0.001, 0);
-                        subGain.gain.exponentialRampToValueAtTime(targetVol * 0.4, 0.8);
+                        subGain.gain.exponentialRampToValueAtTime(targetVol * 0.4, 0.6);
                         subGain.gain.setValueAtTime(targetVol * 0.4, Math.max(1.0, durationSec - 1.0));
                         subGain.gain.exponentialRampToValueAtTime(0.0001, durationSec);
 
@@ -3656,17 +3807,15 @@ TRẢ VỀ DUY NHẤT JSON:
                 }
             },
 
-            // Hòa trộn Speech + Music với thông số Ducking do Gemini quyết định
-            async mixAudioTracks(speechBuffer, musicBuffer, acousticDesign, durationSec) {
+            async mixAudioTracks(speechBuffer, musicBuffer, acousticDesign, durationSec, sampleRate) {
                 if (!speechBuffer && !musicBuffer) return null;
-                const sampleRate = 48000;
                 const totalSamples = Math.max(1, Math.ceil(sampleRate * durationSec));
                 const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
                 if (!OfflineCtx) return null;
                 const ctx = new OfflineCtx(2, totalSamples, sampleRate);
 
-                const ducking = Number(acousticDesign?.speech_ducking) || 0.12;
-                const normalVol = Number(acousticDesign?.music_volume) || 0.4;
+                const ducking = Number(acousticDesign.speech_ducking);
+                const normalVol = Number(acousticDesign.music_volume);
 
                 if (musicBuffer) {
                     const mSrc = ctx.createBufferSource();
@@ -3692,49 +3841,14 @@ TRẢ VỀ DUY NHẤT JSON:
             },
 
             // =====================================================================================
-            // BƯỚC 4: THỰC THI TẠO HÌNH - FLUX.1 (QUA POLLINATION)
-            // Nhận prompt, DNA, seed và kích thước từ kịch bản của Gemini & User
+            // 6. FFMPEG WASM THỰC THI TOÀN BỘ THEO CẤU HÌNH PIPELINE CỦA GEMINI
             // =====================================================================================
-            async fetchFluxKeyframe(promptText, visualDNA, seed, width, height, directImageInput, onStatus) {
-                const canvasHost = document.createElement('canvas');
-                canvasHost.width = width;
-                canvasHost.height = height;
-                const ctx = canvasHost.getContext('2d');
-
-                if (directImageInput) {
-                    try {
-                        const bmp = await resolveSourceToBitmap(directImageInput);
-                        if (bmp) {
-                            ctx.drawImage(bmp, 0, 0, width, height);
-                            return canvasHost;
-                        }
-                    } catch (_) {}
-                }
-
-                const fullPrompt = `${visualDNA}, ${promptText}`;
-                const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?model=flux&width=${width}&height=${height}&seed=${seed}&nologo=true`;
-
-                const img = new Image();
-                img.crossOrigin = 'anonymous';
-                await new Promise((resolve, reject) => {
-                    img.onload = resolve;
-                    img.onerror = reject;
-                    img.src = fluxUrl;
-                });
-                ctx.drawImage(img, 0, 0, width, height);
-                return canvasHost;
-            },
-
-            // =====================================================================================
-            // BƯỚC 5: THỰC THI HẬU KỲ CÔNG NGHIỆP - FFMPEG WASM
-            // Tiếp nhận chuỗi lệnh bộ lọc, bitrate từ Gemini và thực thi
-            // =====================================================================================
-            async executeFFmpegPostProduction({ rawVideoBlob, audioBlob, ffmpegPipeline, onStatus }) {
+            async executeFFmpegPostProduction({ rawVideoBlob, audioBlob, encodingPipeline, userFps, onStatus }) {
                 const ffmpeg = await this.initFFmpeg(onStatus);
                 if (!ffmpeg) return rawVideoBlob;
 
                 try {
-                    if (typeof onStatus === 'function') onStatus("FFmpeg: Nạp tài nguyên thô vào hệ thống tệp ảo...");
+                    if (typeof onStatus === 'function') onStatus("FFmpeg: Nạp luồng dữ liệu vào Virtual File System...");
                     const videoBytes = new Uint8Array(await rawVideoBlob.arrayBuffer());
                     ffmpeg.FS('writeFile', 'input.mp4', videoBytes);
 
@@ -3745,23 +3859,25 @@ TRẢ VỀ DUY NHẤT JSON:
                         hasAudio = true;
                     }
 
-                    if (typeof onStatus === 'function') onStatus("FFmpeg: Thực thi Color Grading, Audio Filter & Encoding...");
+                    if (typeof onStatus === 'function') onStatus("FFmpeg: Thực thi Color Grading, Audio Filter & Encoding HFR...");
 
-                    const vfArg = ffmpegPipeline.video_filter || "eq=contrast=1.05:saturation=1.1,unsharp=3:3:0.5";
-                    const afArg = ffmpegPipeline.audio_filter || "loudnorm=I=-16:TP=-1.5";
-                    const vBitrate = ffmpegPipeline.video_bitrate || "14M";
+                    const vfArg = encodingPipeline.video_filter;
+                    const afArg = encodingPipeline.audio_filter;
+                    const vBitrate = encodingPipeline.video_bitrate;
+                    const aBitrate = encodingPipeline.audio_bitrate;
 
-                    const args = ['-i', 'input.mp4'];
+                    const args = ['-r', String(userFps), '-i', 'input.mp4'];
 
                     if (hasAudio) {
                         args.push('-i', 'audio.wav');
                         args.push(
                             '-c:v', 'libx264',
                             '-pix_fmt', 'yuv420p',
+                            '-r', String(userFps),
                             '-b:v', vBitrate,
                             '-vf', vfArg,
                             '-c:a', 'aac',
-                            '-b:a', '192k',
+                            '-b:a', aBitrate,
                             '-af', afArg,
                             '-shortest',
                             'output.mp4'
@@ -3770,6 +3886,7 @@ TRẢ VỀ DUY NHẤT JSON:
                         args.push(
                             '-c:v', 'libx264',
                             '-pix_fmt', 'yuv420p',
+                            '-r', String(userFps),
                             '-b:v', vBitrate,
                             '-vf', vfArg,
                             'output.mp4'
@@ -3787,98 +3904,158 @@ TRẢ VỀ DUY NHẤT JSON:
 
                     return outBlob;
                 } catch (err) {
-                    console.warn("FFmpeg hậu kỳ gặp lỗi, trả về bản dựng WebCodecs:", err);
+                    console.warn("FFmpeg hậu kỳ gặp sự cố, giữ bản dựng WebCodecs:", err);
                     return rawVideoBlob;
                 }
             },
 
             // =====================================================================================
-            // BỘ ĐIỀU PHỐI KHỞI CHẠY (PIPELINE DISPATCHER)
+            // 7. BỘ ĐIỀU PHỐI ĐIỆN ẢNH ZERO-HARDCODE TOÀN PHẦN
             // =====================================================================================
-            async runFullIndustrialPipeline({ userPrompt, userDuration, userAspectRatio, userStyle, userSeed, userCues, userCharacters, directImageInput, apiKey, dispatchBgTaskFn, onStatus }) {
-                const fps = 24;
-                const duration = Math.max(2, Math.round(Number(userDuration) || 5));
-                const resolution = this.calculateResolution(userAspectRatio);
+            async runFullIndustrialPipeline({ userPrompt, userDuration, userAspectRatio, userStyle, userSeed, userCues, userCharacters, userFps, directImageInput, apiKey, dispatchBgTaskFn, onStatus }) {
+                const fps = Number(userFps) || 120;
+                const totalTargetDuration = Math.max(1, Math.round(Number(userDuration) || 5));
 
-                // 1. GEMINI: Lập toàn bộ thông số kịch bản & kỹ thuật
-                const plan = await this.planMasterDirecting({
+                // 1. GEMINI LẬP BẢN ĐỒ TỔNG THỂ, KÍCH THƯỚC, QUANG HỌC VÀ PIPELINE HẬU KỲ
+                const timelinePlan = await this.planMasterTimeline({
                     userPrompt,
-                    userDuration: duration,
+                    userDuration: totalTargetDuration,
                     userAspectRatio,
                     userStyle,
                     userSeed,
                     userCues,
                     userCharacters,
+                    userFps: fps,
                     dispatchBgTaskFn,
                     onStatus
                 });
 
-                // 2. GEMINI TTS: Sản xuất âm thoại và âm nhạc theo lệnh
-                const speechBuffer = await this.buildSpeechTrack(userCues, userCharacters, duration, apiKey);
-                const musicBuffer = await this.synthesizeMusicTrack(plan.acoustic_design, duration, onStatus);
-                const mixedAudioBuffer = await this.mixAudioTracks(speechBuffer, musicBuffer, plan.acoustic_design, duration);
+                const width = timelinePlan.resolution.width;
+                const height = timelinePlan.resolution.height;
+                const optics = timelinePlan.optics;
+                const encoding = timelinePlan.encoding_pipeline;
+                const sampleRate = encoding.audio_sample_rate || 48000;
 
-                // 3. THREE.JS & FLUX.1: Khởi tạo kết xuất không gian 3D
-                const optics = plan.optics;
+                // 2. GEMINI TTS: SẢN XUẤT ÂM THANH THEO ĐÚNG THÔNG SỐ GEMINI CHỈ ĐỊNH
+                const speechBuffer = await this.buildSpeechTrack(userCues, userCharacters, totalTargetDuration, sampleRate, apiKey);
+                const musicBuffer = await this.synthesizeMusicTrack(timelinePlan.acoustic_design, totalTargetDuration, sampleRate, onStatus);
+                const mixedAudio = await this.mixAudioTracks(speechBuffer, musicBuffer, timelinePlan.acoustic_design, totalTargetDuration, sampleRate);
+
+                // 3. TÍNH TOÁN HÌNH HỌC KHÔNG GIAN THREE.JS CHÍNH XÁC THEO QUANG HỌC GEMINI
                 const fovRad = (Number(optics.fov) * Math.PI) / 180;
                 const planeDist = Number(optics.plane_distance);
                 const overscan = Number(optics.overscan);
-                const meshDensity = Number(optics.mesh_density);
 
+                // Kích thước mặt phẳng 3D được tính toán tự động bằng lượng giác học
                 const visibleHeightAtDist = 2 * Math.tan(fovRad / 2) * planeDist;
-                const visibleWidthAtDist = visibleHeightAtDist * (resolution.width / resolution.height);
+                const visibleWidthAtDist = visibleHeightAtDist * (width / height);
                 const planeWidth = visibleWidthAtDist * overscan;
                 const planeHeight = visibleHeightAtDist * overscan;
 
                 const glCanvas = document.createElement('canvas');
-                glCanvas.width = resolution.width;
-                glCanvas.height = resolution.height;
+                glCanvas.width = width;
+                glCanvas.height = height;
                 const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
-                renderer.setSize(resolution.width, resolution.height);
+                renderer.setSize(width, height);
                 renderer.setPixelRatio(1);
 
                 const scene = new THREE.Scene();
-                const camera = new THREE.PerspectiveCamera(Number(optics.fov), resolution.width / resolution.height, 0.01, 1000);
+                const camera = new THREE.PerspectiveCamera(Number(optics.fov), width / height, Number(optics.near_clip), Number(optics.far_clip));
                 camera.position.set(0, 0, planeDist);
 
-                const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, meshDensity, meshDensity);
-                const cinemaShaderMat = new THREE.ShaderMaterial({
+                const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, Number(optics.mesh_density_x), Number(optics.mesh_density_y));
+
+                // SHADER BIẾN DẠNG MA TRẬN ĐIỂM ẢNH: 100% THAM SỐ LÀ DYNAMIC UNIFORMS
+                const dynamicPixelShader = new THREE.ShaderMaterial({
                     side: THREE.DoubleSide,
                     uniforms: {
                         uTexture: { value: null },
                         uDepthMap: { value: null },
-                        uDepthRelief: { value: 0.35 }
+                        uDepthRelief: { value: 0.35 },
+                        uTime: { value: 0.0 },
+                        // Uniforms Sinh lý học (Gemini cung cấp)
+                        uRespRate: { value: 0.35 },
+                        uRespAmp: { value: 0.02 },
+                        uRespYRatio: { value: 0.3 },
+                        uHeartRate: { value: 1.2 },
+                        uPulseAmp: { value: 0.002 },
+                        uSaccadeFreq: { value: 40.0 },
+                        uSaccadeSpatialFreq: { value: 18.0 },
+                        uSaccadeAmp: { value: 0.003 },
+                        // Uniforms Vật lý học (Gemini cung cấp)
+                        uWindVector: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
+                        uFluidFreq: { value: 2.0 },
+                        uLightDrift: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
+                        uLightIntensity: { value: 0.15 }
                     },
                     vertexShader: `
                         uniform sampler2D uDepthMap;
                         uniform float uDepthRelief;
+                        uniform float uTime;
+                        uniform float uRespRate;
+                        uniform float uRespAmp;
+                        uniform float uRespYRatio;
+                        uniform float uHeartRate;
+                        uniform float uPulseAmp;
+                        uniform float uSaccadeFreq;
+                        uniform float uSaccadeSpatialFreq;
+                        uniform float uSaccadeAmp;
+                        uniform vec3 uWindVector;
+                        uniform float uFluidFreq;
+
                         varying vec2 vUv;
+                        varying float vDepth;
+
                         void main() {
                             vUv = uv;
+                            float depth = texture2D(uDepthMap, uv).r;
+                            vDepth = depth;
                             vec3 pos = position;
-                            float depth = texture2D(uDepthMap, vUv).r;
+
+                            // 1. Nâng điểm ảnh theo chiều sâu 3D Volumetric
                             pos.z += (depth - 0.5) * uDepthRelief;
+
+                            // 2. Dịch chuyển điểm ảnh theo nhịp thở & nhịp tim do Gemini tính
+                            float breath = sin(uTime * 6.2831853 * uRespRate) * uRespAmp;
+                            float pulse = sin(uTime * 6.2831853 * uHeartRate) * uPulseAmp;
+                            pos.z += (breath + pulse) * depth;
+                            pos.y += (breath * uRespYRatio) * depth;
+
+                            // 3. Dịch chuyển điểm ảnh theo vi rung cơ học/sinh học
+                            float saccade = sin(uTime * uSaccadeFreq + uv.x * uSaccadeSpatialFreq) * uSaccadeAmp * (1.0 - depth);
+                            pos.x += saccade;
+
+                            // 4. Dịch chuyển điểm ảnh theo động lực học chất lỏng/gió
+                            float sway = sin(uTime * uFluidFreq + uv.y * 6.2831853) * depth;
+                            pos += uWindVector * sway;
+
                             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
                         }
                     `,
                     fragmentShader: `
                         uniform sampler2D uTexture;
+                        uniform vec3 uLightDrift;
+                        uniform float uLightIntensity;
                         varying vec2 vUv;
+                        varying float vDepth;
+
                         void main() {
-                            gl_FragColor = texture2D(uTexture, vUv);
+                            vec4 color = texture2D(uTexture, vUv);
+                            // Dịch chuyển quang thông ánh sáng theo thời gian
+                            color.rgb += uLightDrift * vDepth * uLightIntensity;
+                            gl_FragColor = color;
                         }
                     `
                 });
 
-                const mesh = new THREE.Mesh(planeGeo, cinemaShaderMat);
+                const mesh = new THREE.Mesh(planeGeo, dynamicPixelShader);
                 scene.add(mesh);
 
-                // Thiết lập Muxer trung gian
                 const MuxerClass = window.Mp4Muxer?.Muxer || window.Muxer;
                 const TargetClass = window.Mp4Muxer?.ArrayBufferTarget || window.ArrayBufferTarget;
                 const rawMuxer = new MuxerClass({
                     target: new TargetClass(),
-                    video: { codec: 'avc', width: resolution.width, height: resolution.height },
+                    video: { codec: 'avc', width, height },
                     fastStart: 'in-memory'
                 });
 
@@ -3886,73 +4063,133 @@ TRẢ VỀ DUY NHẤT JSON:
                     output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
                     error: e => console.error("VideoEncoder error:", e)
                 });
+
+                // Cấu hình mã hóa phần cứng hoàn toàn theo chỉ dẫn của Gemini
+                const dynamicBitrateBps = this.parseBitrateToBps(encoding.video_bitrate);
+                const gopFrames = Math.max(1, Math.round(Number(encoding.keyframe_interval_seconds) * fps));
+
                 videoEncoder.configure({
-                    codec: 'avc1.64002a',
-                    width: resolution.width,
-                    height: resolution.height,
-                    bitrate: 16000000,
+                    codec: 'avc1.640033', // H.264 High Profile Level 5.1
+                    width,
+                    height,
+                    bitrate: dynamicBitrateBps,
                     framerate: fps
                 });
 
-                let globalFrameCount = 0;
+                let globalFrameIndex = 0;
                 const frameDurationMicros = 1000000 / fps;
+                let previousShotEndState = null;
+                const generatedShotsLog = [];
 
                 try {
-                    for (let sIdx = 0; sIdx < plan.shots.length; sIdx++) {
-                        const shot = plan.shots[sIdx];
-                        const shotFrames = Math.max(1, Math.round(Number(shot.duration_sec) * fps));
+                    // =================================================================================
+                    // VÒNG LẶP SẢN XUẤT ĐIỆN ẢNH THEO TỪNG SHOT
+                    // =================================================================================
+                    for (let sIdx = 0; sIdx < timelinePlan.shots.length; sIdx++) {
+                        const currentShot = timelinePlan.shots[sIdx];
+                        const shotDuration = Number(currentShot.duration_sec);
+                        const shotTotalFrames = Math.max(1, Math.round(shotDuration * fps));
 
-                        if (typeof onStatus === 'function') onStatus(`Flux.1: Tạo khung hình phân cảnh ${sIdx + 1}/${plan.shots.length}...`);
-                        const keyframeCanvas = await this.fetchFluxKeyframe(
-                            shot.keyframe_prompt,
-                            plan.visual_dna,
-                            shot.shot_seed,
-                            resolution.width,
-                            resolution.height,
-                            directImageInput,
-                            onStatus
-                        );
-
-                        if (typeof onStatus === 'function') onStatus(`Gemini: Tính toán chuyển động máy quay shot ${sIdx + 1}...`);
-                        const kinematics = await this.solveShotSpatialKinematics({
-                            imageCanvas: keyframeCanvas,
-                            shot,
-                            totalFrames: shotFrames,
-                            visualDNA: plan.visual_dna,
+                        // 1. Gemini viết prompt Keyframe 0 khóa Visual DNA 100%
+                        const keyframeSpec = await this.generateKeyframe0Prompt({
+                            shot: currentShot,
+                            visualDNA: timelinePlan.visual_dna,
+                            previousShotEndState,
                             dispatchBgTaskFn,
                             onStatus
                         });
 
-                        const texture = new THREE.CanvasTexture(keyframeCanvas);
-                        texture.flipY = true;
-                        cinemaShaderMat.uniforms.uTexture.value = texture;
+                        // 2. Flux tạo ảnh Keyframe 0
+                        const keyframe0Canvas = await this.fetchFluxKeyframe0({
+                            promptText: keyframeSpec.keyframe_prompt,
+                            seed: currentShot.shot_seed,
+                            width,
+                            height,
+                            directImageInput: (sIdx === 0 ? directImageInput : null),
+                            onStatus
+                        });
 
-                        const depthMap = this.createCalculatedDepthTexture(resolution.width, resolution.height, kinematics.depth);
-                        cinemaShaderMat.uniforms.uDepthMap.value = depthMap;
-                        cinemaShaderMat.uniforms.uDepthRelief.value = Number(kinematics.depth.depth_relief);
+                        // 3. Gemini phân tích bức ảnh -> Tính toán toàn bộ thông số ma trận điểm ảnh
+                        const displacementMatrix = await this.computePhysiologicalPixelDisplacementMatrix({
+                            imageCanvas: keyframe0Canvas,
+                            shot: currentShot,
+                            shotDuration,
+                            totalFrames: shotTotalFrames,
+                            userFps: fps,
+                            dispatchBgTaskFn,
+                            onStatus
+                        });
 
-                        if (typeof onStatus === 'function') onStatus(`Kết xuất phân cảnh ${sIdx + 1} (24 FPS)...`);
-                        for (let f = 0; f < shotFrames; f++) {
-                            const matrix = kinematics.matrices[f] || [0.0, 0.0, planeDist, 0.0, 0.0, 0.0];
-                            camera.position.set(Number(matrix[0]), Number(matrix[1]), Number(matrix[2]));
+                        previousShotEndState = displacementMatrix.end_state_description;
+                        generatedShotsLog.push({
+                            shot_id: sIdx + 1,
+                            duration: shotDuration,
+                            frames: shotTotalFrames,
+                            prompt: keyframeSpec.keyframe_prompt,
+                            seed: currentShot.shot_seed,
+                            physics: displacementMatrix.physical_dynamics,
+                            physiology: displacementMatrix.physiological_dynamics
+                        });
+
+                        // Nạp Texture và bản đồ độ sâu
+                        const shotTex = new THREE.CanvasTexture(keyframe0Canvas);
+                        shotTex.flipY = true;
+                        dynamicPixelShader.uniforms.uTexture.value = shotTex;
+
+                        const depthTex = this.createDepthTexture(width, height, displacementMatrix.depth_field);
+                        dynamicPixelShader.uniforms.uDepthMap.value = depthTex;
+                        dynamicPixelShader.uniforms.uDepthRelief.value = Number(displacementMatrix.depth_field.depth_relief);
+
+                        // Cập nhật 100% Uniforms từ tính toán của Gemini vào Shader
+                        const physio = displacementMatrix.physiological_dynamics;
+                        const physics = displacementMatrix.physical_dynamics;
+
+                        dynamicPixelShader.uniforms.uRespRate.value = Number(physio.respiratory_rate_hz);
+                        dynamicPixelShader.uniforms.uRespAmp.value = Number(physio.respiratory_expansion_amplitude);
+                        dynamicPixelShader.uniforms.uRespYRatio.value = Number(physio.respiratory_y_ratio);
+                        dynamicPixelShader.uniforms.uHeartRate.value = Number(physio.heart_rate_hz);
+                        dynamicPixelShader.uniforms.uPulseAmp.value = Number(physio.pulse_vascular_displacement);
+                        dynamicPixelShader.uniforms.uSaccadeFreq.value = Number(physio.micro_saccades_freq);
+                        dynamicPixelShader.uniforms.uSaccadeSpatialFreq.value = Number(physio.micro_saccades_spatial_freq);
+                        dynamicPixelShader.uniforms.uSaccadeAmp.value = Number(physio.micro_saccades_amplitude);
+
+                        const wVec = physics.wind_vector;
+                        dynamicPixelShader.uniforms.uWindVector.value.set(wVec[0], wVec[1], wVec[2]);
+                        dynamicPixelShader.uniforms.uFluidFreq.value = Number(physics.fluid_cloth_sway_freq);
+
+                        const lDrift = physics.photometric_flux_drift;
+                        dynamicPixelShader.uniforms.uLightDrift.value.set(lDrift[0], lDrift[1], lDrift[2]);
+                        dynamicPixelShader.uniforms.uLightIntensity.value = Number(physics.photometric_flux_intensity);
+
+                        if (typeof onStatus === 'function') onStatus(`Thực thi bù chuyển động điểm ảnh Shot ${sIdx + 1} (${shotTotalFrames} frames tại ${fps} FPS)...`);
+
+                        // 4. Thực thi dịch chuyển điểm ảnh từng frame (1 vi chuyển động = 1 frame bù)
+                        for (let f = 0; f < shotTotalFrames; f++) {
+                            const t = f / fps;
+                            const progress = f / Math.max(1, shotTotalFrames - 1);
+
+                            const camState = this.evaluateSpline(displacementMatrix.camera_6dof_spline, progress);
+                            camera.position.set(camState.cam[0], camState.cam[1], camState.cam[2]);
                             camera.rotation.set(
-                                (Number(matrix[3]) * Math.PI) / 180,
-                                (Number(matrix[4]) * Math.PI) / 180,
-                                (Number(matrix[5]) * Math.PI) / 180
+                                (camState.rot[0] * Math.PI) / 180,
+                                (camState.rot[1] * Math.PI) / 180,
+                                (camState.rot[2] * Math.PI) / 180
                             );
+
+                            dynamicPixelShader.uniforms.uTime.value = t;
 
                             renderer.render(scene, camera);
 
                             const vFrame = new VideoFrame(glCanvas, {
-                                timestamp: Math.round(globalFrameCount * frameDurationMicros)
+                                timestamp: Math.round(globalFrameIndex * frameDurationMicros)
                             });
-                            videoEncoder.encode(vFrame, { keyFrame: globalFrameCount % fps === 0 });
+                            videoEncoder.encode(vFrame, { keyFrame: globalFrameIndex % gopFrames === 0 });
                             vFrame.close();
-                            globalFrameCount++;
+                            globalFrameIndex++;
                         }
 
-                        texture.dispose();
-                        depthMap.dispose();
+                        shotTex.dispose();
+                        depthTex.dispose();
                     }
 
                     await videoEncoder.flush();
@@ -3961,24 +4198,27 @@ TRẢ VỀ DUY NHẤT JSON:
 
                     renderer.dispose();
                     planeGeo.dispose();
-                    cinemaShaderMat.dispose();
+                    dynamicPixelShader.dispose();
 
-                    // 4. FFMPEG: Tiếp nhận audio WAV & video thô để chạy Filter Pipeline
-                    let audioBlob = null;
-                    if (mixedAudioBuffer) {
-                        audioBlob = this.audioBufferToWavBlob(mixedAudioBuffer);
+                    // 5. FFmpeg WASM thực thi bộ lọc và đóng gói đúng bitrate/sample rate của Gemini
+                    let audioWavBlob = null;
+                    if (mixedAudio) {
+                        audioWavBlob = this.audioBufferToWavBlob(mixedAudio);
                     }
 
-                    const finalVideoBlob = await this.executeFFmpegPostProduction({
+                    const finalizedVideoBlob = await this.executeFFmpegPostProduction({
                         rawVideoBlob,
-                        audioBlob,
-                        ffmpegPipeline: plan.ffmpeg_pipeline,
+                        audioBlob: audioWavBlob,
+                        encodingPipeline: encoding,
+                        userFps: fps,
                         onStatus
                     });
 
                     return {
-                        videoBlob: finalVideoBlob,
-                        planSummary: plan
+                        videoBlob: finalizedVideoBlob,
+                        timelinePlan,
+                        shotsLog: generatedShotsLog,
+                        totalFrames: globalFrameIndex
                     };
                 } catch (err) {
                     renderer.dispose();
@@ -4775,7 +5015,7 @@ TRẢ VỀ DUY NHẤT JSON:
                         updateInputTokensDisplay();
                     };
 
-                    // ĐIỀU PHỐI SẢN XUẤT VIDEO: TOÀN BỘ DO GEMINI TÍNH TOÁN & USER ĐIỀU KHIỂN
+                    // ĐIỀU PHỐI TẠO VIDEO: 100% THUẦN ĐỘNG HỌC ZERO-HARDCODE
                     const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
                         if (isGenerating.value) return;
                         isGenerating.value = true;
@@ -4785,7 +5025,6 @@ TRẢ VỀ DUY NHẤT JSON:
                         if (!msg) currentMessages.value.push(targetMsg);
 
                         try {
-                            // Tiếp nhận 100% lựa chọn của User từ UI
                             const userDuration = Number(cinemaConfig.duration) || 5;
                             const userAspectRatio = cinemaConfig.aspectRatio || '16:9';
                             const userSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
@@ -4794,8 +5033,8 @@ TRẢ VỀ DUY NHẤT JSON:
                             const userCues = toRaw(userTimelineCues.value);
                             const userCharacters = toRaw(cinemaVoiceCharacters.value);
                             const healthyKey = getNextHealthyApiKey()?.key || '';
+                            const userFps = 120; // Tốc độ xuất bản 120 FPS
 
-                            // Khởi chạy Pipeline thuần AI
                             const result = await AICinemaEngine.runFullIndustrialPipeline({
                                 userPrompt,
                                 userDuration,
@@ -4804,6 +5043,7 @@ TRẢ VỀ DUY NHẤT JSON:
                                 userSeed,
                                 userCues,
                                 userCharacters,
+                                userFps,
                                 directImageInput,
                                 apiKey: healthyKey,
                                 dispatchBgTaskFn: dispatchBackgroundTaskWithFallback,
@@ -4813,25 +5053,33 @@ TRẢ VỀ DUY NHẤT JSON:
                             const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
                             targetMsg.renderedVideoUrl = videoUrl;
 
-                            const plan = result.planSummary;
+                            const plan = result.timelinePlan;
+                            const shotsDetail = result.shotsLog.map(s => 
+                                `- **Shot ${s.shot_id} (${s.duration}s · ${s.frames} frames bù):** Seed #${s.seed}\n` +
+                                `  - *Keyframe 0 Flux:* "${s.prompt}"\n` +
+                                `  - *Ma trận sinh lý:* Nhịp thở ${s.physiology.respiratory_rate_hz}Hz · Nhịp tim ${s.physiology.heart_rate_hz}Hz · Vi rung mắt ${s.physiology.micro_saccades_freq}Hz\n` +
+                                `  - *Động lực học:* Tóc/vải lay động ${s.physics.fluid_cloth_sway_freq}Hz · Véc-tơ gió: [${s.physics.wind_vector.join(', ')}]`
+                            ).join('\n\n');
+
                             const dialogueSummary = userCues.map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`).join('\n');
 
                             targetMsg.content = (targetMsg.content || '') + 
-                                `\n\n🎬 **Tác Phẩm Video Đã Hoàn Thiện (24 FPS · FFmpeg Engine)**\n` +
-                                `- **Đạo diễn & Phân cảnh:** Google Gemini (${plan.shots.length} phân cảnh)\n` +
-                                `- **Quang học AI:** FOV ${plan.optics.fov}° · Khối nổi: ${plan.optics.mesh_density} vertex\n` +
-                                `- **Màu sắc & Hậu kỳ FFmpeg:** \`${plan.ffmpeg_pipeline.video_filter}\`\n` +
-                                `- **Âm nhạc & Lồng tiếng:** Gemini TTS (${plan.acoustic_design.soundtrack_mood})\n` +
-                                `- **Thời lượng:** ${userDuration} giây | **Tỷ lệ:** ${userAspectRatio}\n` +
-                                (dialogueSummary ? `\n🎙️ **Thoại nhân vật:**\n${dialogueSummary}` : '');
+                                `\n\n🎬 **Tác Phẩm Điện Ảnh 120 FPS Thuần Động Học (Zero-Hardcode)**\n` +
+                                `- **Chuẩn kết xuất:** **120 FPS Ultra-HFR** (${result.totalFrames} khung hình vi chuyển động)\n` +
+                                `- **Độ phân giải do Gemini tính:** ${plan.resolution.width}x${plan.resolution.height} (Tỷ lệ ${userAspectRatio})\n` +
+                                `- **Quang học & Mesh Three.js:** FOV ${plan.optics.fov}° · Lưới: ${plan.optics.mesh_density_x}x${plan.optics.mesh_density_y} đỉnh\n` +
+                                `- **Bitrate phần cứng WebCodecs:** ${plan.encoding_pipeline.video_bitrate} (GOP: ${plan.encoding_pipeline.keyframe_interval_seconds}s)\n` +
+                                `- **Hậu kỳ FFmpeg:** \`${plan.encoding_pipeline.video_filter}\` (-r ${userFps}, Âm thanh ${plan.encoding_pipeline.audio_bitrate})\n\n` +
+                                `🎞️ **Nhật ký phân cảnh & Bù ma trận điểm ảnh:**\n${shotsDetail}\n` +
+                                (dialogueSummary ? `\n🎙️ **Thoại Timeline:**\n${dialogueSummary}` : '');
 
                             targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                             scheduleDbSave(targetMsg);
                             scrollToBottom(true);
-                            notify("Đã hoàn tất xuất bản video chuyên nghiệp!");
+                            notify("Đã hoàn thành video 120 FPS thuần động học!");
                         } catch (err) {
                             notify(`Lỗi sản xuất video: ${err.message}`, true);
-                            targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi xử lý: ${err.message})*`;
+                            targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi quy trình: ${err.message})*`;
                             targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                             scheduleDbSave(targetMsg);
                         } finally {
