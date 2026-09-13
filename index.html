@@ -4291,14 +4291,18 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                     };
 
                     const cancelGeneration = () => {
-                        if (abortController) { try { abortController.abort(); } catch (_) {} abortController = null; }
-                        AICinemaWorkerBridge.terminate();
-                        isGenerating.value = false;
-                        searchStatusText.value = "";
-                        renderLoopActive = false;
-                        if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
-                        triggerHaptic('heavy');
-                    };
+    if (abortController) { try { abortController.abort(); } catch (_) {} abortController = null; }
+    AICinemaWorkerBridge.terminate();
+    isGenerating.value = false;
+    searchStatusText.value = "";
+    renderLoopActive = false;
+    // Sửa lỗi: Đảm bảo window.cancelAnimationFrame tồn tại trước khi gọi
+    if (renderRafId && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(renderRafId);
+        renderRafId = null;
+    }
+    triggerHaptic('heavy');
+};
 
                     const toggleSidebar = () => { isSidebarOpen.value = !isSidebarOpen.value; triggerHaptic('light'); };
                     const copyFullMessage = (text) => { safeCopyToClipboard(text).then(ok => { if (ok) notify("Đã sao chép nội dung"); }); };
@@ -6697,13 +6701,19 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         activeUtterances.length = 0;
 
                         if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-                        if (renderRafId) cancelAnimationFrame(renderRafId);
-                        if (textareaResizeRaf) cancelAnimationFrame(textareaResizeRaf);
+    if (renderRafId && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(renderRafId);
+        renderRafId = null; // Đặt lại về null sau khi hủy
+    }
+    if (textareaResizeRaf && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(textareaResizeRaf);
+        textareaResizeRaf = null; // Đặt lại về null sau khi hủy
+    }
 
-                        PythonEngine.terminate();
-                        ObjectUrlRegistry.revokeAll();
-                        flushAllPendingDbWrites();
-                        GDeepEventBus.clear();
+    PythonEngine.terminate();
+    ObjectUrlRegistry.revokeAll();
+    flushAllPendingDbWrites();
+    GDeepEventBus.clear();
                     });
 
                     return {
