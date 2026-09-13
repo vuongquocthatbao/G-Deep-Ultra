@@ -871,9 +871,11 @@
                                     <figure v-else-if="att.mimeType && att.mimeType.startsWith('video/')" class="m-0 rounded-xl overflow-hidden bg-surfaceElevated border border-white/5 p-1.5 max-w-[280px]">
                                         <video :src="att.videoUrl || getImgSrc(att)" controls class="w-full max-h-[160px] rounded-lg object-cover"></video>
                                         <figcaption class="text-[9px] text-indigo-300 font-mono mt-1 truncate flex items-center justify-between">
-                                            <span>{{ att.name }}</span>
-                                            <span v-if="att.videoChunksCount" class="bg-indigo-500/20 px-1 py-0.5 rounded text-[8px] font-bold">{{ att.videoChunksCount }} Khung Hình</span>
-                                        </figcaption>
+    <span class="truncate max-w-[150px]">{{ att.name }}</span>
+    <span class="bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded text-[8px] font-bold flex items-center gap-1">
+        <lucide-icon name="volume-2" class="w-2.5 h-2.5"></lucide-icon> Video
+    </span>
+</figcaption>
                                     </figure>
                                     <div v-else-if="att.mimeType && att.mimeType.startsWith('audio/')" class="rounded-xl overflow-hidden bg-surfaceElevated border border-white/5 p-1.5 max-w-[260px]">
                                         <audio :src="getImgSrc(att)" controls class="w-full h-8"></audio>
@@ -2842,71 +2844,236 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
         };
 
         // ============================================================
-        // BÓC TÁCH VIDEO ĐẦU VÀO
+        // BỘ MÁY XỬ LÝ VIDEO ĐA PHƯƠNG THỨC TOÀN DIỆN (VIDEO + AUDIO)
         // ============================================================
         const NeuralVideoEngine = {
-            async sliceVideoIntoTemporalChunks(videoFile, maxKeyframes = 16, onProgress = () => {}) {
+            /**
+             * Trích xuất toàn bộ Audio Track từ file Video thành định dạng WAV chuẩn (16-bit PCM Mono 16kHz/24kHz)
+             * giúp AI nghe rõ từng âm tiết, ngữ điệu và âm thanh môi trường.
+             */
+            async extractAudioTrackFromVideo(videoFile, targetSampleRate = 16000, onProgress = () => {}) {
+                try {
+                    onProgress(15, "Đang nạp dữ liệu âm thanh từ video...");
+                    const arrayBuffer = await videoFile.arrayBuffer();
+                    
+                    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                    if (!AudioContextClass) return null;
+                    
+                    const audioCtx = new AudioContextClass();
+                    onProgress(35, "Đang giải mã luồng sóng âm thanh...");
+                    const decodedAudio = await audioCtx.decodeAudioData(arrayBuffer);
+                    
+                    // Render lại âm thanh bằng OfflineAudioContext với sampleRate tối ưu cho LLM (16kHz mono)
+                    const offlineCtx = new OfflineAudioContext(1, Math.ceil(decodedAudio.duration * targetSampleRate), targetSampleRate);
+                    const source = offlineCtx.createBufferSource();
+                    source.buffer = decodedAudio;
+                    source.connect(offlineCtx.destination);
+                    source.start(0);
+                    
+                    onProgress(60, "Đang kết xuất âm thanh chuẩn hóa...");
+                    const renderedBuffer = await offlineCtx.startRendering();
+                    await audioCtx.close();
+
+                    // Đóng gói thành chuẩn PCM WAV
+                    const pcmData = renderedBuffer.getChannelData(0);
+                    const wavBuffer = new ArrayBuffer(44 + pcmData.length * 2);
+                    const view = new DataView(wavBuffer);
+
+                    const writeStr = (offset, s) => {
+                        for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+                    };
+
+                    writeStr(0, 'RIFF');
+                    view.setUint32(4, 36 + pcmData.length * 2, true);
+                    writeStr(8, 'WAVE');
+                    writeStr(12, 'fmt ');
+                    view.setUint32(16, 16, true);
+                    view.setUint16(20, 1, true); // PCM format
+                    view.setUint16(22, 1, true); // Mono 1 kênh
+                    view.setUint32(24, targetSampleRate, true);
+                    view.setUint32(28, targetSampleRate * 2, true);
+                    view.setUint16(32, 2, true); // Block align
+                    view.setUint16(34, 16, true); // 16-bit
+                    writeStr(36, 'data');
+                    view.setUint32(40, pcmData.length * 2, true);
+
+                    for (let i = 0; i < pcmData.length; i++) {
+                        const s = Math.max(-1, Math.min(1, pcmData[i]));
+                        view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+                    }
+
+                    // Chuyển đổi thành Base64
+                    let binary = '';
+                    const bytes = new Uint8Array(wavBuffer);
+                    const chunkSize = 0x8000;
+                    for (let i = 0; i < bytes.length; i += chunkSize) {
+                        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+                    }
+
+                    return {
+                        mimeType: 'audio/wav',
+                        data: btoa(binary),
+                        duration: decodedAudio.duration
+                    };
+                } catch (err) {
+                    console.warn("Không trích xuất được âm thanh rời rạc (video có thể không có tiếng):", err);
+                    return null;
+                }
+            },
+
+            /**
+             * Nén video client-side thông minh nếu dung lượng vượt ngưỡng giới hạn (~20MB của Base64 payload)
+             * mà vẫn giữ trọn vẹn Audio và Video liên tục (640x360 @ 24fps).
+             */
+            async transcodeVideoForNativeAi(videoFile, onProgress = () => {}) {
                 return new Promise((resolve) => {
                     const videoUrl = URL.createObjectURL(videoFile);
                     const video = document.createElement('video');
-                    video.preload = 'metadata';
                     video.src = videoUrl;
-                    video.muted = true;
+                    video.muted = false; // Bắt buộc false để lấy luồng âm thanh
                     video.playsInline = true;
+                    video.crossOrigin = "anonymous";
 
                     video.onerror = () => {
                         URL.revokeObjectURL(videoUrl);
-                        resolve({ duration: 10, chunks: [] });
+                        resolve(null);
                     };
 
                     video.onloadedmetadata = async () => {
                         try {
-                            const duration = video.duration || 10;
-                            const totalFrames = Math.min(maxKeyframes, Math.max(4, Math.floor(duration / 2)));
-                            const interval = duration / (totalFrames + 1);
-                            const canvas = document.createElement('canvas');
-                            const ctx = canvas.getContext('2d');
-                            
+                            const duration = video.duration || 5;
                             const targetWidth = 640;
                             const targetHeight = Math.round((video.videoHeight / video.videoWidth) * targetWidth) || 360;
+
+                            const canvas = document.createElement('canvas');
                             canvas.width = targetWidth;
                             canvas.height = targetHeight;
+                            const ctx = canvas.getContext('2d');
 
-                            const extractedChunks = [];
-                            for (let i = 1; i <= totalFrames; i++) {
-                                const targetTime = i * interval;
-                                video.currentTime = targetTime;
-                                await new Promise(r => {
-                                    const onSeek = () => {
-                                        video.removeEventListener('seeked', onSeek);
-                                        r();
-                                    };
-                                    video.addEventListener('seeked', onSeek);
-                                });
-
-                                ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-                                const base64 = canvas.toDataURL('image/jpeg', 0.72);
-                                const clean = base64.slice(base64.indexOf(',') + 1);
-                                const minutes = Math.floor(targetTime / 60);
-                                const seconds = Math.floor(targetTime % 60);
-                                const timecode = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-
-                                extractedChunks.push({
-                                    timecode: timecode,
-                                    second: Math.round(targetTime),
-                                    mimeType: 'image/jpeg',
-                                    data: clean
-                                });
-                                onProgress(Math.round((i / totalFrames) * 100));
+                            // Tạo luồng kết hợp Canvas Video Stream + Audio Track gốc
+                            const canvasStream = canvas.captureStream(24);
+                            
+                            // Trích xuất Audio Track đưa vào MediaStream
+                            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                            let audioCtx = null;
+                            if (AudioContextClass) {
+                                audioCtx = new AudioContextClass();
+                                const sourceNode = audioCtx.createMediaElementSource(video);
+                                const destNode = audioCtx.createMediaStreamDestination();
+                                sourceNode.connect(destNode);
+                                sourceNode.connect(audioCtx.destination); // Cho phép buffer đọc
+                                destNode.stream.getAudioTracks().forEach(track => canvasStream.addTrack(track));
                             }
+
+                            const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+                                ? 'video/webm;codecs=vp8,opus'
+                                : (MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm');
+
+                            const recorder = new MediaRecorder(canvasStream, {
+                                mimeType: mimeType,
+                                videoBitsPerSecond: 900000 // 900 kbps: Tối ưu dung lượng cực nhỏ nhưng hình ảnh rõ nét
+                            });
+
+                            const chunks = [];
+                            recorder.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+
+                            recorder.onstop = async () => {
+                                const compressedBlob = new Blob(chunks, { type: mimeType });
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                    const base64 = reader.result.slice(reader.result.indexOf(',') + 1);
+                                    URL.revokeObjectURL(videoUrl);
+                                    if (audioCtx) audioCtx.close();
+                                    resolve({
+                                        mimeType: mimeType.split(';')[0],
+                                        data: base64,
+                                        duration: duration,
+                                        blob: compressedBlob
+                                    });
+                                };
+                                reader.readAsDataURL(compressedBlob);
+                            };
+
+                            recorder.start(100);
+                            video.play();
+
+                            const drawInterval = setInterval(() => {
+                                if (video.paused || video.ended) return;
+                                ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+                                onProgress(Math.round((video.currentTime / duration) * 85), "Đang nén và bảo tồn luồng chuyển động...");
+                            }, 1000 / 24);
+
+                            video.onended = () => {
+                                clearInterval(drawInterval);
+                                recorder.stop();
+                            };
+                        } catch (e) {
                             URL.revokeObjectURL(videoUrl);
-                            resolve({ duration: Math.round(duration), chunks: extractedChunks });
-                        } catch (err) {
-                            URL.revokeObjectURL(videoUrl);
-                            resolve({ duration: 10, chunks: [] });
+                            resolve(null);
                         }
                     };
                 });
+            },
+
+            /**
+             * Hàm điều phối bóc tách toàn diện:
+             * 1. Giữ nguyên tệp Video gốc (MP4/WebM) gửi trực tiếp qua Base64 nếu file <= 18MB.
+             * 2. Nếu file > 18MB, thực hiện chuyển mã nén nhanh vẫn giữ âm thanh.
+             * 3. Trích xuất thêm High-Res Audio Track song song để AI không bỏ sót bất kỳ âm thanh/tiếng nói nào.
+             */
+            async processFullMultimodalVideo(videoFile, onProgress = () => {}) {
+                onProgress(5, "Đang khởi tạo bộ giải mã video và âm thanh...");
+                const maxDirectSize = 18 * 1024 * 1024; // 18MB
+                let videoBase64 = '';
+                let finalMimeType = videoFile.type || 'video/mp4';
+                let duration = 0;
+
+                // 1. Trích xuất kênh âm thanh chất lượng cao độc lập
+                const extractedAudio = await this.extractAudioTrackFromVideo(videoFile, 16000, (p, text) => {
+                    onProgress(Math.round(p * 0.4), text);
+                });
+
+                // 2. Xử lý Video Stream
+                if (videoFile.size <= maxDirectSize) {
+                    onProgress(50, "Đang đóng gói luồng video nguyên bản...");
+                    const reader = new FileReader();
+                    videoBase64 = await new Promise((res) => {
+                        reader.onload = () => res(reader.result.slice(reader.result.indexOf(',') + 1));
+                        reader.readAsDataURL(videoFile);
+                    });
+
+                    // Lấy duration video
+                    const tempVid = document.createElement('video');
+                    tempVid.src = URL.createObjectURL(videoFile);
+                    await new Promise(r => {
+                        tempVid.onloadedmetadata = () => {
+                            duration = Math.round(tempVid.duration || 0);
+                            URL.revokeObjectURL(tempVid.src);
+                            r();
+                        };
+                        tempVid.onerror = () => r();
+                    });
+                } else {
+                    onProgress(45, "Video dung lượng lớn, đang chuyển mã nén tối ưu băng thông...");
+                    const compressed = await this.transcodeVideoForNativeAi(videoFile, (p, text) => {
+                        onProgress(40 + Math.round(p * 0.55), text);
+                    });
+
+                    if (compressed) {
+                        videoBase64 = compressed.data;
+                        finalMimeType = compressed.mimeType;
+                        duration = Math.round(compressed.duration || 0);
+                    }
+                }
+
+                onProgress(100, "Hoàn tất giải mã đa phương thức!");
+
+                return {
+                    videoBase64: videoBase64,
+                    videoMime: finalMimeType,
+                    extractedAudio: extractedAudio, // { mimeType: 'audio/wav', data: base64, duration }
+                    duration: duration || extractedAudio?.duration || 0
+                };
             }
         };
 
@@ -3807,17 +3974,36 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
 
             (attachments || []).forEach(att => {
                 const mime = normalizeMimeType(att.mimeType, att.name);
+                
+                // 1. Xử lý video trọn vẹn (Nghe + Xem nguyên bản)
+                if (att.isFullVideo && att.data) {
+                    // Đưa toàn bộ luồng video (hình ảnh + âm thanh tích hợp)
+                    parts.push({
+                        inlineData: {
+                            mimeType: att.mimeType || 'video/mp4',
+                            data: cleanBase64Data(att.data)
+                        }
+                    });
+
+                    // Bổ sung luồng Audio WAV chất lượng cao để AI phân tích đối soát giọng nói chính xác 100%
+                    if (att.audioTrack && att.audioTrack.data) {
+                        parts.push({
+                            inlineData: {
+                                mimeType: 'audio/wav',
+                                data: cleanBase64Data(att.audioTrack.data)
+                            }
+                        });
+                    }
+
+                    textAttachmentsSummary += `\n[Tệp video hoàn chỉnh: ${att.name} (Thời lượng: ${att.duration || 0}s, bao gồm đầy đủ luồng hình ảnh chuyển động và toàn bộ âm thanh thực tế)]\n`;
+                    return;
+                }
+
                 if (att.fileUri) {
                     parts.push({ fileData: { mimeType: mime, fileUri: att.fileUri } });
                     return;
                 }
-                if (att.videoChunks && Array.isArray(att.videoChunks)) {
-                    att.videoChunks.forEach(chunk => {
-                        parts.push({ inlineData: { mimeType: chunk.mimeType || 'image/jpeg', data: cleanBase64Data(chunk.data) } });
-                    });
-                    textAttachmentsSummary += `\n[Tệp video: ${att.name} (${att.videoChunks.length} khung hình mẫu, thời lượng ${att.duration || 0}s)]\n`;
-                    return;
-                }
+
                 const isMedia = mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/');
                 if (att.textContent && typeof att.textContent === 'string' && att.textContent.trim()) {
                     textAttachmentsSummary += `\n\n--- [Tài liệu: ${att.name}] ---\n${att.textContent.trim()}\n--- [Hết tài liệu: ${att.name}] ---`;
@@ -3828,7 +4014,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
             });
 
             if (textAttachmentsSummary) promptText = promptText ? `${promptText}\n${textAttachmentsSummary}` : textAttachmentsSummary.trim();
-            if (!promptText && parts.length > 0) promptText = "Phân tích và xử lý dữ liệu đính kèm.";
+            if (!promptText && parts.length > 0) promptText = "Hãy xem trọn vẹn diễn biến video, lắng nghe tất cả âm thanh, lời thoại và phân tích chi tiết.";
             if (promptText) parts.push({ text: promptText });
             return parts.length > 0 ? parts : [{ text: " " }];
         }
@@ -4668,25 +4854,28 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
 
                             try {
                                 if (isVideo) {
-                                    searchStatusText.value = `Đang xử lý phân đoạn video...`;
-                                    const temporalData = await NeuralVideoEngine.sliceVideoIntoTemporalChunks(
-                                        file, 16, (pct) => {
-                                            searchStatusText.value = `Đang trích xuất khung hình: ${pct}%...`;
+                                    searchStatusText.value = `Đang đồng bộ hóa video và luồng âm thanh...`;
+                                    
+                                    const mediaResult = await NeuralVideoEngine.processFullMultimodalVideo(
+                                        file, (pct, statusText) => {
+                                            searchStatusText.value = `[${pct}%] ${statusText}`;
                                         }
                                     );
 
                                     pendingAttachments.value.push({
                                         name: file.name,
-                                        mimeType: normalizeMimeType(file.type || 'video/mp4', file.name),
+                                        mimeType: mediaResult.videoMime,
+                                        data: mediaResult.videoBase64, // Toàn bộ video file
+                                        audioTrack: mediaResult.extractedAudio, // Kênh âm thanh lossless song song
                                         videoUrl: ObjectUrlRegistry.create(file),
-                                        videoChunks: temporalData.chunks,
-                                        videoChunksCount: temporalData.chunks.length,
-                                        duration: temporalData.duration,
+                                        duration: mediaResult.duration,
                                         size: sizeStr,
-                                        rawType: file.type
+                                        rawType: file.type,
+                                        isFullVideo: true
                                     });
+
                                     searchStatusText.value = "";
-                                    notify(`Đã nạp video thành công`);
+                                    notify(`Đã nạp video và âm thanh trọn vẹn!`);
                                 } else if (isAudio) {
                                     let base64Data = '';
                                     if (file.size <= 25 * 1024 * 1024) base64Data = await readFileAsBase64(file);
