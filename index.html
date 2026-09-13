@@ -1826,12 +1826,13 @@
 
         function createDepthTexture(width, height, depthMap) {
             const c = new OffscreenCanvas(width, height);
+            if (!c.style) c.style = {};
             const ctx = c.getContext('2d');
             const imgData = ctx.createImageData(width, height);
             const data = imgData.data;
 
-            const horizonPx = Math.floor(Number(depthMap.horizon_y) * height);
-            const skyCutoffPx = Math.floor(Number(depthMap.sky_cutoff) * height);
+            const horizonPx = Math.floor(Number(depthMap.horizon_y || 0.5) * height);
+            const skyCutoffPx = Math.floor(Number(depthMap.sky_cutoff || 0.3) * height);
             const bias = Number(depthMap.bias) || 1.3;
 
             for (let y = 0; y < height; y++) {
@@ -1938,7 +1939,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                     } catch (_) {}
                 }
 
-                if (!narrativePlan || !narrativePlan.resolution) {
+                if (!narrativePlan || typeof narrativePlan !== 'object' || !narrativePlan.resolution || typeof narrativePlan.resolution !== 'object' || !narrativePlan.resolution.width || !narrativePlan.resolution.height) {
                     narrativePlan = {
                         resolution: { width: 1024, height: 576 },
                         optics: { fov: 40.0, plane_distance: 2.2, overscan: 1.35, mesh_grid: 180 },
@@ -1952,8 +1953,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                     };
                 }
 
-                narrativePlan.resolution.width = Math.round(narrativePlan.resolution.width / 16) * 16;
-                narrativePlan.resolution.height = Math.round(narrativePlan.resolution.height / 16) * 16;
+                narrativePlan.resolution.width = Math.max(16, Math.round(Number(narrativePlan.resolution.width || 1024) / 16) * 16);
+                narrativePlan.resolution.height = Math.max(16, Math.round(Number(narrativePlan.resolution.height || 576) / 16) * 16);
                 const width = narrativePlan.resolution.width;
                 const height = narrativePlan.resolution.height;
 
@@ -2015,8 +2016,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                 const planeHeight = visibleHeight * overscan;
 
                 const offscreen = new OffscreenCanvas(width, height);
+                if (!offscreen.style) offscreen.style = {}; // Polyfill chống lỗi undefined style
                 const renderer = new THREE.WebGLRenderer({ canvas: offscreen, antialias: true, alpha: false, preserveDrawingBuffer: true });
-                renderer.setSize(width, height);
+                renderer.setSize(width, height, false); // false để Three.js không gán style.width
                 renderer.setPixelRatio(1);
 
                 const scene = new THREE.Scene();
