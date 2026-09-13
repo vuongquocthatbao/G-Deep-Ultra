@@ -4342,94 +4342,95 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                     const enableDeepThinking = ref((() => { try { return localStorage.getItem('gdeep_deep_thinking') === 'true'; } catch (_) { return false; } })());
                     const enableGoogleSearch = ref((() => { try { return localStorage.getItem('gdeep_google_search') === 'true'; } catch (_) { return false; } })());
                     const enableImageGen = ref((() => { try { return localStorage.getItem('gdeep_image_gen') === 'true'; } catch (_) { return false; } })());
-// --- XƯỞNG PHIM STATE (ZERO HARDCODED DATA) ---
-const enableCinemaStudio = ref((() => { 
-    try { return localStorage.getItem('gdeep_cinema_studio') === 'true'; } catch (_) { return false; } 
-})());
+                    const enableCinemaStudio = ref((() => { try { return localStorage.getItem('gdeep_cinema_studio') === 'true'; } catch (_) { return false; } })());
 
-const cinemaStudioTab = ref('timeline');
+                    const cinemaStudioTab = ref('timeline');
 
-const cinemaConfig = reactive({
-    aspectRatio: "16:9",
-    duration: 5,
-    style: "cinematic",
-    characterSeed: Math.floor(Math.random() * 899999) + 100000 // Sinh ngẫu nhiên tự động
-});
+                    const imageConfig = reactive({
+                        aspectRatio: "1:1",
+                        style: "photorealistic",
+                        keepCharacter: false,
+                        characterSeed: 123456
+                    });
 
-// Danh sách nhân vật hoàn toàn sạch sẽ, do người dùng chủ động tạo
-const cinemaVoiceCharacters = ref([]);
+                    const cinemaConfig = reactive({
+                        aspectRatio: "16:9",
+                        duration: 5,
+                        style: "cinematic",
+                        cameraMotion: "dolly",
+                        characterSeed: 884921
+                    });
 
-// Danh sách mốc thời gian hoàn toàn sạch sẽ, không có lời thoại/kịch bản gán sẵn
-const userTimelineCues = ref([]);
-const timelineCursorPercent = ref(0);
+                    const cinemaVoiceCharacters = ref([
+                        { id: 1, name: 'Nhân vật 1', gender: 'male', geminiVoice: 'Puck' },
+                        { id: 2, name: 'Nhân vật 2', gender: 'female', geminiVoice: 'Kore' }
+                    ]);
 
-const getCharacterBadgeColor = (speakerName) => {
-    const idx = cinemaVoiceCharacters.value.findIndex(c => c.name === speakerName);
-    const colors = ['#38bdf8', '#c084fc', '#34d399', '#f472b6', '#fbbf24', '#e2e8f0'];
-    return colors[idx >= 0 ? idx % colors.length : 0] || '#38bdf8';
-};
+                    const userTimelineCues = ref([
+                        { id: 1, speaker: 'Nhân vật 1', startTimeSec: 1.0, text: 'Hệ thống đã sẵn sàng cho phân cảnh tiếp theo.' },
+                        { id: 2, speaker: 'Nhân vật 2', startTimeSec: 3.0, text: 'Đã xác nhận.' }
+                    ]);
+                    const timelineCursorPercent = ref(0);
 
-const handleTimelineRulerClick = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const percent = Math.max(0, Math.min(100, (clickX / rect.width) * 100));
-    timelineCursorPercent.value = percent;
-    const targetTime = Number(((percent / 100) * cinemaConfig.duration).toFixed(1));
-    
-    if (cinemaVoiceCharacters.value.length === 0) {
-        addNewVoiceCharacter();
-    }
-    const defaultChar = cinemaVoiceCharacters.value[0]?.name || 'Nhân vật 1';
-    userTimelineCues.value.push({
-        id: Date.now(),
-        speaker: defaultChar,
-        startTimeSec: targetTime,
-        text: ''
-    });
-    userTimelineCues.value.sort((a, b) => a.startTimeSec - b.startTimeSec);
-    triggerHaptic('light');
-};
+                    const getCharacterBadgeColor = (speakerName) => {
+                        const idx = cinemaVoiceCharacters.value.findIndex(c => c.name === speakerName);
+                        const colors = ['#38bdf8', '#c084fc', '#34d399', '#f472b6', '#fbbf24'];
+                        return colors[idx % colors.length] || '#38bdf8';
+                    };
 
-const addTimelineDialogueCue = () => {
-    if (cinemaVoiceCharacters.value.length === 0) {
-        addNewVoiceCharacter();
-    }
-    const defaultChar = cinemaVoiceCharacters.value[0]?.name || 'Nhân vật 1';
-    const lastTime = userTimelineCues.value.length 
-        ? Math.min(cinemaConfig.duration, userTimelineCues.value[userTimelineCues.value.length - 1].startTimeSec + 1.5) 
-        : 0.0;
-        
-    userTimelineCues.value.push({
-        id: Date.now(),
-        speaker: defaultChar,
-        startTimeSec: Number(lastTime.toFixed(1)),
-        text: ''
-    });
-    userTimelineCues.value.sort((a, b) => a.startTimeSec - b.startTimeSec);
-    triggerHaptic('light');
-};
+                    const handleTimelineRulerClick = (e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const clickX = e.clientX - rect.left;
+                        const percent = Math.max(0, Math.min(100, (clickX / rect.width) * 100));
+                        timelineCursorPercent.value = percent;
+                        const targetTime = Number(((percent / 100) * cinemaConfig.duration).toFixed(1));
+                        
+                        const defaultChar = cinemaVoiceCharacters.value[0]?.name || 'Nhân vật 1';
+                        userTimelineCues.value.push({
+                            id: Date.now(),
+                            speaker: defaultChar,
+                            startTimeSec: targetTime,
+                            text: 'Nội dung câu thoại...'
+                        });
+                        userTimelineCues.value.sort((a, b) => a.startTimeSec - b.startTimeSec);
+                        triggerHaptic('light');
+                    };
 
-const removeTimelineCue = (idx) => {
-    userTimelineCues.value.splice(idx, 1);
-    triggerHaptic('light');
-};
+                    const addTimelineDialogueCue = () => {
+                        const defaultChar = cinemaVoiceCharacters.value[0]?.name || 'Nhân vật 1';
+                        const lastTime = userTimelineCues.value.length ? Math.min(cinemaConfig.duration, userTimelineCues.value[userTimelineCues.value.length - 1].startTimeSec + 2.0) : 1.0;
+                        userTimelineCues.value.push({
+                            id: Date.now(),
+                            speaker: defaultChar,
+                            startTimeSec: Number(lastTime.toFixed(1)),
+                            text: 'Nội dung câu thoại...'
+                        });
+                        userTimelineCues.value.sort((a, b) => a.startTimeSec - b.startTimeSec);
+                        triggerHaptic('light');
+                    };
 
-const addNewVoiceCharacter = () => {
-    const newId = cinemaVoiceCharacters.value.length + 1;
-    const voicePool = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'];
-    cinemaVoiceCharacters.value.push({
-        id: Date.now(),
-        name: `Nhân vật ${newId}`,
-        gender: newId % 2 === 0 ? 'female' : 'male',
-        geminiVoice: voicePool[(newId - 1) % voicePool.length]
-    });
-    triggerHaptic('light');
-};
+                    const removeTimelineCue = (idx) => {
+                        userTimelineCues.value.splice(idx, 1);
+                        triggerHaptic('light');
+                    };
 
-const removeVoiceCharacter = (index) => {
-    cinemaVoiceCharacters.value.splice(index, 1);
-    triggerHaptic('light');
-};
+                    const addNewVoiceCharacter = () => {
+                        const newId = cinemaVoiceCharacters.value.length + 1;
+                        cinemaVoiceCharacters.value.push({
+                            id: Date.now(),
+                            name: `Nhân vật ${newId}`,
+                            gender: newId % 2 === 0 ? 'female' : 'male',
+                            geminiVoice: newId % 2 === 0 ? 'Aoede' : 'Fenrir'
+                        });
+                        triggerHaptic('light');
+                    };
+
+                    const removeVoiceCharacter = (index) => {
+                        if (cinemaVoiceCharacters.value.length > 1) {
+                            cinemaVoiceCharacters.value.splice(index, 1);
+                            triggerHaptic('light');
+                        }
+                    };
 
                     const toggleImageGen = () => {
                         enableImageGen.value = !enableImageGen.value;
@@ -4767,79 +4768,77 @@ const removeVoiceCharacter = (index) => {
                     };
 
                     const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
-    if (isGenerating.value) return;
-    isGenerating.value = true;
-    triggerHaptic('heavy');
+                        if (isGenerating.value) return;
+                        isGenerating.value = true;
+                        triggerHaptic('heavy');
 
-    const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
-    if (!msg) currentMessages.value.push(targetMsg);
+                        const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
+                        if (!msg) currentMessages.value.push(targetMsg);
 
-    try {
-        const userDuration = Number(cinemaConfig.duration) || 5;
-        const userAspectRatio = cinemaConfig.aspectRatio || '16:9';
-        const userSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
-        const userStyle = cinemaConfig.style || 'cinematic';
-        const userPrompt = (customPrompt || inputText.value || '').trim();
-        const userCues = toRaw(userTimelineCues.value);
-        const userCharacters = toRaw(cinemaVoiceCharacters.value);
-        const healthyKey = getNextHealthyApiKey()?.key || '';
-        const userFps = 24;
+                        try {
+                            const userDuration = Number(cinemaConfig.duration) || 5;
+                            const userAspectRatio = cinemaConfig.aspectRatio || '16:9';
+                            const userSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
+                            const userStyle = cinemaConfig.style || 'cinematic';
+                            const userPrompt = customPrompt || 'Cảnh quay nghệ thuật chuyển động sống động';
+                            const userCues = toRaw(userTimelineCues.value);
+                            const userCharacters = toRaw(cinemaVoiceCharacters.value);
+                            const healthyKey = getNextHealthyApiKey()?.key || '';
+                            const userFps = 24;
 
-        let directImageDataUrl = null;
-        if (directImageInput) {
-            if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
-            else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
-        }
+                            let directImageDataUrl = null;
+                            if (directImageInput) {
+                                if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
+                                else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
+                            }
 
-        const result = await AICinemaWorkerBridge.runProductionInWorker({
-            userPrompt,
-            userDuration,
-            userAspectRatio,
-            userStyle,
-            userSeed,
-            userCues,
-            userCharacters,
-            userFps,
-            directImageDataUrl,
-            apiKey: healthyKey
-        }, (statusText) => {
-            searchStatusText.value = statusText;
-        });
+                            const result = await AICinemaWorkerBridge.runProductionInWorker({
+                                userPrompt,
+                                userDuration,
+                                userAspectRatio,
+                                userStyle,
+                                userSeed,
+                                userCues,
+                                userCharacters,
+                                userFps,
+                                directImageDataUrl,
+                                apiKey: healthyKey
+                            }, (statusText) => {
+                                searchStatusText.value = statusText;
+                            });
 
-        const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
-        targetMsg.renderedVideoUrl = videoUrl;
+                            const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
+                            targetMsg.renderedVideoUrl = videoUrl;
 
-        const shotsDetail = result.shotsLog.map(s => 
-            `- **Phân cảnh ${s.shot_id} (${s.duration}s):** *${s.action || 'Chuyển động điện ảnh'}* [Góc máy: ${s.camera || 'Tự động'}]`
-        ).join('\n\n');
+                            const shotsDetail = result.shotsLog.map(s => 
+                                `- **Phân cảnh ${s.shot_id} (${s.duration}s):** *${s.action}*`
+                            ).join('\n\n');
 
-        const dialogueSummary = userCues
-            .filter(d => d.text && d.text.trim())
-            .map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`)
-            .join('\n');
+                            const dialogueSummary = userCues.map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`).join('\n');
 
-        targetMsg.content = (targetMsg.content || '') + 
-            `\n\n🎬 **Video Nghệ Thuật Hoàn Thiện**\n` +
-            `- **Độ phân giải:** ${result.narrativePlan.resolution.width}x${result.narrativePlan.resolution.height} (Tỷ lệ ${userAspectRatio})\n` +
-            `- **Thời lượng:** ${userDuration}s\n\n` +
-            `🎞️ **Chi tiết các phân cảnh do AI biên kịch & đạo diễn:**\n${shotsDetail}\n` +
-            (dialogueSummary ? `\n🎙️ **Lời thoại:**\n${dialogueSummary}` : '');
+                            targetMsg.content = (targetMsg.content || '') + 
+                                `\n\n🎬 **Video Nghệ Thuật Hoàn Thiện**\n` +
+                                `- **Độ phân giải:** ${result.narrativePlan.resolution.width}x${result.narrativePlan.resolution.height} (Tỷ lệ ${userAspectRatio})\n` +
+                                `- **Chế độ xử lý:** Xử lý ngầm độc lập (Giữ giao diện phản hồi tức thì)\n` +
+                                `- **Âm thanh:** Âm hưởng không gian đa tầng + Tiếng động môi trường\n\n` +
+                                `🎞️ **Nhật ký phân cảnh:**\n${shotsDetail}\n` +
+                                (dialogueSummary ? `\n🎙️ **Lời thoại diễn hoạt:**\n${dialogueSummary}` : '');
 
-        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-        scheduleDbSave(targetMsg);
-        scrollToBottom(true);
-        notify("Đã kết xuất hoàn tất video nghệ thuật!");
-    } catch (err) {
-        notify(`Lỗi tạo video: ${err.message}`, true);
-        targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi xử lý: ${err.message})*`;
-        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-        scheduleDbSave(targetMsg);
-    } finally {
-        isGenerating.value = false;
-        searchStatusText.value = "";
-        updateInputTokensDisplay();
-    }
-};
+                            targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                            scheduleDbSave(targetMsg);
+                            scrollToBottom(true);
+                            notify("Đã kết xuất hoàn tất video nghệ thuật!");
+                        } catch (err) {
+                            notify(`Lỗi sản xuất video: ${err.message}`, true);
+                            targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi xử lý: ${err.message})*`;
+                            targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                            scheduleDbSave(targetMsg);
+                        } finally {
+                            isGenerating.value = false;
+                            searchStatusText.value = "";
+                            updateInputTokensDisplay();
+                        }
+                    };
 
                     const animateCurrentLightboxImage = () => {
                         const currentUrl = lightbox.url;
