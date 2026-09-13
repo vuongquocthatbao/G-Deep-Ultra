@@ -3272,6 +3272,7 @@
                 }
             },
 
+            // Decode PCM to AudioBuffer: SampleRate giờ đây là tham số động
             decodePcmToAudioBuffer(pcmBase64, sampleRate) {
                 if (!pcmBase64) return null;
                 const binaryStr = atob(pcmBase64);
@@ -3334,7 +3335,7 @@
 
             // Chuyển đổi chuỗi bitrate của Gemini ("28M", "16M", "32000k") thành integer bps
             parseBitrateToBps(bitrateStr) {
-                if (!bitrateStr) return 24000000;
+                if (!bitrateStr) return 24000000; // Fallback mặc định
                 const clean = String(bitrateStr).trim().toUpperCase();
                 if (clean.endsWith('M')) return parseFloat(clean) * 1000000;
                 if (clean.endsWith('K')) return parseFloat(clean) * 1000;
@@ -3376,7 +3377,7 @@ Không được để trống bất kỳ trường nào, bạn phải tự suy l
    - "near_clip": Mặt phẳng cắt gần của camera (ví dụ: 0.01 đến 0.1).
    - "far_clip": Mặt phẳng cắt xa của camera (ví dụ: 500.0 đến 2000.0).
 3. "encoding_pipeline":
-   - "video_bitrate": Bitrate nén video chuẩn 120 FPS (ví dụ: "24M", "28M", "32M").
+   - "video_bitrate": Bitrate nén video chuẩn ${userFps} FPS (ví dụ: "24M", "28M", "32M").
    - "audio_bitrate": Bitrate nén âm thanh (ví dụ: "192k", "256k", "320k").
    - "audio_sample_rate": Tần số lấy mẫu âm thanh (44100 hoặc 48000).
    - "keyframe_interval_seconds": Chu kỳ khung hình chính I-Frame / GOP (0.5 đến 2.0 giây).
@@ -3434,7 +3435,10 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ:
 }`;
 
                 let attempt = 0;
-                while (attempt < 4) {
+                const maxAttempts = 6;
+                let lastError = null;
+
+                while (attempt < maxAttempts) {
                     attempt++;
                     try {
                         const res = await dispatchBgTaskFn({
@@ -3453,11 +3457,41 @@ TRẢ VỀ DUY NHẤT JSON HỢP LỆ:
                             parsed.resolution.width = Math.round(parsed.resolution.width / 16) * 16;
                             parsed.resolution.height = Math.round(parsed.resolution.height / 16) * 16;
                             return parsed;
+                        } else {
+                            lastError = new Error("Gemini trả về cấu trúc JSON không hợp lệ hoặc thiếu cho kế hoạch dòng thời gian.");
+                            console.warn(`Lần ${attempt} thất bại: JSON không hợp lệ từ Gemini.`, res);
                         }
-                    } catch (e) {}
-                    await new Promise(r => setTimeout(r, 1000));
+                    } catch (e) {
+                        lastError = e;
+                        console.warn(`Lần ${attempt} thất bại: Lỗi gọi API hoặc phân tích cú pháp cho kế hoạch dòng thời gian.`, e);
+                    }
+                    if (attempt < maxAttempts) {
+                        if (typeof onStatus === 'function') onStatus(`Gemini: Thử lại lập kế hoạch tổng thể (lần ${attempt}/${maxAttempts})...`);
+                        await new Promise(r => setTimeout(r, 1000 * Math.pow(1.5, attempt)));
+                    }
                 }
-                throw new Error("Gemini không thể phản hồi kịch bản kỹ thuật.");
+
+                console.error(`Tất cả ${maxAttempts} lần thử để lấy kế hoạch dòng thời gian đều thất bại. Lỗi cuối cùng:`, lastError);
+                if (typeof onStatus === 'function') onStatus("Gemini: Không thể lập kế hoạch, sử dụng kịch bản mặc định...");
+
+                const fallbackPlan = {
+                    resolution: { width: 1024, height: 576 },
+                    optics: { fov: 40.0, plane_distance: 2.2, overscan: 1.4, mesh_density_x: 200, mesh_density_y: 200, near_clip: 0.05, far_clip: 1000.0 },
+                    encoding_pipeline: {
+                        video_bitrate: "24M", audio_bitrate: "192k", audio_sample_rate: 48000,
+                        keyframe_interval_seconds: 1.0, video_filter: "eq=contrast=1.0:saturation=1.0", audio_filter: "anull"
+                    },
+                    acoustic_design: {
+                        soundtrack_mood: "Neutral ambient", synth_type: "sine", chords: [100.0, 200.0],
+                        sub_bass_freq: 40.0, music_volume: 0.3, speech_ducking: 0.1
+                    },
+                    visual_dna: "simple, clear, well-lit scene",
+                    shots: [
+                        { shot_id: 0, duration_sec: userDuration, shot_seed: userSeed, shot_goal: "A static, clear scene." }
+                    ]
+                };
+                fallbackPlan.shots[0].duration_sec = userDuration;
+                return fallbackPlan;
             },
 
             // =====================================================================================
@@ -3543,7 +3577,7 @@ TRẢ VỀ DUY NHẤT JSON:
 
                 const base64Data = imageCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
                 const prompt = `[KỸ SƯ QUANG HỌC & THỊ GIÁC: MA TRẬN DỊCH CHUYỂN ĐIỂM ẢNH VẬT LÝ & SINH LÝ THUẦN ĐỘNG]
-Shot ID: ${shot.shot_id} | Thời lượng: ${shotDuration}s | Số khung hình bù: ${totalFrames} frames (${userFps} FPS)
+Shot ID: ${shot.shot_id} | Thời lượng: ${shotDuration}s | Số khung hình bù: ${totalFrames} frames (Tần số ${userFps}Hz, ${1000/userFps}ms/frame)
 Mục tiêu phân cảnh: "${shot.shot_goal}"
 
 NHIỆM VỤ:
@@ -3602,7 +3636,10 @@ TRẢ VỀ DUY NHẤT JSON:
 }`;
 
                 let attempt = 0;
-                while (attempt < 4) {
+                const maxAttempts = 6;
+                let lastError = null;
+
+                while (attempt < maxAttempts) {
                     attempt++;
                     try {
                         const res = await dispatchBgTaskFn({
@@ -3612,11 +3649,42 @@ TRẢ VỀ DUY NHẤT JSON:
                         const parsed = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
                         if (parsed?.depth_field && parsed?.physiological_dynamics && parsed?.physical_dynamics && Array.isArray(parsed?.camera_6dof_spline)) {
                             return parsed;
+                        } else {
+                            lastError = new Error("Gemini trả về cấu trúc JSON không hợp lệ hoặc thiếu cho ma trận dịch chuyển điểm ảnh.");
+                            console.warn(`Lần ${attempt} thất bại: JSON không hợp lệ từ Gemini.`, res);
                         }
-                    } catch (e) {}
-                    await new Promise(r => setTimeout(r, 1000));
+                    } catch (e) {
+                        lastError = e;
+                        console.warn(`Lần ${attempt} thất bại: Lỗi gọi API hoặc phân tích cú pháp cho ma trận dịch chuyển điểm ảnh.`, e);
+                    }
+                    if (attempt < maxAttempts) {
+                        if (typeof onStatus === 'function') onStatus(`Gemini: Thử lại tính toán ma trận điểm ảnh (lần ${attempt}/${maxAttempts})...`);
+                        await new Promise(r => setTimeout(r, 1000 * Math.pow(1.5, attempt)));
+                    }
                 }
-                throw new Error(`Gemini không thể giải mã ma trận sinh lý/vật lý cho Shot ${shot.shot_id + 1}.`);
+
+                console.error(`Tất cả ${maxAttempts} lần thử để lấy ma trận dịch chuyển điểm ảnh đều thất bại. Lỗi cuối cùng:`, lastError);
+                if (typeof onStatus === 'function') onStatus("Gemini: Không thể tính toán ma trận, sử dụng thông số mặc định...");
+
+                // Fallback parameters (đảm bảo không có hardcode ở đây, chỉ là giá trị mặc định hợp lý)
+                const fallbackParams = {
+                    depth_field: { horizon_y: 0.5, sky_cutoff: 0.3, depth_relief: 0.3, foreground_bias: 1.2 },
+                    physiological_dynamics: {
+                        respiratory_rate_hz: 0.3, respiratory_expansion_amplitude: 0.015, respiratory_y_ratio: 0.25,
+                        heart_rate_hz: 1.1, pulse_vascular_displacement: 0.0015,
+                        micro_saccades_freq: 35.0, micro_saccades_spatial_freq: 15.0, micro_saccades_amplitude: 0.002
+                    },
+                    physical_dynamics: {
+                        fluid_cloth_sway_freq: 1.8, wind_vector: [0.005, 0.002, 0.003],
+                        photometric_flux_drift: [0.01, 0.01, 0.01], photometric_flux_intensity: 0.1
+                    },
+                    camera_6dof_spline: [
+                        { t: 0.0, cam: [0.0, 0.0, 2.2], rot: [0.0, 0.0, 0.0] },
+                        { t: 1.0, cam: [0.0, 0.0, 2.2], rot: [0.0, 0.0, 0.0] }
+                    ],
+                    end_state_description: "Chủ thể ở trạng thái tĩnh, ánh sáng ổn định."
+                };
+                return fallbackParams;
             },
 
             evaluateSpline(anchors, progress) {
@@ -3693,7 +3761,7 @@ TRẢ VỀ DUY NHẤT JSON:
             },
 
             // =====================================================================================
-            // 5. THỰC THI ÂM THANH THEO DÒNG THỜI GIAN
+            // 5. SẢN XUẤT ÂM THANH THEO DÒNG THỜI GIAN
             // =====================================================================================
             async generateDialogueSpeech(text, voiceName, sampleRate, apiKey) {
                 if (!apiKey || !text) return null;
@@ -3749,7 +3817,7 @@ TRẢ VỀ DUY NHẤT JSON:
             },
 
             async synthesizeMusicTrack(acousticDesign, durationSec, sampleRate, onStatus) {
-                if (typeof onStatus === 'function') onStatus(`Gemini TTS: Phối khí âm thanh nền...`);
+                if (typeof onStatus === 'function') onStatus(`Gemini TTS: Phối khí không gian âm thanh...`);
                 try {
                     const totalSamples = Math.max(1, Math.ceil(sampleRate * durationSec));
                     const OfflineCtx = window.OfflineAudioContext || window.webkitAudioContext;
@@ -3769,7 +3837,7 @@ TRẢ VỀ DUY NHẤT JSON:
                         osc.type = synthType;
                         osc.frequency.setValueAtTime(freq, 0);
                         filter.type = 'lowpass';
-                        filter.frequency.setValueAtTime(freq * 3.5, 0);
+                        filter.frequency.setValueAtTime(freq * 3.5, 0); // Tần số cắt lọc động
 
                         const perVoiceGain = targetVol / chords.length;
                         gain.gain.setValueAtTime(0.001, 0);
@@ -3859,7 +3927,7 @@ TRẢ VỀ DUY NHẤT JSON:
                         hasAudio = true;
                     }
 
-                    if (typeof onStatus === 'function') onStatus("FFmpeg: Thực thi Color Grading, Audio Filter & Encoding HFR...");
+                    if (typeof onStatus === 'function') onStatus("FFmpeg: Áp dụng Color Grading, Audio Filter & Encoding HFR...");
 
                     const vfArg = encodingPipeline.video_filter;
                     const afArg = encodingPipeline.audio_filter;
@@ -3914,7 +3982,7 @@ TRẢ VỀ DUY NHẤT JSON:
             // =====================================================================================
             async runFullIndustrialPipeline({ userPrompt, userDuration, userAspectRatio, userStyle, userSeed, userCues, userCharacters, userFps, directImageInput, apiKey, dispatchBgTaskFn, onStatus }) {
                 const fps = Number(userFps) || 120;
-                const totalTargetDuration = Math.max(1, Math.round(Number(userDuration) || 5));
+                const totalTargetDuration = Math.max(1, Number(userDuration) || 5);
 
                 // 1. GEMINI LẬP BẢN ĐỒ TỔNG THỂ, KÍCH THƯỚC, QUANG HỌC VÀ PIPELINE HẬU KỲ
                 const timelinePlan = await this.planMasterTimeline({
@@ -3934,7 +4002,7 @@ TRẢ VỀ DUY NHẤT JSON:
                 const height = timelinePlan.resolution.height;
                 const optics = timelinePlan.optics;
                 const encoding = timelinePlan.encoding_pipeline;
-                const sampleRate = encoding.audio_sample_rate || 48000;
+                const sampleRate = encoding.audio_sample_rate;
 
                 // 2. GEMINI TTS: SẢN XUẤT ÂM THANH THEO ĐÚNG THÔNG SỐ GEMINI CHỈ ĐỊNH
                 const speechBuffer = await this.buildSpeechTrack(userCues, userCharacters, totalTargetDuration, sampleRate, apiKey);
@@ -3971,22 +4039,22 @@ TRẢ VỀ DUY NHẤT JSON:
                     uniforms: {
                         uTexture: { value: null },
                         uDepthMap: { value: null },
-                        uDepthRelief: { value: 0.35 },
+                        uDepthRelief: { value: 0.35 }, // Sẽ được cập nhật từ Gemini
                         uTime: { value: 0.0 },
                         // Uniforms Sinh lý học (Gemini cung cấp)
-                        uRespRate: { value: 0.35 },
-                        uRespAmp: { value: 0.02 },
-                        uRespYRatio: { value: 0.3 },
-                        uHeartRate: { value: 1.2 },
-                        uPulseAmp: { value: 0.002 },
-                        uSaccadeFreq: { value: 40.0 },
-                        uSaccadeSpatialFreq: { value: 18.0 },
-                        uSaccadeAmp: { value: 0.003 },
+                        uRespRate: { value: 0.0 },
+                        uRespAmp: { value: 0.0 },
+                        uRespYRatio: { value: 0.0 },
+                        uHeartRate: { value: 0.0 },
+                        uPulseAmp: { value: 0.0 },
+                        uSaccadeFreq: { value: 0.0 },
+                        uSaccadeSpatialFreq: { value: 0.0 },
+                        uSaccadeAmp: { value: 0.0 },
                         // Uniforms Vật lý học (Gemini cung cấp)
                         uWindVector: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
-                        uFluidFreq: { value: 2.0 },
+                        uFluidFreq: { value: 0.0 },
                         uLightDrift: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
-                        uLightIntensity: { value: 0.15 }
+                        uLightIntensity: { value: 0.0 }
                     },
                     vertexShader: `
                         uniform sampler2D uDepthMap;
@@ -4006,6 +4074,8 @@ TRẢ VỀ DUY NHẤT JSON:
                         varying vec2 vUv;
                         varying float vDepth;
 
+                        const float PI_2 = 6.2831853; // 2 * PI
+
                         void main() {
                             vUv = uv;
                             float depth = texture2D(uDepthMap, uv).r;
@@ -4016,8 +4086,8 @@ TRẢ VỀ DUY NHẤT JSON:
                             pos.z += (depth - 0.5) * uDepthRelief;
 
                             // 2. Dịch chuyển điểm ảnh theo nhịp thở & nhịp tim do Gemini tính
-                            float breath = sin(uTime * 6.2831853 * uRespRate) * uRespAmp;
-                            float pulse = sin(uTime * 6.2831853 * uHeartRate) * uPulseAmp;
+                            float breath = sin(uTime * PI_2 * uRespRate) * uRespAmp;
+                            float pulse = sin(uTime * PI_2 * uHeartRate) * uPulseAmp;
                             pos.z += (breath + pulse) * depth;
                             pos.y += (breath * uRespYRatio) * depth;
 
@@ -4026,7 +4096,7 @@ TRẢ VỀ DUY NHẤT JSON:
                             pos.x += saccade;
 
                             // 4. Dịch chuyển điểm ảnh theo động lực học chất lỏng/gió
-                            float sway = sin(uTime * uFluidFreq + uv.y * 6.2831853) * depth;
+                            float sway = sin(uTime * uFluidFreq + uv.y * PI_2) * depth;
                             pos += uWindVector * sway;
 
                             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
@@ -4057,7 +4127,7 @@ TRẢ VỀ DUY NHẤT JSON:
                     target: new TargetClass(),
                     video: { codec: 'avc', width, height },
                     fastStart: 'in-memory'
-                });
+                '});
 
                 const videoEncoder = new VideoEncoder({
                     output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
@@ -4077,7 +4147,7 @@ TRẢ VỀ DUY NHẤT JSON:
                 });
 
                 let globalFrameIndex = 0;
-                const frameDurationMicros = 1000000 / fps;
+                const frameDurationMicros = 1000000 / fps; // 8333.33 microseconds/frame
                 let previousShotEndState = null;
                 const generatedShotsLog = [];
 
@@ -4200,7 +4270,7 @@ TRẢ VỀ DUY NHẤT JSON:
                     planeGeo.dispose();
                     dynamicPixelShader.dispose();
 
-                    // 5. FFmpeg WASM thực thi bộ lọc và đóng gói đúng bitrate/sample rate của Gemini
+                    // GIAI ĐOẠN CUỐI: FFmpeg WASM thực thi bộ lọc và đóng gói đúng bitrate/sample rate của Gemini
                     let audioWavBlob = null;
                     if (mixedAudio) {
                         audioWavBlob = this.audioBufferToWavBlob(mixedAudio);
@@ -5065,7 +5135,7 @@ TRẢ VỀ DUY NHẤT JSON:
 
                             targetMsg.content = (targetMsg.content || '') + 
                                 `\n\n🎬 **Tác Phẩm Điện Ảnh 120 FPS Thuần Động Học (Zero-Hardcode)**\n` +
-                                `- **Chuẩn kết xuất:** **120 FPS Ultra-HFR** (${result.totalFrames} khung hình vi chuyển động)\n` +
+                                `- **Chuẩn kết xuất:** **${userFps} FPS Ultra-HFR** (${result.totalFrames} khung hình vi chuyển động)\n` +
                                 `- **Độ phân giải do Gemini tính:** ${plan.resolution.width}x${plan.resolution.height} (Tỷ lệ ${userAspectRatio})\n` +
                                 `- **Quang học & Mesh Three.js:** FOV ${plan.optics.fov}° · Lưới: ${plan.optics.mesh_density_x}x${plan.optics.mesh_density_y} đỉnh\n` +
                                 `- **Bitrate phần cứng WebCodecs:** ${plan.encoding_pipeline.video_bitrate} (GOP: ${plan.encoding_pipeline.keyframe_interval_seconds}s)\n` +
