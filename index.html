@@ -4759,24 +4759,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
          */
         async function readSSEStream(response, signal, onChunk) {
             if (!response || !response.body) {
-                throw new Error('[readSSEStream] Phản hồi không có dữ liệu body stream.');
+                throw new Error('[readSSEStream] Phản hồi không chứa luồng dữ liệu.');
             }
 
-            // Kiểm tra Content-Type: Nếu Cloudflare hoặc Proxy chặn trả về text/html thì văng lỗi rõ ràng
             const contentType = (response.headers.get('content-type') || '').toLowerCase();
-            if (contentType.includes('text/html') || contentType.includes('application/json')) {
-                const textPayload = await response.text();
-                try {
-                    const errJson = JSON.parse(textPayload);
-                    if (errJson.error) {
-                        const err = new Error(errJson.error.message || 'Lỗi API');
-                        err.code = errJson.error.code || response.status;
-                        throw err;
-                    }
-                } catch (e) {
-                    if (e.code) throw e;
-                    throw new Error(`Máy chủ trả về định dạng HTML không mong muốn (HTTP ${response.status}): ${textPayload.slice(0, 200)}`);
-                }
+            if (contentType.includes('text/html')) {
+                const textPayload = await response.text().catch(() => '');
+                throw new Error(`Cổng mạng trả về HTML (HTTP ${response.status}): ${textPayload.slice(0, 150)}`);
             }
 
             const reader = response.body.getReader();
@@ -4785,7 +4774,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
             let lineBuffer = '';
             let currentEventData = [];
 
-            // Dispatch an toàn sự kiện đã gom đủ
             const flushEvent = () => {
                 if (currentEventData.length === 0) return;
                 const fullPayload = currentEventData.join('\n').trim();
@@ -4795,27 +4783,17 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
 
                 try {
                     const json = JSON.parse(fullPayload);
-                    
-                    // Xử lý payload chứa lỗi nghiệp vụ từ Gemini API
                     if (json.error) {
-                        const errMsg = json.error.message || 'Lỗi xử lý từ máy chủ AI';
+                        const errMsg = json.error.message || 'Lỗi API từ máy chủ';
                         const errObj = new Error(errMsg);
-                        errObj.code = json.error.code || 500;
-                        errObj.status = json.error.status || 'ERROR';
-
-                        if (errMsg.includes('PROHIBITED') || errMsg.includes('SAFETY') || errMsg.includes('policy')) {
-                            errObj.isSafetyBlock = true;
-                        }
+                        errObj.code = json.error.code || response.status;
                         throw errObj;
                     }
-
                     if (typeof onChunk === 'function') {
                         onChunk(json);
                     }
                 } catch (e) {
-                    // Nếu là lỗi parse JSON do chunk bị xé lẻ bất thường thì bỏ qua, tiếp tục đợi chunk kế
-                    if (e.name === 'SyntaxError') return;
-                    throw e;
+                    if (e.code) throw e;
                 }
             };
 
@@ -4828,45 +4806,41 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                         throw abortErr;
                     }
 
-                    const { done, value } = await reader.read();
+                    let readResult;
+                    try {
+                        readResult = await reader.read();
+                    } catch (netErr) {
+                        // Bắt lỗi ngắt mạng giữa chừng khi đang đọc byte, ném lỗi mạng để tầng ngoài kích hoạt Auto-Reconnection
+                        const dropErr = new Error('STREAM_INTERRUPTED_NETWORK');
+                        dropErr.cause = netErr;
+                        throw dropErr;
+                    }
+
+                    const { done, value } = readResult;
                     if (done) break;
 
-                    // Giải mã nhị phân sang chuỗi UTF-8 bảo toàn ranh giới byte
                     lineBuffer += decoder.decode(value, { stream: true });
-
-                    // Tách dòng hỗ trợ cả CRLF (\r\n) lẫn LF (\n)
                     const lines = lineBuffer.split(/\r\n|\r|\n/);
-                    // Dòng cuối cùng có thể chưa hoàn chỉnh, giữ lại trong buffer
                     lineBuffer = lines.pop() || '';
 
                     for (let i = 0; i < lines.length; i++) {
-                        const rawLine = lines[i];
-                        const line = rawLine.trimStart();
-
-                        // 1. Dòng trống: Đánh dấu kết thúc một SSE Message Event -> Bắn event
+                        const line = lines[i].trimStart();
                         if (line === '') {
                             flushEvent();
-                        }
-                        // 2. Dòng comment của SSE (: ping / keep-alive) -> Bỏ qua
-                        else if (line.startsWith(':')) {
+                        } else if (line.startsWith(':')) {
                             continue;
-                        }
-                        // 3. Dòng mang payload dữ liệu data:
-                        else if (line.startsWith('data:')) {
-                            const dataContent = line.slice(5).trimStart();
-                            currentEventData.push(dataContent);
+                        } else if (line.startsWith('data:')) {
+                            currentEventData.push(line.slice(5).trimStart());
                         }
                     }
                 }
 
-                // Xử lý nốt phần còn sót lại trong buffer khi stream đóng
                 if (lineBuffer.trimStart().startsWith('data:')) {
                     currentEventData.push(lineBuffer.trimStart().slice(5).trimStart());
                 }
                 flushEvent();
 
             } finally {
-                // Giải phóng Reader Lock bảo đảm không bao giờ rò rỉ kết nối mạng
                 try { reader.releaseLock(); } catch (_) {}
             }
         }
@@ -7060,8 +7034,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     const flushAllPendingDbWrites = async () => {
-                        while (dbWriteQueue.activeCount > 0 || dbWriteQueue.queue.length > 0) {
-                            await new Promise(r => setTimeout(r, 30));
+                        const start = Date.now();
+                        // Giới hạn timeout 300ms: Tuyệt đối không để hàng đợi DB làm treo hoặc nghẽn luồng gửi nhận tin nhắn
+                        while ((dbWriteQueue.activeCount > 0 || dbWriteQueue.queue.length > 0) && (Date.now() - start < 300)) {
+                            await new Promise(r => setTimeout(r, 20));
                         }
                     };
 
@@ -8560,17 +8536,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         } catch (_) {}
                     };
 
-                    // TRUYỀN TẢI STREAMING CÓ CƠ CHẾ CHỐNG LỖI VÀ TỰ PHỤC HỒI MÔ HÌNH
+                    // TRUYỀN TẢI STREAMING KIÊN TRÌ - KHÔNG DÙNG FALLBACK MODEL - TỰ ĐỘNG KHÔI PHỤC KẾT NỐI
                     const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal) => {
                         let attempts = 0;
-                        const maxAttempts = Math.max(apiKeyPool.value.length * 3, 10);
+                        const maxAttempts = 60; // Thử tối đa 60 lần đảm bảo không bao giờ bỏ cuộc do mạng tạm thời
                         let currentKey = getNextHealthyApiKey();
-                        let fallbackIdx = 0;
 
                         while (attempts < maxAttempts) {
                             if (signal?.aborted) throw new Error('AbortError');
                             if (!currentKey) {
-                                await new Promise(r => setTimeout(r, 800));
+                                await new Promise(r => setTimeout(r, 600));
                                 currentKey = getNextHealthyApiKey();
                                 attempts++;
                                 continue;
@@ -8579,6 +8554,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             const reqPayload = JSON.parse(JSON.stringify(payload));
                             reqPayload.contents = sanitizeHistoryForGemini(reqPayload.contents, true);
                             reqPayload.safetySettings = SAFETY_SETTINGS;
+                            
+                            // GIỮ NGUYÊN 100% MODEL NGƯỜI DÙNG CHỌN, TUYỆT ĐỐI KHÔNG FALLBACK SANG MODEL KHÁC
                             const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModelId}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
 
                             try {
@@ -8594,36 +8571,32 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         markApiKeyFailure(currentKey);
                                         currentKey = getNextHealthyApiKey();
                                     } else if (response.status === 429) {
+                                        // Gặp rate limit: cho key vào cooldown và lấy key khác ngay lập tức, không đổi model
                                         markApiKeyFailure(currentKey);
                                         currentKey = getNextHealthyApiKey();
-                                        if (fallbackIdx < FALLBACK_MODEL_CHAIN.length - 1) activeModelId = FALLBACK_MODEL_CHAIN[++fallbackIdx];
-                                    } else if (response.status === 400 || response.status === 404) {
-                                        fallbackIdx = (fallbackIdx + 1) % FALLBACK_MODEL_CHAIN.length;
-                                        activeModelId = FALLBACK_MODEL_CHAIN[fallbackIdx];
                                     } else {
+                                        markApiKeyFailure(currentKey);
                                         currentKey = getNextHealthyApiKey();
                                     }
                                     attempts++;
-                                    const backoffTime = Math.min(300 * Math.pow(1.3, attempts) + Math.random() * 200, 3000);
-                                    await new Promise(r => setTimeout(r, backoffTime));
+                                    const delay = Math.min(400 * Math.pow(1.15, Math.min(attempts, 8)) + Math.random() * 200, 2500);
+                                    await new Promise(r => setTimeout(r, delay));
                                     continue;
                                 }
 
+                                // Đọc luồng SSE
                                 await readSSEStream(response, signal, onChunk);
                                 markApiKeySuccess(currentKey);
                                 return true;
                             } catch (err) {
                                 if (err.message === 'AbortError' || err.name === 'AbortError') throw err;
-                                if (err.isSafetyBlock || (err.message && (err.message.includes('PROHIBITED') || err.message.includes('SAFETY')))) {
-                                    fallbackIdx = (fallbackIdx + 1) % FALLBACK_MODEL_CHAIN.length;
-                                    activeModelId = FALLBACK_MODEL_CHAIN[fallbackIdx];
-                                } else {
-                                    markApiKeyFailure(currentKey);
-                                    currentKey = getNextHealthyApiKey();
-                                }
+                                
+                                // Nếu đứt mạng giữa chừng (STREAM_INTERRUPTED_NETWORK), đổi key và reconnect tiếp
+                                markApiKeyFailure(currentKey);
+                                currentKey = getNextHealthyApiKey();
                                 attempts++;
-                                const backoffTime = Math.min(400 * Math.pow(1.3, attempts) + Math.random() * 200, 3500);
-                                await new Promise(r => setTimeout(r, backoffTime));
+                                const delay = Math.min(500 * Math.pow(1.15, Math.min(attempts, 8)) + Math.random() * 200, 3000);
+                                await new Promise(r => setTimeout(r, delay));
                             }
                         }
                         return false;
@@ -9069,7 +9042,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             let continueNeeded = false;
                             startRenderLoop();
 
-                            await performStreaming(initialPayload, (chunk) => {
+                            // THỰC THI TRÊN ĐÚNG MÔ HÌNH ĐÃ CHỌN - KIÊN TRÌ RETRY NẾU MẠNG CHẬP CHỜN ĐẢM BẢO CÓ DỮ LIỆU
+                            let initialSuccess = await performStreaming(initialPayload, (chunk) => {
                                 processChunk(chunk, false);
                                 const cand = chunk.candidates?.[0];
                                 if (cand?.finishReason) {
@@ -9078,24 +9052,27 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 }
                             });
 
-                            if (!rawMarkdownBuffer?.trim()) {
-                                for (const altModel of FALLBACK_MODEL_CHAIN) {
-                                    if (altModel === activeModelId) continue;
-                                    const altPayload = {
-                                        contents: limitedHistory,
-                                        generationConfig: { temperature: 0.2, maxOutputTokens: 65536 },
-                                        safetySettings: SAFETY_SETTINGS
-                                    };
-                                    const ok = await performStreaming(altPayload, chunk => processChunk(chunk, false));
-                                    if (ok && rawMarkdownBuffer.trim()) break;
-                                }
+                            // Nếu kết nối bị đứt khi chưa nhận được chữ nào, kiên trì retry chính model đó (tuyệt đối không nhảy sang model khác)
+                            let retryInitialCount = 0;
+                            while (!rawMarkdownBuffer?.trim() && retryInitialCount < 10 && abortController && !abortController.signal.aborted) {
+                                retryInitialCount++;
+                                await new Promise(r => setTimeout(r, 1000));
+                                initialSuccess = await performStreaming(initialPayload, chunk => processChunk(chunk, false));
+                                if (initialSuccess && rawMarkdownBuffer.trim()) break;
                             }
 
-                            // VÒNG LẶP TIẾP TỤC NỐI LIỀN MẠCH KHI CHẠM TRẦN MAX_TOKENS
+                            // VÒNG LẶP TỰ ĐỘNG NỐI TIẾP VÔ TẬN - BẤT CHẤP LỖI MẠNG ĐẾN KHI HOÀN TẤT TRỌN VẸN
                             let continueAttempts = 0;
-                            const MAX_CONTINUE_ATTEMPTS = 25;
+                            const MAX_CONTINUE_ATTEMPTS = 50; // Mở rộng tối đa 50 bước tiếp nối cho các nội dung siêu dài
 
-                            while (continueNeeded && continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController && !abortController.signal.aborted) {
+                            // Tự động kiểm tra nếu stream bị đóng nhưng khối code/markdown vẫn đang mở dở dang
+                            const checkNeedsContinuation = () => {
+                                if (continueNeeded) return true;
+                                const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
+                                return boundary.isCodeOpen || boundary.isMathOpen;
+                            };
+
+                            while (checkNeedsContinuation() && continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController && !abortController.signal.aborted) {
                                 continueAttempts++;
                                 botMsg.isContinuing = true;
                                 botMsg.continuationStep = continueAttempts;
@@ -9119,25 +9096,39 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 };
 
                                 let stepSuccess = false;
-                                try {
-                                    stepSuccess = await performStreaming(continuationPayload, (chunk) => {
-                                        processChunk(chunk, true);
-                                        const cand = chunk.candidates?.[0];
-                                        if (cand?.finishReason) {
-                                            lastFinishReason = cand.finishReason;
-                                            continueNeeded = (cand.finishReason === 'MAX_TOKENS');
-                                        }
-                                    });
-                                } catch (_) { stepSuccess = false; }
+                                let stepTries = 0;
+
+                                // Kiên trì thực hiện bước tiếp nối: Nếu lỗi mạng, thử lại tối đa 8 lần cho từng bước tiếp nối
+                                while (!stepSuccess && stepTries < 8 && abortController && !abortController.signal.aborted) {
+                                    stepTries++;
+                                    try {
+                                        stepSuccess = await performStreaming(continuationPayload, (chunk) => {
+                                            processChunk(chunk, true);
+                                            const cand = chunk.candidates?.[0];
+                                            if (cand?.finishReason) {
+                                                lastFinishReason = cand.finishReason;
+                                                continueNeeded = (cand.finishReason === 'MAX_TOKENS');
+                                            }
+                                        });
+                                    } catch (e) {
+                                        stepSuccess = false;
+                                        await new Promise(r => setTimeout(r, 1200));
+                                    }
+                                }
 
                                 const postBoundary = analyzeContinuationBoundary(rawMarkdownBuffer);
                                 if (!stepSuccess) {
+                                    // Sau các lần retry bền bỉ nếu vẫn nghẽn mạng thì giữ nguyên toàn bộ text đã sinh, cho phép user nhấn nút thủ công
                                     botMsg.isTruncated = true;
-                                    botMsg.interruptionReason = 'NETWORK_OR_API_ERROR';
+                                    botMsg.interruptionReason = 'NETWORK_PAUSED';
                                     break;
                                 }
-                                if (lastFinishReason === 'STOP' && !postBoundary.isCodeOpen) continueNeeded = false;
-                                else if (lastFinishReason === 'STOP' && postBoundary.isCodeOpen) continueNeeded = true;
+
+                                if (lastFinishReason === 'STOP' && !postBoundary.isCodeOpen && !postBoundary.isMathOpen) {
+                                    continueNeeded = false;
+                                } else {
+                                    continueNeeded = true;
+                                }
                             }
 
                             renderLoopActive = false;
