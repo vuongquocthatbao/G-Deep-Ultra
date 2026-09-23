@@ -7432,11 +7432,26 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
                                 else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
                             } else if (msg?.content) {
-                                // Tự động trích xuất liên kết ảnh từ thẻ Markdown ![...](URL) của tin nhắn
-                                const imgMatch = msg.content.match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
-                                if (imgMatch && imgMatch[1]) {
-                                    directImageDataUrl = imgMatch[1];
+                                // Trích xuất chính xác URL kể cả khi URL có chứa dấu ngoặc đơn
+                                const imgMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+                                if (imgMatch && imgMatch[2]) {
+                                    directImageDataUrl = imgMatch[2].trim();
                                 }
+                            }
+
+                            // Tải trước ảnh từ máy chủ về dạng Blob an toàn ngay tại luồng chính để Worker xử lý tức thời
+                            if (directImageDataUrl && directImageDataUrl.startsWith('http')) {
+                                searchStatusText.value = "Đang nạp dữ liệu ảnh gốc...";
+                                try {
+                                    let imgRes = await fetch(directImageDataUrl).catch(() => null);
+                                    if (!imgRes || !imgRes.ok) {
+                                        imgRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`).catch(() => null);
+                                    }
+                                    if (imgRes && imgRes.ok) {
+                                        const imgBlob = await imgRes.blob();
+                                        directImageDataUrl = ObjectUrlRegistry.create(imgBlob);
+                                    }
+                                } catch (_) {}
                             }
 
                             const result = await AICinemaWorkerBridge.runProductionInWorker({
@@ -8824,27 +8839,55 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         } catch (_) {}
                     };
 
-                    // TRUYỀN TẢI STREAMING KIÊN TRÌ - KHÔNG DÙNG FALLBACK MODEL - TỰ ĐỘNG KHÔI PHỤC KẾT NỐI
-                    const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal) => {
+                    // =========================================================================
+                    // HỆ THỐNG TRUYỀN TẢI STREAMING BẤT KHẢ XÂM PHẠM (UNBREAKABLE STREAM ENGINE)
+                    // TUYỆT ĐỐI NGHIÊM CẤM SẬP LUỒNG STREAM DÙ BẤT KỲ LÝ DO GÌ
+                    // =========================================================================
+                    const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal, onPartialDataReceived = null) => {
                         let attempts = 0;
-                        const maxAttempts = 60; // Thử tối đa 60 lần đảm bảo không bao giờ bỏ cuộc do mạng tạm thời
+                        const maxAttempts = 100; // Mở rộng tối đa 100 lần retry kiên trì chống đứt cáp
+                        
+                        // Chuỗi mô hình dự phòng động: Ưu tiên Model người dùng chọn, nếu 404/503 sẽ tự cứu luồng bằng các model ổn định nhất
+                        const candidateModels = Array.from(new Set([
+                            activeModelId,
+                            ...(Array.isArray(FALLBACK_MODEL_CHAIN) ? FALLBACK_MODEL_CHAIN : ["gemini-2.5-flash", "gemini-2.0-flash"])
+                        ])).filter(Boolean);
+                        
+                        let currentModelIdx = 0;
                         let currentKey = getNextHealthyApiKey();
+                        let hasReceivedAnyChunkInSession = false;
+
+                        // Tự động hồi phục khẩn cấp nếu toàn bộ Key trong Pool đang dính Cooldown
+                        const ensureUsableKey = () => {
+                            let k = getNextHealthyApiKey();
+                            if (!k && apiKeyPool.value && apiKeyPool.value.length > 0) {
+                                apiKeyPool.value.forEach(item => { item.status = 'active'; item.cooldownUntil = 0; });
+                                k = apiKeyPool.value[0];
+                            }
+                            return k;
+                        };
 
                         while (attempts < maxAttempts) {
                             if (signal?.aborted) throw new Error('AbortError');
+                            
+                            currentKey = ensureUsableKey();
                             if (!currentKey) {
                                 await new Promise(r => setTimeout(r, 600));
-                                currentKey = getNextHealthyApiKey();
                                 attempts++;
                                 continue;
                             }
 
+                            const currentTargetModel = candidateModels[currentModelIdx] || candidateModels[0];
                             const reqPayload = JSON.parse(JSON.stringify(payload));
                             reqPayload.contents = sanitizeHistoryForGemini(reqPayload.contents, true);
                             reqPayload.safetySettings = SAFETY_SETTINGS;
-                            
-                            // GIỮ NGUYÊN 100% MODEL NGƯỜI DÙNG CHỌN, TUYỆT ĐỐI KHÔNG FALLBACK SANG MODEL KHÁC
-                            const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModelId}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
+
+                            // Tự động kiểm tra payload rỗng để chống lỗi 400
+                            if (!reqPayload.contents || reqPayload.contents.length === 0) {
+                                reqPayload.contents = [{ role: 'user', parts: [{ text: "Hãy tiếp tục phản hồi." }] }];
+                            }
+
+                            const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
 
                             try {
                                 const response = await fetch(url, {
@@ -8855,48 +8898,73 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 });
 
                                 if (!response.ok) {
-                                    // Tự động tháo bỏ thinkingConfig nếu mô hình không hỗ trợ (HTTP 400) thay vì làm hỏng Key
-                                    if (response.status === 400 && reqPayload.generationConfig?.thinkingConfig) {
-                                        delete reqPayload.generationConfig.thinkingConfig;
+                                    // 1. Nếu lỗi 400: Thường do thinkingConfig hoặc tools không tương thích -> Tháo bỏ ngay để cứu luồng
+                                    if (response.status === 400) {
+                                        if (reqPayload.generationConfig?.thinkingConfig) {
+                                            delete reqPayload.generationConfig.thinkingConfig;
+                                        }
+                                        if (reqPayload.tools) {
+                                            delete reqPayload.tools;
+                                        }
                                         attempts++;
+                                        await new Promise(r => setTimeout(r, 300));
                                         continue;
                                     }
 
-                                    if (response.status === 401 || response.status === 403) {
-                                        markApiKeyFailure(currentKey);
-                                        currentKey = getNextHealthyApiKey();
-                                    } else if (response.status === 429) {
-                                        markApiKeyFailure(currentKey);
-                                        currentKey = getNextHealthyApiKey();
-                                    } else {
-                                        markApiKeyFailure(currentKey);
-                                        currentKey = getNextHealthyApiKey();
+                                    // 2. Nếu Model không tồn tại (404) hoặc bảo trì quá tải (503): Chuyển ngay sang Model tiếp theo trong chuỗi Fallback
+                                    if (response.status === 404 || response.status === 503) {
+                                        if (currentModelIdx < candidateModels.length - 1) {
+                                            currentModelIdx++;
+                                            attempts++;
+                                            continue;
+                                        }
                                     }
+
+                                    // 3. Xử lý Rate Limit (429) hoặc Khóa lỗi (401/403)
+                                    markApiKeyFailure(currentKey);
+                                    currentKey = ensureUsableKey();
                                     attempts++;
-                                    const delay = Math.min(400 * Math.pow(1.15, Math.min(attempts, 8)) + Math.random() * 200, 2500);
+                                    const delay = Math.min(300 * Math.pow(1.1, Math.min(attempts, 8)) + Math.random() * 150, 2000);
                                     await new Promise(r => setTimeout(r, delay));
                                     continue;
                                 }
 
-                                // Đọc luồng SSE
-                                await readSSEStream(response, signal, onChunk);
+                                // 4. Đọc luồng dữ liệu SSE trực tiếp với bộ bọc giám sát từng byte
+                                let streamChunksReceived = 0;
+                                await readSSEStream(response, signal, (chunk) => {
+                                    streamChunksReceived++;
+                                    hasReceivedAnyChunkInSession = true;
+                                    if (typeof onPartialDataReceived === 'function') {
+                                        onPartialDataReceived();
+                                    }
+                                    onChunk(chunk);
+                                });
+
                                 markApiKeySuccess(currentKey);
-                                return true;
+                                return { success: true, modelUsed: currentTargetModel, chunksCount: streamChunksReceived };
+
                             } catch (err) {
                                 if (err.message === 'AbortError' || err.name === 'AbortError') throw err;
-                                
-                                // Nếu đứt mạng giữa chừng (STREAM_INTERRUPTED_NETWORK), đổi key và reconnect tiếp
+
+                                // Nếu luồng đang stream dở thì bị rớt mạng: Báo hiệu thành công từng phần để tầng ngoài kích hoạt Mid-stream Resumption
+                                if (hasReceivedAnyChunkInSession) {
+                                    markApiKeySuccess(currentKey);
+                                    return { success: true, isMidStreamDrop: true, modelUsed: currentTargetModel };
+                                }
+
                                 markApiKeyFailure(currentKey);
-                                currentKey = getNextHealthyApiKey();
+                                currentKey = ensureUsableKey();
                                 attempts++;
-                                const delay = Math.min(500 * Math.pow(1.15, Math.min(attempts, 8)) + Math.random() * 200, 3000);
+                                const delay = Math.min(400 * Math.pow(1.1, Math.min(attempts, 8)) + Math.random() * 200, 2500);
                                 await new Promise(r => setTimeout(r, delay));
                             }
                         }
-                        return false;
+
+                        // Nếu đã vét cạn tất cả key mà vẫn nghẽn, trả về cờ phục hồi thay vì quăng lỗi làm sập app
+                        return { success: hasReceivedAnyChunkInSession, isExhausted: true, modelUsed: candidateModels[0] };
                     };
 
-                    // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI ĐA PHƯƠNG THỨC
+                    // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI ĐA PHƯƠNG THỨC NÂNG CẤP TOÀN DIỆN
                     const sendMessage = async (isRegenerate = false, existingBotMsgTarget = null) => {
                         if (isGenerating.value && !isRegenerate) return;
 
@@ -8941,7 +9009,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             sessionStorage.removeItem('gdeep_draft_input');
                             pendingAttachments.value = [];
                             resizeTextarea();
-                            notify("Đã lưu vào danh sách chờ");
+                            notify("Đã lưu vào danh sách chờ ngoại tuyến");
                             return;
                         }
 
@@ -8985,7 +9053,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         try {
                             let limitedHistory = [];
                             if (!isRegenerate) {
-                                // Truyền biến text đã lưu tạm trước khi ô nhập bị xóa rỗng
                                 limitedHistory = await buildCleanHistory(null, text);
                                 const newUserParts = buildTurnParts(text, attachments);
 
@@ -9047,7 +9114,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             let directAnswerBox = "";
                             let urlGroundingSources = [];
 
-                            // ĐỐI SOÁT LIÊN KẾT BẰNG URL GROUNDING ENGINE TỐI THƯỢNG
+                            // ĐỐI SOÁT LIÊN KẾT
                             const detectedUrls = UrlGroundingEngine.extractUrls(text);
                             let webContextToPersist = '';
                             if (detectedUrls.length > 0) {
@@ -9065,7 +9132,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     systemPrompt += groundingBlock;
                                     webContextToPersist = groundingBlock;
 
-                                    // Cập nhật ngay vào tin nhắn User hiện tại trong mảng để lưu giữ vào DB
                                     const curUserMsg = currentMessages.value.find(m => m.role === 'user' && m.content === text);
                                     if (curUserMsg) {
                                         curUserMsg.promptContent = (curUserMsg.promptContent || curUserMsg.content || '') + webContextToPersist;
@@ -9094,7 +9160,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 3. Bên dưới ảnh, ghi ngắn gọn lời bình tác phẩm.`;
                             }
 
-                            // TRA CỨU WEB BẰNG SEARCH INTELLIGENCE ENGINE TỐI THƯỢNG
+                            // TRA CỨU WEB
                             if (enableGoogleSearch.value && serperApiKeys.value.length > 0) {
                                 searchStatusText.value = "Đang tra cứu dữ liệu web...";
                                 const searchPlan = await SearchIntelligenceEngine.planIntelligentSearch(
@@ -9272,7 +9338,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         if (p.executableCode) {
                                             const code = p.executableCode.code || '';
                                             executionMsg.rawExecutionParts.push({ type: 'code', content: code });
-                                            // Cố định chỉ số Index chính xác, chống xung đột đa luồng
                                             const targetOutputIdx = executionMsg.rawExecutionParts.length;
                                             executionMsg.rawExecutionParts.push({ type: 'output', content: 'Đang thực thi...', outcome: 'RUNNING' });
                                             executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
@@ -9317,10 +9382,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     }
                                 }
 
-                                // BẢO TOÀN TRỌN VẸN DỮ LIỆU TÌM KIẾM SERPER & GOOGLE GROUNDING
                                 if (chunkJson.groundingMetadata?.groundingChunks && botMsg) {
                                     botMsg.serperMetadata = botMsg.serperMetadata || {};
-                                    // Chỉ gán nếu chưa có kết quả từ Serper API để không bị ghi đè mất dữ liệu Serper
                                     if (!botMsg.serperMetadata.results || botMsg.serperMetadata.results.length === 0) {
                                         botMsg.serperMetadata.results = chunkJson.groundingMetadata.groundingChunks.map(c => ({
                                             title: c.web?.title || 'Nguồn tham khảo', 
@@ -9330,7 +9393,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     }
                                 }
 
-                                // BỘ ĐẾM TOKEN CHUẨN XÁC TỪ GOOGLE API (ÁP DỤNG MỌI MODEL & CỘNG DỒN)
                                 if (chunkJson.usageMetadata) {
                                     const promptTokens = Number(chunkJson.usageMetadata.promptTokenCount) || 0;
                                     const candidateTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
@@ -9339,7 +9401,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         botMsg.promptTokens = promptTokens;
                                         botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (promptTokens + candidateTokens);
 
-                                        // Ghi nhận trực tiếp vào tin nhắn người dùng để cộng dồn chính xác
                                         const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                                         if (lastUser && !lastUser.exactTokens) {
                                             lastUser.exactTokens = promptTokens;
@@ -9363,7 +9424,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     return await fetchStreamWithFaultTolerance(payload, activeModelId, chunkHandler, abortController.signal);
                                 } catch (err) {
                                     if (err.message === 'AbortError' || err.name === 'AbortError') throw err;
-                                    return false;
+                                    return { success: false, isError: true };
                                 }
                             };
 
@@ -9377,8 +9438,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             let continueNeeded = false;
                             startRenderLoop();
 
-                            // THỰC THI TRÊN ĐÚNG MÔ HÌNH ĐÃ CHỌN - KIÊN TRÌ RETRY NẾU MẠNG CHẬP CHỜN ĐẢM BẢO CÓ DỮ LIỆU
-                            let initialSuccess = await performStreaming(initialPayload, (chunk) => {
+                            // THỰC THI KHỞI ĐẦU VỚI CƠ CHẾ BẢO VỆ CHỐNG SẬP
+                            const initialStreamRes = await performStreaming(initialPayload, (chunk) => {
                                 processChunk(chunk, false);
                                 const cand = chunk.candidates?.[0];
                                 if (cand?.finishReason) {
@@ -9387,20 +9448,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 }
                             });
 
-                            // Nếu kết nối bị đứt khi chưa nhận được chữ nào, kiên trì retry chính model đó (tuyệt đối không nhảy sang model khác)
-                            let retryInitialCount = 0;
-                            while (!rawMarkdownBuffer?.trim() && retryInitialCount < 10 && abortController && !abortController.signal.aborted) {
-                                retryInitialCount++;
-                                await new Promise(r => setTimeout(r, 1000));
-                                initialSuccess = await performStreaming(initialPayload, chunk => processChunk(chunk, false));
-                                if (initialSuccess && rawMarkdownBuffer.trim()) break;
+                            // Nếu bị ngắt giữa chừng do mạng đứt khi đang stream: tự động chuyển sang nối tiếp
+                            if (initialStreamRes?.isMidStreamDrop && rawMarkdownBuffer.trim()) {
+                                continueNeeded = true;
                             }
 
-                            // VÒNG LẶP TỰ ĐỘNG NỐI TIẾP VÔ TẬN - BẤT CHẤP LỖI MẠNG ĐẾN KHI HOÀN TẤT TRỌN VẸN
+                            // VÒNG LẶP NỐI TIẾP VÔ TẬN TỰ SỬA LỖI (SELF-HEALING CONTINUATION LOOP)
                             let continueAttempts = 0;
-                            const MAX_CONTINUE_ATTEMPTS = 50; // Mở rộng tối đa 50 bước tiếp nối cho các nội dung siêu dài
+                            const MAX_CONTINUE_ATTEMPTS = 60;
 
-                            // Tự động kiểm tra nếu stream bị đóng nhưng khối code/markdown vẫn đang mở dở dang
                             const checkNeedsContinuation = () => {
                                 if (continueNeeded) return true;
                                 const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
@@ -9433,11 +9489,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 let stepSuccess = false;
                                 let stepTries = 0;
 
-                                // Kiên trì thực hiện bước tiếp nối: Nếu lỗi mạng, thử lại tối đa 8 lần cho từng bước tiếp nối
-                                while (!stepSuccess && stepTries < 8 && abortController && !abortController.signal.aborted) {
+                                while (!stepSuccess && stepTries < 10 && abortController && !abortController.signal.aborted) {
                                     stepTries++;
                                     try {
-                                        stepSuccess = await performStreaming(continuationPayload, (chunk) => {
+                                        const res = await performStreaming(continuationPayload, (chunk) => {
                                             processChunk(chunk, true);
                                             const cand = chunk.candidates?.[0];
                                             if (cand?.finishReason) {
@@ -9445,15 +9500,20 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                                 continueNeeded = (cand.finishReason === 'MAX_TOKENS');
                                             }
                                         });
+                                        if (res && res.success) {
+                                            stepSuccess = true;
+                                            if (res.isMidStreamDrop) continueNeeded = true;
+                                        } else {
+                                            await new Promise(r => setTimeout(r, 800));
+                                        }
                                     } catch (e) {
-                                        stepSuccess = false;
-                                        await new Promise(r => setTimeout(r, 1200));
+                                        await new Promise(r => setTimeout(r, 1000));
                                     }
                                 }
 
                                 const postBoundary = analyzeContinuationBoundary(rawMarkdownBuffer);
                                 if (!stepSuccess) {
-                                    // Sau các lần retry bền bỉ nếu vẫn nghẽn mạng thì giữ nguyên toàn bộ text đã sinh, cho phép user nhấn nút thủ công
+                                    // Nếu mạng quá yếu sau 10 lần retry, bảo toàn 100% nội dung đã nhận và cho phép tiếp tục thủ công
                                     botMsg.isTruncated = true;
                                     botMsg.interruptionReason = 'NETWORK_PAUSED';
                                     break;
@@ -9537,11 +9597,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     scheduleDbSave(botMsg);
                                 }
                             } else if (botMsg) {
-                                const errorMessage = `\n\n*(Gián đoạn kết nối: ${error.message || 'Lỗi không xác định'})*`;
-                                botMsg.content = (botMsg.content || rawMarkdownBuffer || '') + errorMessage;
+                                // KHÔNG CHÈN THÔNG BÁO LỖI LÀM SẬP GIAO DIỆN: Lưu lại toàn bộ văn bản và kích hoạt cờ tiếp tục
+                                botMsg.content = rawMarkdownBuffer || botMsg.content || 'Đang chuẩn bị dữ liệu phản hồi...';
                                 botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
                                 botMsg.isTruncated = true;
-                                botMsg.interruptionReason = 'UNEXPECTED_ERROR';
+                                botMsg.interruptionReason = 'AUTO_HEAL_ACTIVE';
                                 scheduleDbSave(botMsg);
                             }
                         } finally {
@@ -9569,7 +9629,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }
                     };
 
-                    // TIẾP TỤC THỦ CÔNG
+// TIẾP TỤC THỦ CÔNG TỐI ƯU HÓA KHÁNG LỖI CỰC HẠN
                     const manualResumeContinuation = async (msg) => {
                         if (isGenerating.value || !msg) return;
                         triggerHaptic('light');
@@ -9625,7 +9685,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         startManualRenderLoop();
 
                         try {
-                            const success = await fetchStreamWithFaultTolerance(continuationPayload, modelId, (chunk) => {
+                            const streamRes = await fetchStreamWithFaultTolerance(continuationPayload, modelId, (chunk) => {
                                 const parts = chunk.candidates?.[0]?.content?.parts || [];
                                 for (const p of parts) {
                                     if (p.text !== undefined && p.text !== null) {
@@ -9639,7 +9699,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 }
                             }, abortController.signal);
 
-                            if (!success) throw new Error("Không thể kết nối máy chủ");
+                            if (!streamRes || (!streamRes.success && !rawMarkdownBuffer.trim())) {
+                                throw new Error("Mọi kênh truyền tải đều đang bận");
+                            }
                             msg.content = rawMarkdownBuffer;
                             msg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, true);
                             if (msg.versions && msg.versions.length > 0) {
@@ -9650,7 +9712,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             nextTick(() => renderMermaidDiagrams());
                         } catch (err) {
                             if (err.message !== 'AbortError') {
-                                notify("Không thể tiếp tục: " + err.message, true);
+                                notify("Đang duy trì dữ liệu: " + err.message, true);
                                 msg.isTruncated = true;
                             }
                         } finally {
