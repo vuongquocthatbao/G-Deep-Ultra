@@ -8771,11 +8771,17 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 });
 
                                 if (!response.ok) {
+                                    // Tự động tháo bỏ thinkingConfig nếu mô hình không hỗ trợ (HTTP 400) thay vì làm hỏng Key
+                                    if (response.status === 400 && reqPayload.generationConfig?.thinkingConfig) {
+                                        delete reqPayload.generationConfig.thinkingConfig;
+                                        attempts++;
+                                        continue;
+                                    }
+
                                     if (response.status === 401 || response.status === 403) {
                                         markApiKeyFailure(currentKey);
                                         currentKey = getNextHealthyApiKey();
                                     } else if (response.status === 429) {
-                                        // Gặp rate limit: cho key vào cooldown và lấy key khác ngay lập tức, không đổi model
                                         markApiKeyFailure(currentKey);
                                         currentKey = getNextHealthyApiKey();
                                     } else {
@@ -9182,24 +9188,22 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         if (p.executableCode) {
                                             const code = p.executableCode.code || '';
                                             executionMsg.rawExecutionParts.push({ type: 'code', content: code });
+                                            // Cố định chỉ số Index chính xác, chống xung đột đa luồng
+                                            const targetOutputIdx = executionMsg.rawExecutionParts.length;
                                             executionMsg.rawExecutionParts.push({ type: 'output', content: 'Đang thực thi...', outcome: 'RUNNING' });
                                             executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                             
-                                            // Chạy qua Python Engine có hỗ trợ xuất đồ thị Matplotlib
                                             PythonEngine.run(code).then(res => {
-                                                const lastPart = executionMsg.rawExecutionParts[executionMsg.rawExecutionParts.length - 1];
-                                                if (lastPart && lastPart.outcome === 'RUNNING') {
-                                                    executionMsg.rawExecutionParts.pop();
-                                                    executionMsg.rawExecutionParts.push({ 
+                                                if (executionMsg.rawExecutionParts[targetOutputIdx]) {
+                                                    executionMsg.rawExecutionParts[targetOutputIdx] = { 
                                                         type: 'output', 
                                                         content: res.output || '', 
                                                         outcome: res.outcome,
                                                         plotBase64: res.plotBase64 || null
-                                                    });
+                                                    };
                                                     executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                                     scheduleDbSave(executionMsg);
 
-                                                    // Đồng bộ hóa kết quả vào phiên bản đang hoạt động của tin nhắn Bot
                                                     if (botMsg && botMsg.versions && botMsg.versions.length > 0) {
                                                         const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
                                                         if (activeVer) {
@@ -9585,6 +9589,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         try { localStorage.setItem('gdeep_voice_name', val); } catch (_) {}
                     });
 
+                    // Tự động tái tính toán ngân sách Token & phần trăm bộ nhớ ngay khi đổi mô hình
+                    watch(currentModelIndex, () => {
+                        updateInputTokensDisplay();
+                    });
+
                     watch(cmdQuery, (query) => {
                         if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
                         searchDebounceTimer = setTimeout(async () => {
@@ -9619,19 +9628,51 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }, 600);
                     });
 
-                    let visualViewportCleanup = null, docClickCleanup = null, unsubscribeBus = null, handlePopState = null;
+                    let visualViewportCleanup = null;
+                    let docClickCleanup = null;
+                    let unsubscribeBus = null;
+                    let handlePopState = null;
+                    let handleThreadUpdatedEvent = null;
 
                     onMounted(async () => {
+                        // 1. Kích hoạt hiển thị giao diện Vue 3
                         if (typeof window.__REVEAL_APP__ === 'function') {
                             window.__REVEAL_APP__();
                         }
 
-                        // Lắng nghe nút Back trên điện thoại để đóng Modal
-                        window.addEventListener('popstate', onBrowserBack);
-                        if (typeof window.__REVEAL_APP__ === 'function') {
-                            window.__REVEAL_APP__();
-                        }
+                        // 2. Bộ thu nhận sự kiện cập nhật thời gian thực: Đưa Thread lên đầu danh sách
+                        handleThreadUpdatedEvent = (e) => {
+                            const { threadId, updatedAt } = e.detail || {};
+                            if (!threadId) return;
+                            const target = threads.value.find(t => t.id === threadId);
+                            if (target) {
+                                target.updatedAt = updatedAt || Date.now();
+                            }
+                        };
+                        window.addEventListener('gdeep:thread-updated', handleThreadUpdatedEvent);
 
+                        // 3. Xử lý nút Back trên trình duyệt/thiết bị di động (Đơn luồng duy nhất)
+                        handlePopState = () => {
+                            if (lightbox.show) {
+                                closeLightbox();
+                                return;
+                            }
+                            if (sandboxModal.show) {
+                                closeSandboxModal();
+                                return;
+                            }
+                            if (showCmdPalette.value) {
+                                showCmdPalette.value = false;
+                                return;
+                            }
+                            if (isSidebarOpen.value) {
+                                isSidebarOpen.value = false;
+                                return;
+                            }
+                        };
+                        window.addEventListener('popstate', handlePopState);
+
+                        // 4. Trình điều phối Live Sandbox Artifacts
                         window.openArtifactSandbox = (code) => {
                             let fmt = code || '';
                             if (!code.includes('<html')) {
@@ -9644,7 +9685,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                         unsubscribeBus = GDeepEventBus.on('OPEN_ARTIFACT_SANDBOX', code => window.openArtifactSandbox(code));
 
-                        // CÂN CHỈNH VIEWPORT VÀ BÀN PHÍM ẢO CHO THIẾT BỊ DI ĐỘNG
+                        // 5. Cân chỉnh Viewport và bàn phím ảo thích ứng với thiết bị di động
                         if (window.visualViewport) {
                             let resizeTimeout = null;
                             const updateAppHeight = () => {
@@ -9652,7 +9693,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 resizeTimeout = requestAnimationFrame(() => {
                                     if (window.visualViewport) {
                                         document.documentElement.style.setProperty('--app-height', `${window.visualViewport.height}px`);
-                                        if (document.activeElement === messageInput.value) scrollToBottom(true);
+                                        if (document.activeElement === messageInput.value) {
+                                            scrollToBottom(true);
+                                        }
                                     }
                                 });
                             };
@@ -9668,7 +9711,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             };
                         }
 
-                        // SỰ KIỆN DELEGATION TOÀN CỤC (SỬA TRIỆT ĐỂ LỖI DUPLICATE CONST)
+                        // 6. Xử lý sự kiện phân quyền tương tác tài liệu (Event Delegation)
                         const handleDocClick = (e) => {
                             try {
                                 const imgEl = e.target.closest('.markdown-body img');
@@ -9706,26 +9749,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         document.addEventListener('click', handleDocClick, true);
                         docClickCleanup = () => document.removeEventListener('click', handleDocClick, true);
 
-                        handlePopState = (e) => {
-                            if (lightbox.show) {
-                                closeLightbox();
-                                return;
-                            }
-                            if (sandboxModal.show) {
-                                closeSandboxModal();
-                                return;
-                            }
-                            if (showCmdPalette.value) {
-                                showCmdPalette.value = false;
-                                return;
-                            }
-                            if (isSidebarOpen.value) {
-                                isSidebarOpen.value = false;
-                                return;
-                            }
-                        };
-                        window.addEventListener('popstate', handlePopState);
-
+                        // 7. Lắng nghe các sự kiện hệ thống toàn cục
                         window.addEventListener('online', handleOnline);
                         window.addEventListener('offline', handleOffline);
                         window.addEventListener('keydown', handleKeydownGlobal);
@@ -9734,10 +9758,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         window.addEventListener('beforeunload', handleBeforeUnload);
                         document.addEventListener('visibilitychange', handleVisibilityChange);
 
+                        // 8. Đồng bộ màu giao diện và cấu hình giọng đọc
                         const savedAccent = accentColors.value.find(c => c.color === selectedAccent.value) || accentColors.value[0];
                         changeAccentColor(savedAccent);
                         initTTSVoices();
 
+                        // 9. Khởi động hệ thống dữ liệu IndexedDB và Session
                         try {
                             await seedInitialData();
                             await loadThreads();
@@ -9762,16 +9788,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }
                     });
 
-                    // Hàm xử lý nút Back không bị lỗi khởi tạo
-                    function onBrowserBack(e) {
-                        if (lightbox.show) { closeLightbox(); return; }
-                        if (sandboxModal.show) { closeSandboxModal(); return; }
-                        if (showCmdPalette.value) { showCmdPalette.value = false; return; }
-                        if (isSidebarOpen.value) { isSidebarOpen.value = false; return; }
-                    }
-
                     onUnmounted(() => {
-                        window.removeEventListener('popstate', onBrowserBack);
+                        // Dọn dẹp triệt để các Listener chống rò rỉ bộ nhớ
+                        if (handlePopState) window.removeEventListener('popstate', handlePopState);
+                        if (handleThreadUpdatedEvent) window.removeEventListener('gdeep:thread-updated', handleThreadUpdatedEvent);
                         window.removeEventListener('online', handleOnline);
                         window.removeEventListener('offline', handleOffline);
                         window.removeEventListener('keydown', handleKeydownGlobal);
@@ -9784,7 +9804,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         if (docClickCleanup) docClickCleanup();
                         if (unsubscribeBus) unsubscribeBus();
 
-                        if (speechRecognition) { try { speechRecognition.stop(); } catch (_) {} speechRecognition = null; }
+                        // Dừng các luồng âm thanh và nhận diện giọng nói
+                        if (speechRecognition) { 
+                            try { speechRecognition.stop(); } catch (_) {} 
+                            speechRecognition = null; 
+                        }
                         if (window.speechSynthesis) {
                             currentSpeechToken++;
                             window.speechSynthesis.cancel();
@@ -9792,6 +9816,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }
                         activeUtterances.length = 0;
 
+                        // Hủy bỏ các Frame và Timer đang hoạt động
                         if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
                         if (renderRafId && typeof window.cancelAnimationFrame === 'function') {
                             window.cancelAnimationFrame(renderRafId);
@@ -9802,7 +9827,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             textareaResizeRaf = null;
                         }
 
+                        // Dừng động cơ Python, xưởng phim, giải phóng bộ nhớ Blob và hoàn tất ghi DB
                         PythonEngine.terminate();
+                        AICinemaWorkerBridge.terminate();
                         ObjectUrlRegistry.revokeAll();
                         flushAllPendingDbWrites();
                         GDeepEventBus.clear();
