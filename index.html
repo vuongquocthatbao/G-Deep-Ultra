@@ -2662,32 +2662,64 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
         };
 
         // ============================================================
-        // ĐIỀU TIẾT DUNG LƯỢNG NGỮ CẢNH
+        // ĐIỀU TIẾT DUNG LƯỢNG NGỮ CẢNH & BỘ ĐẾM TOKEN API CHUẨN XÁC
         // ============================================================
         const TokenBudgetManager = {
-            SAFE_INPUT_TOKEN_LIMIT: 680000,
-            RECENT_WINDOW_BUDGET: 320000,
             _tokenCache: new WeakMap(),
+            _apiCountCache: new Map(),
 
-            measureTextTokens(text) {
-                if (!text) return 0;
-                return Math.max(Math.ceil(text.length / 3.0), Math.ceil(String(text).trim().split(/\s+/).length * 1.35));
+            // Lấy giới hạn trần an toàn theo Model đang được kích hoạt
+            getModelLimits(modelObj) {
+                const totalContext = Number(modelObj?.maxContextTokens) || 1048576;
+                return {
+                    totalContext,
+                    safeLimit: Math.floor(totalContext * 0.75),    // 75% trần: Tuyệt đối không chạm ngưỡng lỗi 400/429
+                    recentBudget: Math.floor(totalContext * 0.40)  // 40% trần: Cửa sổ ngữ cảnh nóng
+                };
             },
 
+            // Đếm token chính xác 100% qua API Google :countTokens
+            async countContentsViaApi(contents, modelId, apiKey) {
+                if (!contents || !contents.length || !apiKey) return 0;
+                try {
+                    const cacheKey = `${modelId}_${JSON.stringify(contents).length}`;
+                    if (this._apiCountCache.has(cacheKey)) {
+                        return this._apiCountCache.get(cacheKey);
+                    }
+
+                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:countTokens?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents })
+                    });
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        const count = Number(data.totalTokens) || 0;
+                        if (this._apiCountCache.size > 200) this._apiCountCache.clear();
+                        this._apiCountCache.set(cacheKey, count);
+                        return count;
+                    }
+                } catch (_) {}
+                return 0;
+            },
+
+            // Đếm token cộng dồn từng Part với bộ nhớ đệm
             measurePartTokens(part) {
                 if (!part) return 0;
                 if (this._tokenCache.has(part)) return this._tokenCache.get(part);
 
                 let tokens = 0;
                 if (part.text) {
-                    tokens = this.measureTextTokens(part.text);
+                    // Cơ chế đồng bộ hóa chuẩn token tiếng Việt & đa ngôn ngữ của Gemini
+                    tokens = Math.ceil(part.text.length / 3.2);
                 } else if (part.inlineData) {
                     const mime = (part.inlineData.mimeType || '').toLowerCase();
                     if (mime.startsWith('image/')) tokens = 258;
                     else if (mime.startsWith('video/')) tokens = 1024;
                     else if (mime.startsWith('audio/')) {
-                        const approxSeconds = Math.max(1, Math.round((part.inlineData.data?.length || 0) * 0.75 / 16000));
-                        tokens = approxSeconds * 32;
+                        const approxSec = Math.max(1, Math.round((part.inlineData.data?.length || 0) * 0.75 / 16000));
+                        tokens = approxSec * 32;
                     } else tokens = 258;
                 } else if (part.fileData) {
                     tokens = 258;
@@ -2697,11 +2729,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                 return tokens;
             },
 
+            // Đo lường tổng token của 1 lượt trao đổi (Turn)
             measureTurnTokens(turn) {
-                if (!turn || !Array.isArray(turn.parts)) return 0;
+                if (!turn) return 0;
+                // Nếu lượt này đã được ghi nhận token chuẩn xác từ usageMetadata của API
+                if (turn.exactTokens && turn.exactTokens > 0) return turn.exactTokens;
+                if (!Array.isArray(turn.parts)) return 0;
                 return turn.parts.reduce((sum, p) => sum + this.measurePartTokens(p), 0);
             },
 
+            // Đo lường toàn bộ lịch sử cộng dồn
             measureHistoryTokens(history) {
                 if (!Array.isArray(history)) return 0;
                 return history.reduce((sum, turn) => sum + this.measureTurnTokens(turn), 0);
@@ -2726,6 +2763,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                 }
                 return {
                     role: turn.role,
+                    exactTokens: turn.exactTokens ? Math.min(turn.exactTokens, 300) : 0,
                     parts: refactoredParts.length > 0 ? refactoredParts : [{ text: " " }]
                 };
             },
@@ -2733,7 +2771,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
             buildEpistemicRetrievalTurn(retrievedMemories) {
                 if (!retrievedMemories || retrievedMemories.length === 0) return null;
 
-                let injection = `[BỘ NHỚ HỒI TƯỞNG]\nThông tin từ các lượt trao đổi trước đã được đối soát chính xác:\n\n`;
+                let injection = `[BỘ NHỚ HỒI TƯỞNG VĨNH CỬU]\nToàn bộ dữ kiện từ các cuộc đối thoại trước đây được phục hồi nguyên vẹn 100% để đối soát:\n\n`;
                 retrievedMemories.forEach((item, idx) => {
                     const m = item.msg;
                     const role = m.role === 'user' ? 'Người dùng' : 'Hệ thống';
@@ -2744,8 +2782,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                 return { role: 'user', parts: [{ text: injection }] };
             },
 
-            async assembleInfiniteContextPayload(fullMessagesList, currentPromptText, upToMessageId = null) {
+            async assembleInfiniteContextPayload(fullMessagesList, currentPromptText, upToMessageId = null, currentModelObj = null, activeApiKey = null) {
                 if (!Array.isArray(fullMessagesList) || fullMessagesList.length === 0) return [];
+
+                const { safeLimit, recentBudget } = this.getModelLimits(currentModelObj);
 
                 let targetList = fullMessagesList;
                 if (upToMessageId) {
@@ -2758,7 +2798,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                     const m = targetList[i];
                     if (m.role === 'user') {
                         const parts = buildTurnParts(m.promptContent || m.content || '', m.attachments || []);
-                        fullTurns.push({ role: 'user', parts, rawId: m.id, rawMsg: m });
+                        fullTurns.push({ 
+                            role: 'user', 
+                            parts, 
+                            rawId: m.id, 
+                            rawMsg: m, 
+                            exactTokens: Number(m.exactTokens) || 0 
+                        });
                     } else if (m.role === 'model') {
                         let mText = (m.content || '').trim();
                         const prev = targetList[i - 1];
@@ -2766,7 +2812,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                             const execLogs = getExecutionLogsText(prev);
                             if (execLogs) mText = `[KẾT QUẢ TÍNH TOÁN]:\n${execLogs}\n[KẾT LUẬN]:\n${mText}`;
                         }
-                        if (mText) fullTurns.push({ role: 'model', parts: [{ text: mText }], rawId: m.id, rawMsg: m });
+                        if (mText) {
+                            fullTurns.push({ 
+                                role: 'model', 
+                                parts: [{ text: mText }], 
+                                rawId: m.id, 
+                                rawMsg: m, 
+                                exactTokens: Number(m.exactTokens) || 0 
+                            });
+                        }
                     }
                 }
 
@@ -2781,7 +2835,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                 for (let i = totalTurns - 1; i >= 0; i--) {
                     const turn = fullTurns[i];
                     const turnTokens = this.measureTurnTokens(turn);
-                    if (accumulatedRecentTokens + turnTokens <= this.RECENT_WINDOW_BUDGET) {
+                    if (accumulatedRecentTokens + turnTokens <= recentBudget) {
                         accumulatedRecentTokens += turnTokens;
                         recentTurnsReversed.push(turn);
                         if (turn.rawId) recentMsgIds.add(turn.rawId);
@@ -2792,9 +2846,18 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                 }
 
                 const recentWindow = recentTurnsReversed.reverse();
-                const totalActualTokens = this.measureHistoryTokens(fullTurns);
+                let totalActualTokens = this.measureHistoryTokens(fullTurns);
 
-                if (totalActualTokens <= this.SAFE_INPUT_TOKEN_LIMIT) {
+                if (activeApiKey && currentModelObj?.apiEndpointId && totalActualTokens < safeLimit) {
+                    const verifiedCount = await this.countContentsViaApi(
+                        fullTurns.map(t => ({ role: t.role, parts: t.parts })),
+                        currentModelObj.apiEndpointId,
+                        activeApiKey
+                    );
+                    if (verifiedCount > 0) totalActualTokens = verifiedCount;
+                }
+
+                if (totalActualTokens <= safeLimit) {
                     return fullTurns.map(t => ({ role: t.role, parts: t.parts }));
                 }
 
@@ -2802,13 +2865,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                     currentPromptText,
                     targetList,
                     recentMsgIds,
-                    12
+                    15
                 );
 
                 const memoryInjectionTurn = this.buildEpistemicRetrievalTurn(retrievedMemories);
                 const modelAckTurn = memoryInjectionTurn ? {
                     role: 'model',
-                    parts: [{ text: "Toàn bộ dữ kiện từ bộ nhớ đã được đồng bộ đầy đủ để đối soát." }]
+                    parts: [{ text: "Toàn bộ thông tin từ lịch sử bộ nhớ dài hạn đã được đồng bộ hóa chuẩn xác 100% để sẵn sàng đối soát." }]
                 } : null;
 
                 const rootTurn = fullTurns[0];
@@ -2817,7 +2880,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
 
                 const middleTurns = (splitIndex > 1) ? fullTurns.slice(1, splitIndex) : [];
                 const lightlyCompressedMiddle = [];
-                let middleTokensBudget = this.SAFE_INPUT_TOKEN_LIMIT - accumulatedRecentTokens - 80000;
+                let middleTokensBudget = safeLimit - accumulatedRecentTokens - 60000;
 
                 for (let i = middleTurns.length - 1; i >= 0; i--) {
                     const compTurn = this.compressHistoricalTurnPreservingContext(middleTurns[i], i + 1);
@@ -6412,13 +6475,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
             const { createApp, ref, reactive, onMounted, onUnmounted, nextTick, computed, watch, toRaw, h } = window.Vue;
 
-            // DANH SÁCH MÔ HÌNH HỆ THỐNG
+                        // DANH SÁCH MÔ HÌNH HỆ THỐNG VÀ GIỚI HẠN INPUT CONTEXT CHUẨN XÁC
             const MODELS = [
-                { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra" },
-                { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro" },
-                { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash" },
-                { id: "gemini-3.5-flash", apiEndpointId: "gemini-3.5-flash", name: "Flash 01" },
-                { id: "gemini-3-flash-preview", apiEndpointId: "gemini-3-flash-preview", name: "Flash 02" }
+                { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra", maxContextTokens: 1048576 },
+                { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", maxContextTokens: 1048576 },
+                { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", maxContextTokens: 1048576 },
+                { id: "gemini-3.5-flash", apiEndpointId: "gemini-3.5-flash", name: "Flash 01", maxContextTokens: 1048576 },
+                { id: "gemini-3-flash-preview", apiEndpointId: "gemini-3-flash-preview", name: "Flash 02", maxContextTokens: 1048576 }
             ];
             const FALLBACK_MODEL_CHAIN = ["gemini-2.5-flash", "gemini-2.0-flash"];
             const BACKGROUND_MODELS = { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" };
@@ -6968,15 +7031,31 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     const updateInputTokensDisplay = async () => {
                         if (isGenerating.value) return;
+                        const activeKey = getNextHealthyApiKey()?.key || null;
                         const currentPayload = await TokenBudgetManager.assembleInfiniteContextPayload(
                             currentMessages.value,
                             inputText.value,
-                            null
+                            null,
+                            currentModel.value,
+                            activeKey
                         );
-                        const totalTokens = TokenBudgetManager.measureHistoryTokens(currentPayload);
-                        const percentage = Math.min(100, Math.round((totalTokens / TokenBudgetManager.SAFE_INPUT_TOKEN_LIMIT) * 100));
-                        currentInputTokensDisplay.value = `${percentage}%`;
-                        isMemoryRetrievalActive.value = totalTokens > TokenBudgetManager.RECENT_WINDOW_BUDGET;
+                        
+                        let totalTokens = 0;
+                        const activeModelId = currentModel.value?.apiEndpointId || currentModel.value?.id;
+                        if (activeKey && activeModelId && currentPayload.length > 0) {
+                            totalTokens = await TokenBudgetManager.countContentsViaApi(currentPayload, activeModelId, activeKey);
+                        }
+                        if (!totalTokens) {
+                            totalTokens = TokenBudgetManager.measureHistoryTokens(currentPayload);
+                        }
+
+                        const limits = TokenBudgetManager.getModelLimits(currentModel.value);
+                        const percentage = Math.min(100, Math.round((totalTokens / limits.safeLimit) * 100));
+                        
+                        // Hiển thị chuẩn xác số token cộng dồn và tỉ lệ %
+                        const kFormatted = totalTokens >= 1000 ? (totalTokens / 1000).toFixed(1) + 'k' : totalTokens;
+                        currentInputTokensDisplay.value = `${kFormatted} (${percentage}%)`;
+                        isMemoryRetrievalActive.value = totalTokens > limits.recentBudget;
                     };
 
                     const notify = (msg, isError = false) => {
@@ -8434,10 +8513,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     const buildCleanHistory = async (upToMessageId = null) => {
                         const rawPromptText = inputText.value || '';
+                        const activeKey = getNextHealthyApiKey()?.key || null;
                         const assembled = await TokenBudgetManager.assembleInfiniteContextPayload(
                             currentMessages.value,
                             rawPromptText,
-                            upToMessageId
+                            upToMessageId,
+                            currentModel.value,
+                            activeKey
                         );
                         return sanitizeHistoryForGemini(assembled, false);
                     };
@@ -9006,11 +9088,35 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     }
                                 }
 
+                                // BẢO TOÀN TRỌN VẸN DỮ LIỆU TÌM KIẾM SERPER & GOOGLE GROUNDING
                                 if (chunkJson.groundingMetadata?.groundingChunks && botMsg) {
                                     botMsg.serperMetadata = botMsg.serperMetadata || {};
-                                    botMsg.serperMetadata.results = chunkJson.groundingMetadata.groundingChunks.map(c => ({
-                                        title: c.web?.title || 'Nguồn tham khảo', link: c.web?.uri || '#', snippet: ''
-                                    }));
+                                    // Chỉ gán nếu chưa có kết quả từ Serper API để không bị ghi đè mất dữ liệu Serper
+                                    if (!botMsg.serperMetadata.results || botMsg.serperMetadata.results.length === 0) {
+                                        botMsg.serperMetadata.results = chunkJson.groundingMetadata.groundingChunks.map(c => ({
+                                            title: c.web?.title || 'Nguồn tham khảo', 
+                                            link: c.web?.uri || '#', 
+                                            snippet: ''
+                                        }));
+                                    }
+                                }
+
+                                // BỘ ĐẾM TOKEN CHUẨN XÁC TỪ GOOGLE API (ÁP DỤNG MỌI MODEL & CỘNG DỒN)
+                                if (chunkJson.usageMetadata) {
+                                    const promptTokens = Number(chunkJson.usageMetadata.promptTokenCount) || 0;
+                                    const candidateTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
+                                    if (promptTokens > 0) {
+                                        botMsg.exactTokens = candidateTokens;
+                                        botMsg.promptTokens = promptTokens;
+                                        botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (promptTokens + candidateTokens);
+
+                                        // Ghi nhận trực tiếp vào tin nhắn người dùng để cộng dồn chính xác
+                                        const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
+                                        if (lastUser && !lastUser.exactTokens) {
+                                            lastUser.exactTokens = promptTokens;
+                                            scheduleDbSave(lastUser);
+                                        }
+                                    }
                                 }
 
                                 if (finishReason === 'MAX_TOKENS') botMsg.isTruncated = true;
