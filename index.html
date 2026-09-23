@@ -1101,18 +1101,18 @@
                                 </button>
                             </div>
 
-                            <!-- CINEMATIC VIDEO PLAYER -->
-                            <div v-if="msg.renderedVideoUrl" class="mt-3 p-3 bg-[#0a0c12] rounded-2xl shadow-xl space-y-2 border border-purple-500/30">
-                                <div class="flex items-center justify-between text-xs">
-                                    <span class="font-bold text-purple-300 flex items-center gap-1.5">
-                                        <lucide-icon name="film" class="w-4 h-4 text-purple-400"></lucide-icon> Video Hoàn Thiện
-                                    </span>
-                                    <button type="button" @click.stop="downloadDirectMedia(msg.renderedVideoUrl, 'GDeep_Studio_Video.mp4')" class="btn-instant text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 text-[11px]">
-                                        <lucide-icon name="download" class="w-3.5 h-3.5"></lucide-icon> Tải Video Về Máy
-                                    </button>
-                                </div>
-                                <video :src="msg.renderedVideoUrl" @error="msg.renderedVideoUrl = null" controls autoplay loop class="w-full max-h-[460px] rounded-xl object-contain bg-black shadow-inner"></video>
-                            </div>
+<!-- CINEMATIC VIDEO PLAYER -->
+<div v-if="msg.renderedVideoUrl" class="mt-3 p-3 bg-[#0a0c12] rounded-2xl shadow-xl space-y-2 border border-purple-500/30">
+    <div class="flex items-center justify-between text-xs">
+        <span class="font-bold text-purple-300 flex items-center gap-1.5">
+            <lucide-icon name="film" class="w-4 h-4 text-purple-400"></lucide-icon> Video Hoàn Thiện
+        </span>
+        <button type="button" @click.stop="downloadDirectMedia(msg.renderedVideoUrl, 'GDeep_Studio_Video.mp4')" class="btn-instant text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 text-[11px]">
+            <lucide-icon name="download" class="w-3.5 h-3.5"></lucide-icon> Tải Video Về Máy
+        </button>
+    </div>
+    <video :src="msg.renderedVideoUrl" controls playsinline loop preload="metadata" class="w-full max-h-[460px] rounded-xl object-contain bg-black shadow-inner"></video>
+</div>
 
                             <!-- ACTIONS TOOLBAR -->
                             <transition name="fade">
@@ -2195,43 +2195,69 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
             voiceBuffers
         });
 
+        if (typeof VideoEncoder === 'undefined') {
+            throw new Error("Trình duyệt không hỗ trợ WebCodecs VideoEncoder. Hãy sử dụng Chrome/Edge hoặc trình duyệt nhân Chromium hiện đại.");
+        }
+
         const MuxerClass = self.Mp4Muxer?.Muxer || self.Muxer;
         const TargetClass = self.Mp4Muxer?.ArrayBufferTarget || self.ArrayBufferTarget;
-        const supportsAudioEncoder = (typeof AudioEncoder !== 'undefined');
+
+        // Thử nghiệm cấu hình AudioEncoder an toàn chống crash
+        let supportsAudio = (typeof AudioEncoder !== 'undefined');
+        let audioEngine = null;
+
+        if (supportsAudio) {
+            try {
+                audioEngine = new AudioEncoder({
+                    output: (chunk, meta) => rawMuxer && rawMuxer.addAudioChunk(chunk, meta),
+                    error: err => { console.warn("AudioEncoder cảnh báo:", err); }
+                });
+                audioEngine.configure({
+                    codec: 'mp4a.40.2',
+                    numberOfChannels: 2,
+                    sampleRate: sampleRate,
+                    bitrate: 128000
+                });
+            } catch (aErr) {
+                console.warn("Thiết bị không hỗ trợ AAC encoder, chuyển sang chế độ không âm:", aErr);
+                supportsAudio = false;
+                audioEngine = null;
+            }
+        }
 
         const rawMuxer = new MuxerClass({
             target: new TargetClass(),
             video: { codec: 'avc', width, height },
-            audio: supportsAudioEncoder ? { codec: 'aac', numberOfChannels: 2, sampleRate } : undefined,
+            audio: (supportsAudio && audioEngine) ? { codec: 'aac', numberOfChannels: 2, sampleRate } : undefined,
             fastStart: 'in-memory'
         });
 
         const videoEncoder = new VideoEncoder({
             output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
-            error: e => console.error("VideoEncoder error:", e)
+            error: err => { console.error("VideoEncoder error:", err); }
         });
+
+        // Xác định Codec Profile AVC tối ưu cho GPU
+        const targetBitrate = Math.min(6000000, Math.max(1500000, Math.round(width * height * fps * 0.12)));
+        let chosenCodec = 'avc1.42001f'; // Baseline tương thích cao nhất
+        const codecCandidates = ['avc1.42001f', 'avc1.4d002a', 'avc1.640028'];
+
+        for (const candidate of codecCandidates) {
+            try {
+                if (typeof VideoEncoder.isConfigSupported === 'function') {
+                    const check = await VideoEncoder.isConfigSupported({ codec: candidate, width, height, bitrate: targetBitrate, framerate: fps });
+                    if (check && check.supported) { chosenCodec = candidate; break; }
+                }
+            } catch (_) {}
+        }
 
         videoEncoder.configure({
-            codec: 'avc1.4d002a',
+            codec: chosenCodec,
             width,
             height,
-            bitrate: 18000000,
+            bitrate: targetBitrate,
             framerate: fps
         });
-
-        let audioEngine = null;
-        if (supportsAudioEncoder) {
-            audioEngine = new AudioEncoder({
-                output: (chunk, meta) => rawMuxer.addAudioChunk(chunk, meta),
-                error: e => console.error("AudioEncoder error:", e)
-            });
-            audioEngine.configure({
-                codec: 'mp4a.40.2',
-                numberOfChannels: 2,
-                sampleRate,
-                bitrate: 192000
-            });
-        }
 
         const optics = narrativePlan.optics;
         const fovRad = (Number(optics.fov) * Math.PI) / 180;
@@ -2285,12 +2311,39 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 
             let imageBitmap = null;
             if (directImageDataUrl && sIdx === 0) {
-                const blob = await (await fetch(directImageDataUrl)).blob();
+                let blob = null;
+                if (directImageDataUrl.startsWith('data:') || directImageDataUrl.startsWith('blob:')) {
+                    const res = await fetch(directImageDataUrl);
+                    blob = await res.blob();
+                } else {
+                    try {
+                        const res = await fetch(directImageDataUrl);
+                        if (res.ok) blob = await res.blob();
+                    } catch (_) {}
+                    if (!blob) {
+                        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`;
+                        const res = await fetch(proxyUrl);
+                        blob = await res.blob();
+                    }
+                }
                 imageBitmap = await createImageBitmap(blob);
             } else {
-                const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fluxPrompt)}?width=${width}&height=${height}&model=flux-realism&seed=${currentShot.shot_seed}&nologo=true`;
-                const imgRes = await fetch(fluxUrl);
-                const imgBlob = await imgRes.blob();
+                const cleanPrompt = encodeURIComponent(fluxPrompt.slice(0, 400).trim());
+                const modelsToTry = ['flux', 'flux-realism', 'turbo'];
+                let imgBlob = null;
+
+                for (const m of modelsToTry) {
+                    try {
+                        const fluxUrl = `https://image.pollinations.ai/prompt/${cleanPrompt}?width=${width}&height=${height}&model=${m}&seed=${currentShot.shot_seed}&nologo=true`;
+                        const imgRes = await fetch(fluxUrl);
+                        if (imgRes.ok) {
+                            const b = await imgRes.blob();
+                            if (b.size > 1500) { imgBlob = b; break; }
+                        }
+                    } catch (_) {}
+                }
+
+                if (!imgBlob) throw new Error("Không thể kết nối đến máy chủ đồ họa phân cảnh.");
                 imageBitmap = await createImageBitmap(imgBlob);
             }
 
@@ -2478,7 +2531,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
             imageBitmap.close();
         }
 
-        if (supportsAudioEncoder && audioEngine) {
+        if (supportsAudio && audioEngine) {
             postStatus("Đang đồng bộ hóa luồng âm thanh vào định dạng MP4...");
             const aacFrameSize = 1024;
             const left = audioTrack.leftChannel;
@@ -5154,12 +5207,22 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
         function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
             if (!rawText) return '';
 
-            // 1. Tự động cân bằng cấu trúc nếu đang trong tiến trình streaming
-            let working = isFinal
-                ? String(rawText)
+            // Tự động chuẩn hóa và mã hóa an toàn các đường dẫn ảnh AI Pollinations
+            let working = String(rawText).replace(/!\[(.*?)\]\((https?:\/\/image\.pollinations\.ai\/prompt\/)([^)]+)\)/g, (match, alt, base, rest) => {
+                const qIndex = rest.indexOf('?');
+                let promptPart = qIndex !== -1 ? rest.substring(0, qIndex) : rest;
+                const queryPart = qIndex !== -1 ? rest.substring(qIndex) : '';
+                try { promptPart = decodeURIComponent(promptPart); } catch (_) {}
+                const safePrompt = encodeURIComponent(promptPart.trim());
+                return `![${alt}](${base}${safePrompt}${queryPart})`;
+            });
+
+            // Tiếp tục cân bằng cấu trúc nếu đang trong tiến trình streaming
+            working = isFinal
+                ? working
                 : ((typeof MarkdownStreamProcessor !== 'undefined' && MarkdownStreamProcessor.balanceMarkdownStream)
-                    ? MarkdownStreamProcessor.balanceMarkdownStream(rawText)
-                    : String(rawText));
+                    ? MarkdownStreamProcessor.balanceMarkdownStream(working)
+                    : working);
 
             // 2. Bảo vệ toàn bộ khối Code Blocks và Inline Code bằng Token vô hình
             const codeTokens = Object.create(null);
@@ -7195,29 +7258,50 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     const downloadImageFile = async (url, filename) => {
-                        notify("Đang chuẩn bị tệp hình ảnh");
+                        notify("Đang chuẩn bị tệp hình ảnh...");
                         triggerHaptic('light');
                         try {
-                            const res = await fetch(url);
-                            if (!res.ok) throw new Error("Không thể tải trực tiếp");
+                            let res = null;
+                            try {
+                                res = await fetch(url);
+                            } catch (_) {}
+
+                            // Fallback Proxy chống CORS nếu fetch trực tiếp thất bại
+                            if (!res || !res.ok) {
+                                try {
+                                    res = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+                                } catch (_) {}
+                            }
+                            if (!res || !res.ok) {
+                                try {
+                                    res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+                                } catch (_) {}
+                            }
+
+                            if (!res || !res.ok) throw new Error("Mọi cổng tải ảnh đều bị chặn CORS");
+
                             const blob = await res.blob();
                             const blobUrl = ObjectUrlRegistry.create(blob);
                             downloadDirectMedia(blobUrl, filename || `Artwork_${Date.now()}.jpg`);
-                            setTimeout(() => ObjectUrlRegistry.revoke(blobUrl), 3000);
-                        } catch (_) {
-                            window.open(url, '_blank');
-                            notify("Đã mở ảnh trong cửa sổ mới", true);
+                            setTimeout(() => ObjectUrlRegistry.revoke(blobUrl), 4000);
+                        } catch (err) {
+                            // Tự động kích hoạt thẻ tải trực tiếp nếu không thể đọc Blob
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.target = '_blank';
+                            a.download = filename || `Artwork_${Date.now()}.jpg`;
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            notify("Đã chuyển hướng tải ảnh qua trình duyệt");
                         }
                     };
 
-                    const downloadLightboxImage = () => {
-                        if (lightbox.url) downloadImageFile(lightbox.url, `Artwork_${Date.now()}.jpg`);
-                    };
-
                     const downloadImageFromMessage = (msg) => {
-                        const match = (msg.content || '').match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
-                        if (match && match[1]) downloadImageFile(match[1], `Artwork_${Date.now()}.jpg`);
-                        else notify("Không tìm thấy tệp ảnh phù hợp", true);
+                        // Regex nâng cao hỗ trợ nhận diện link có chứa ngoặc đơn lồng nhau
+                        const match = (msg.content || '').match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+                        if (match && match[2]) downloadImageFile(match[2].trim(), `Artwork_${Date.now()}.jpg`);
+                        else notify("Không tìm thấy tệp ảnh phù hợp trong tin nhắn", true);
                     };
 
                     // TIẾP NHẬN TỆP TIN ĐA PHƯƠNG THỨC NÂNG CẤP
@@ -7348,11 +7432,26 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
                                 else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
                             } else if (msg?.content) {
-                                // Tự động trích xuất liên kết ảnh từ thẻ Markdown ![...](URL) của tin nhắn
-                                const imgMatch = msg.content.match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
-                                if (imgMatch && imgMatch[1]) {
-                                    directImageDataUrl = imgMatch[1];
+                                // Trích xuất chính xác URL kể cả khi URL có chứa dấu ngoặc đơn
+                                const imgMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+                                if (imgMatch && imgMatch[2]) {
+                                    directImageDataUrl = imgMatch[2].trim();
                                 }
+                            }
+
+                            // Tải trước ảnh từ máy chủ về dạng Blob an toàn ngay tại luồng chính để Worker xử lý tức thời
+                            if (directImageDataUrl && directImageDataUrl.startsWith('http')) {
+                                searchStatusText.value = "Đang nạp dữ liệu ảnh gốc...";
+                                try {
+                                    let imgRes = await fetch(directImageDataUrl).catch(() => null);
+                                    if (!imgRes || !imgRes.ok) {
+                                        imgRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`).catch(() => null);
+                                    }
+                                    if (imgRes && imgRes.ok) {
+                                        const imgBlob = await imgRes.blob();
+                                        directImageDataUrl = ObjectUrlRegistry.create(imgBlob);
+                                    }
+                                } catch (_) {}
                             }
 
                             const result = await AICinemaWorkerBridge.runProductionInWorker({
