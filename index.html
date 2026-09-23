@@ -86,6 +86,9 @@
                     fontFamily: {
                         sans: ['Plus Jakarta Sans', 'Inter', '-apple-system', 'sans-serif'],
                         mono: ['JetBrains Mono', 'monospace']
+                    },
+                    spacing: {
+                        '4.5': '1.125rem'
                     }
                 }
             }
@@ -510,6 +513,8 @@
             flex-shrink: 0; 
             aspect-ratio: 1 / 1; 
             vertical-align: middle;
+            max-width: 100%;
+            max-height: 100%;
         }
 
         .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
@@ -1621,7 +1626,7 @@
                             <lucide-icon name="sparkles" class="w-4 h-4" :style="{ color: selectedAccent }"></lucide-icon>
                             {{ editingGemId ? 'Cập Nhật Chuyên Gia' : 'Tạo Chuyên Gia Mới' }}
                         </h3>
-                        <button type="button" @click="closeGemModal" class="btn-instant action-btn-sm text-textMuted hover:text-white"><lucide-icon name="x" class="w-4.5 h-4.5"></lucide-icon></button>
+                        <button type="button" @click="closeGemModal" class="btn-instant action-btn-sm text-textMuted hover:text-white"><lucide-icon name="x" class="w-4 h-4"></lucide-icon></button>
                     </header>
                     <form @submit.prevent="saveGem" class="space-y-3 block w-full">
                         <input v-model="gemForm.name" type="text" class="w-full bg-surfaceElevated border border-white/5 rounded-xl p-2.5 text-white text-xs outline-none allow-select" placeholder="Tên chuyên gia...">
@@ -1674,8 +1679,8 @@
             <div v-if="showConfirmModal" class="fixed inset-0 modal-glass-backdrop z-50 flex items-center justify-center p-4">
                 <section class="bg-surface border border-white/10 w-full max-w-xs rounded-2xl p-4.5 space-y-3.5 text-center shadow-2xl relative">
                     <button type="button" @click="closeConfirmModal" class="btn-instant action-btn-sm absolute top-3 right-3 text-textMuted hover:text-white"><lucide-icon name="x" class="w-4 h-4"></lucide-icon></button>
-                    <div class="w-9 h-9 rounded-full bg-red-500/15 text-red-400 flex items-center justify-center mx-auto">
-                        <lucide-icon name="alert-triangle" class="w-4.5 h-4.5"></lucide-icon>
+                    <div class="w-9 h-9 rounded-full bg-red-500/15 text-red-400 flex items-center justify-center mx-auto overflow-hidden">
+                        <lucide-icon name="alert-triangle" class="w-5 h-5"></lucide-icon>
                     </div>
                     <h3 class="font-bold text-white text-[14px]">Xác nhận</h3>
                     <p class="text-xs text-textMuted leading-relaxed" v-text="confirmMessage"></p>
@@ -2473,15 +2478,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                     await new Promise(r => setTimeout(r, 6));
                 }
                 const samplesInChunk = Math.min(aacFrameSize, totalAudioSamples - offset);
-                const planarData = new Float32Array(samplesInChunk * 2);
+                // Bắt buộc đệm chuẩn 1024 frames cho AAC để không bị crash WebCodecs
+                const planarData = new Float32Array(aacFrameSize * 2);
 
                 planarData.set(left.subarray(offset, offset + samplesInChunk), 0);
-                planarData.set(right.subarray(offset, offset + samplesInChunk), samplesInChunk);
+                planarData.set(right.subarray(offset, offset + samplesInChunk), aacFrameSize);
 
                 const audioData = new AudioData({
                     format: 'f32-planar',
                     sampleRate,
-                    numberOfFrames: samplesInChunk,
+                    numberOfFrames: aacFrameSize,
                     numberOfChannels: 2,
                     timestamp: Math.round((offset / sampleRate) * 1000000),
                     data: planarData
@@ -3016,15 +3022,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                             // Tạo luồng kết hợp Canvas Video Stream + Audio Track gốc
                             const canvasStream = canvas.captureStream(24);
                             
-                            // Trích xuất Audio Track đưa vào MediaStream
+                            // Trích xuất Audio Track đưa vào MediaStream ngầm (không phát ra loa ngoài)
                             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
                             let audioCtx = null;
                             if (AudioContextClass) {
                                 audioCtx = new AudioContextClass();
                                 const sourceNode = audioCtx.createMediaElementSource(video);
                                 const destNode = audioCtx.createMediaStreamDestination();
-                                sourceNode.connect(destNode);
-                                sourceNode.connect(audioCtx.destination); // Cho phép buffer đọc
+                                sourceNode.connect(destNode); // Chỉ gửi vào bộ thu, không xuất ra loa
                                 destNode.stream.getAudioTracks().forEach(track => canvasStream.addTrack(track));
                             }
 
@@ -3058,7 +3063,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                             };
 
                             recorder.start(100);
-                            video.play();
+                            video.play().catch(() => {});
 
                             const drawInterval = setInterval(() => {
                                 if (video.paused || video.ended) return;
@@ -6525,9 +6530,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     gemId: t.gemId || 'default',
                     title: t.title || 'Phiên trò chuyện mới',
                     isPinned: Boolean(t.isPinned),
+                    isAutoGenerated: Boolean(t.isAutoGenerated),
                     updatedAt: Number(t.updatedAt) || getMonotonicTimestamp()
                 }),
-                () => ({ id: generateUUID(), gemId: 'default', title: 'Phiên trò chuyện mới', isPinned: false, updatedAt: getMonotonicTimestamp() })
+                () => ({ id: generateUUID(), gemId: 'default', title: 'Phiên trò chuyện mới', isPinned: false, isAutoGenerated: false, updatedAt: getMonotonicTimestamp() })
             );
 
             const normalizeThreadRecord = (t) => {
@@ -8484,13 +8490,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     const sanitizeHistoryForGemini = (rawHistory, ensureEndsWithUser = false) => {
                         if (!rawHistory?.length) return [];
                         let filtered = rawHistory.filter(m => (m.role === 'user' || m.role === 'model') && Array.isArray(m.parts) && m.parts.length > 0);
-                        while (filtered.length > 0 && filtered[0].role !== 'user') filtered.shift();
-                        if (!filtered.length) return [];
 
                         const alternating = [];
                         for (let i = 0; i < filtered.length; i++) {
                             const cur = filtered[i];
-                            const validParts = cur.parts.filter(p => (p.text && String(p.text).trim()) || (p.inlineData && p.inlineData.data) || p.fileData);
+                            const validParts = cur.parts.filter(p => (p.text !== undefined && String(p.text).trim() !== '') || (p.inlineData && p.inlineData.data) || p.fileData);
                             if (!validParts.length) continue;
 
                             if (!alternating.length) {
@@ -8505,8 +8509,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             }
                         }
 
+                        // Đảm bảo lượt đầu tiên luôn là USER (bắt buộc theo chuẩn Gemini API)
+                        while (alternating.length > 0 && alternating[0].role !== 'user') {
+                            alternating.shift();
+                        }
+
                         if (ensureEndsWithUser) {
-                            while (alternating.length > 0 && alternating[alternating.length - 1].role !== 'user') alternating.pop();
+                            while (alternating.length > 0 && alternating[alternating.length - 1].role !== 'user') {
+                                alternating.pop();
+                            }
                         }
                         return alternating;
                     };
@@ -10075,23 +10086,12 @@ app.component('lucide-icon', {
                 calculatedStroke = '1.75'; // Tăng nhẹ độ đậm cho icon nhỏ để không bị nhòe pixel trên màn hình Retina
             }
 
-            // D. Tái tạo VNodes con bằng cơ chế Cache Memoization
-            const vnodeKey = `${iconKey}__st_${calculatedStroke}`;
-            let childVNodes = LucideIconRegistry._vnodeCache.get(vnodeKey);
-
-            if (!childVNodes) {
-                childVNodes = defs.map((d, index) => h(d.tag, {
-                    key: index,
-                    ...d.attrs,
-                    'vector-effect': 'non-scaling-stroke'
-                }));
-
-                // Bảo vệ ngạch kích thước Cache LRU
-                if (LucideIconRegistry._vnodeCache.size >= LucideIconRegistry._MAX_CACHE_SIZE) {
-                    LucideIconRegistry._vnodeCache.clear();
-                }
-                LucideIconRegistry._vnodeCache.set(vnodeKey, childVNodes);
-            }
+            // D. Khởi tạo VNodes con mới cho mỗi component (tránh xung đột tham chiếu VNode trong Vue 3)
+            const childVNodes = defs.map((d, index) => h(d.tag, {
+                key: index,
+                ...d.attrs,
+                'vector-effect': 'non-scaling-stroke'
+            }));
 
             // E. Định kiểu kích thước và hiệu ứng xoay / nhấp nháy
             const wrapperStyles = {};
