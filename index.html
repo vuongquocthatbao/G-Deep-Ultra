@@ -2111,7 +2111,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
             try {
                 const res = await dispatchBg({
                     contents: [{ role: 'user', parts: [{ text: promptPlanner }] }],
-                    generationConfig: { temperature: 0.15, maxOutputTokens: 8192, responseMimeType: "application/json" }
+                    generationConfig: { temperature: 0.15, maxOutputTokens: 65536, responseMimeType: "application/json" }
                 });
                 narrativePlan = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
             } catch (_) {}
@@ -4860,6 +4860,33 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                 lastChunk: cleanText.slice(-400).trim()
             };
         }
+        
+        /**
+         * BỘ CẢM BIẾN DANG DỞ TUYỆT ĐỐI (ABSOLUTE TRUNCATION SENSOR)
+         * Không tin tưởng API, chỉ tin vào cấu trúc thực tế của văn bản.
+         */
+        function isStructurallyIncomplete(text) {
+            if (!text) return false;
+            const boundary = analyzeContinuationBoundary(text);
+            
+            // 1. Nếu khối Code hoặc Toán học chưa được đóng -> CHẮC CHẮN DANG DỞ
+            if (boundary.isCodeOpen || boundary.isMathOpen) return true;
+
+            const trimmed = text.trim();
+            if (trimmed.length === 0) return false;
+
+            const lastChar = trimmed.slice(-1);
+            
+            // 2. Nếu kết thúc lơ lửng bằng dấu phẩy, dấu hai chấm, hoặc các liên từ
+            if (lastChar === ',' || lastChar === ':') return true;
+            
+            // 3. Nếu kết thúc bằng các từ nối tiếng Việt/Anh dang dở
+            if (/( và| hoặc| thì| nhưng| là| của| để| bằng| do| bởi| and| or| but| because| which| is| of)$/i.test(trimmed)) {
+                return true;
+            }
+
+            return false;
+        }
 
         /**
          * XÂY DỰNG CHỈ THỊ NỐI TIẾP KHÔNG TÌ VẾT (SURGICAL CONTINUATION PROMPT)
@@ -5205,17 +5232,22 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
          * Khắc phục triệt để lỗi thẻ <p> bọc KaTeX và bảo toàn khối code
          */
         function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
-            if (!rawText) return '';
+        if (!rawText) return '';
 
-            // Tự động chuẩn hóa và mã hóa an toàn các đường dẫn ảnh AI Pollinations
-            let working = String(rawText).replace(/!\[(.*?)\]\((https?:\/\/image\.pollinations\.ai\/prompt\/)([^)]+)\)/g, (match, alt, base, rest) => {
-                const qIndex = rest.indexOf('?');
-                let promptPart = qIndex !== -1 ? rest.substring(0, qIndex) : rest;
-                const queryPart = qIndex !== -1 ? rest.substring(qIndex) : '';
-                try { promptPart = decodeURIComponent(promptPart); } catch (_) {}
-                const safePrompt = encodeURIComponent(promptPart.trim());
-                return `![${alt}](${base}${safePrompt}${queryPart})`;
-            });
+        // Tự động chuẩn hóa và mã hóa an toàn các đường dẫn ảnh AI Pollinations
+        let working = String(rawText).replace(/!\[(.*?)\]\((https?:\/\/image\.pollinations\.ai\/prompt\/)([^)]+)\)/g, (match, alt, base, rest) => {
+            const qIndex = rest.indexOf('?');
+            let promptPart = qIndex !== -1 ? rest.substring(0, qIndex) : rest;
+            const queryPart = qIndex !== -1 ? rest.substring(qIndex) : '';
+            try { promptPart = decodeURIComponent(promptPart); } catch (_) {}
+            const safePrompt = encodeURIComponent(promptPart.trim());
+            
+            // **SỬA LỖI TẠI ĐÂY:** Bọc URL hình ảnh bằng proxy CORS để hiển thị
+            const finalImageUrl = `${base}${safePrompt}${queryPart}`;
+            const proxiedImageUrl = `https://corsproxy.io/?${encodeURIComponent(finalImageUrl)}`;
+            
+            return `![${alt}](${proxiedImageUrl})`; // Sử dụng URL đã qua proxy
+        });
 
             // Tiếp tục cân bằng cấu trúc nếu đang trong tiến trình streaming
             working = isFinal
@@ -8918,20 +8950,19 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 });
 
                                 if (!response.ok) {
-                                    // 1. Nếu lỗi 400: Thường do thinkingConfig hoặc tools không tương thích -> Tháo bỏ ngay để cứu luồng
+                                    // 1. Nếu lỗi 400: Hạ ngay token về 65536 và gỡ bỏ thinkingConfig/tools gây xung đột
                                     if (response.status === 400) {
-                                        if (reqPayload.generationConfig?.thinkingConfig) {
+                                        if (reqPayload.generationConfig) {
+                                            reqPayload.generationConfig.maxOutputTokens = 65536;
                                             delete reqPayload.generationConfig.thinkingConfig;
                                         }
-                                        if (reqPayload.tools) {
-                                            delete reqPayload.tools;
-                                        }
+                                        delete reqPayload.tools;
                                         attempts++;
-                                        await new Promise(r => setTimeout(r, 300));
+                                        await new Promise(r => setTimeout(r, 200));
                                         continue;
                                     }
 
-                                    // 2. Nếu Model không tồn tại (404) hoặc bảo trì quá tải (503): Chuyển ngay sang Model tiếp theo trong chuỗi Fallback
+                                    // 2. Nếu Model không tồn tại (404) hoặc quá tải (503): Tự động chuyển Model trong Fallback Chain
                                     if (response.status === 404 || response.status === 503) {
                                         if (currentModelIdx < candidateModels.length - 1) {
                                             currentModelIdx++;
@@ -8940,11 +8971,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         }
                                     }
 
-                                    // 3. Xử lý Rate Limit (429) hoặc Khóa lỗi (401/403)
-                                    markApiKeyFailure(currentKey);
-                                    currentKey = ensureUsableKey();
+                                    // 3. Chỉ đánh dấu lỗi Key khi thật sự bị 401/403 hoặc 429
+                                    if (response.status === 401 || response.status === 403 || response.status === 429) {
+                                        markApiKeyFailure(currentKey);
+                                        currentKey = ensureUsableKey();
+                                    }
                                     attempts++;
-                                    const delay = Math.min(300 * Math.pow(1.1, Math.min(attempts, 8)) + Math.random() * 150, 2000);
+                                    const delay = Math.min(300 * Math.pow(1.1, Math.min(attempts, 8)) + Math.random() * 150, 1500);
                                     await new Promise(r => setTimeout(r, delay));
                                     continue;
                                 }
@@ -9323,12 +9356,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 renderRafId = requestAnimationFrame(loop);
                             };
 
-                            let isFirstContinuationChunk = false;
+let isFirstContinuationChunk = false;
+                            let lastFinishReason = null;
+                            let streamDropped = false;
+
                             const processChunk = (chunkJson, isContinuation = false) => {
                                 if (chunkJson.promptFeedback?.blockReason) {
                                     const reason = chunkJson.promptFeedback.blockReason;
                                     if (reason === 'PROHIBITED_CONTENT' || reason === 'SAFETY' || reason === 'BLOCKLIST') {
-                                        rawMarkdownBuffer += `\n\n*[Nội dung bị giới hạn]*`;
+                                        rawMarkdownBuffer += `\n\n*[Nội dung bị giới hạn bởi bộ lọc an toàn]*`;
                                         isGenerating.value = false;
                                         abortController?.abort();
                                         return;
@@ -9337,16 +9373,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                                 const candidate = chunkJson.candidates?.[0];
                                 if (!candidate) return;
-                                const parts = candidate.content?.parts || [];
-                                const finishReason = candidate.finishReason;
-
-                                if (finishReason === 'PROHIBITED_CONTENT' || finishReason === 'SAFETY') {
-                                    rawMarkdownBuffer += `\n\n*[Nội dung không khả dụng]*`;
-                                    isGenerating.value = false;
-                                    abortController?.abort();
-                                    return;
-                                }
                                 
+                                // Ghi nhận tín hiệu từ API, nhưng ta sẽ không hoàn toàn tin tưởng nó
+                                if (candidate.finishReason) {
+                                    lastFinishReason = candidate.finishReason;
+                                }
+
+                                const parts = candidate.content?.parts || [];
                                 for (const p of parts) {
                                     if (p.thought === true || p.reasoning) {
                                         const thoughtText = (p.text || p.reasoning || '');
@@ -9440,8 +9473,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         }
                                     }
                                 }
-
-                                if (finishReason === 'MAX_TOKENS') botMsg.isTruncated = true;
                             };
 
                             const performStreaming = async (basePayload, chunkHandler) => {
@@ -9467,35 +9498,35 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 safetySettings: SAFETY_SETTINGS
                             };
 
-                            let continueNeeded = false;
                             startRenderLoop();
 
-                            // THỰC THI KHỞI ĐẦU VỚI CƠ CHẾ BẢO VỆ CHỐNG SẬP
+                            // THỰC THI KHỞI ĐẦU
                             const initialStreamRes = await performStreaming(initialPayload, (chunk) => {
                                 processChunk(chunk, false);
-                                const cand = chunk.candidates?.[0];
-                                if (cand?.finishReason) {
-                                    lastFinishReason = cand.finishReason;
-                                    continueNeeded = (cand.finishReason === 'MAX_TOKENS');
-                                }
                             });
 
-                            // Nếu bị ngắt giữa chừng do mạng đứt khi đang stream: tự động chuyển sang nối tiếp
-                            if (initialStreamRes?.isMidStreamDrop && rawMarkdownBuffer.trim()) {
-                                continueNeeded = true;
+                            if (initialStreamRes?.isMidStreamDrop) {
+                                streamDropped = true;
                             }
 
-                            // VÒNG LẶP NỐI TIẾP VÔ TẬN TỰ SỬA LỖI (SELF-HEALING CONTINUATION LOOP)
+                            // CỖ MÁY NỐI TIẾP VÔ TẬN (ĐÃ TỐI ƯU HÓA HOÀN TOÀN)
                             let continueAttempts = 0;
-                            const MAX_CONTINUE_ATTEMPTS = 60;
+                            const MAX_CONTINUE_ATTEMPTS = 50;
 
-                            const checkNeedsContinuation = () => {
-                                if (continueNeeded) return true;
+                            while (continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController && !abortController.signal.aborted) {
                                 const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
-                                return boundary.isCodeOpen || boundary.isMathOpen;
-                            };
+                                
+                                // Nếu API báo đã STOP và không bị mở dở Code/Toán -> Kết thúc trọn vẹn, KHÔNG ép nối dòng
+                                if (lastFinishReason === 'STOP' && !boundary.isCodeOpen && !boundary.isMathOpen && !streamDropped) {
+                                    break;
+                                }
 
-                            while (checkNeedsContinuation() && continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController && !abortController.signal.aborted) {
+                                // Chỉ tiếp tục khi thật sự bị chạm trần token (MAX_TOKENS), mở dở Code/Toán, hoặc rớt mạng giữa chừng
+                                const shouldContinue = (lastFinishReason === 'MAX_TOKENS') || boundary.isCodeOpen || boundary.isMathOpen || streamDropped;
+                                if (!shouldContinue) {
+                                    break;
+                                }
+
                                 continueAttempts++;
                                 botMsg.isContinuing = true;
                                 botMsg.continuationStep = continueAttempts;
@@ -9503,8 +9534,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 botMsg.isTruncated = false;
                                 isFirstContinuationChunk = true;
 
+                                streamDropped = false;
+                                lastFinishReason = null;
+
                                 startRenderLoop();
-                                const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
                                 const continuationPrompt = buildSeamlessContinuationPrompt(boundary);
                                 const continuationHistory = [
                                     ...limitedHistory,
@@ -9521,40 +9554,27 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 let stepSuccess = false;
                                 let stepTries = 0;
 
-                                while (!stepSuccess && stepTries < 10 && abortController && !abortController.signal.aborted) {
+                                while (!stepSuccess && stepTries < 5 && abortController && !abortController.signal.aborted) {
                                     stepTries++;
                                     try {
                                         const res = await performStreaming(continuationPayload, (chunk) => {
                                             processChunk(chunk, true);
-                                            const cand = chunk.candidates?.[0];
-                                            if (cand?.finishReason) {
-                                                lastFinishReason = cand.finishReason;
-                                                continueNeeded = (cand.finishReason === 'MAX_TOKENS');
-                                            }
                                         });
                                         if (res && res.success) {
                                             stepSuccess = true;
-                                            if (res.isMidStreamDrop) continueNeeded = true;
+                                            if (res.isMidStreamDrop) streamDropped = true;
                                         } else {
-                                            await new Promise(r => setTimeout(r, 800));
+                                            await new Promise(r => setTimeout(r, 600));
                                         }
                                     } catch (e) {
-                                        await new Promise(r => setTimeout(r, 1000));
+                                        await new Promise(r => setTimeout(r, 800));
                                     }
                                 }
 
-                                const postBoundary = analyzeContinuationBoundary(rawMarkdownBuffer);
                                 if (!stepSuccess) {
-                                    // Nếu mạng quá yếu sau 10 lần retry, bảo toàn 100% nội dung đã nhận và cho phép tiếp tục thủ công
                                     botMsg.isTruncated = true;
                                     botMsg.interruptionReason = 'NETWORK_PAUSED';
                                     break;
-                                }
-
-                                if (lastFinishReason === 'STOP' && !postBoundary.isCodeOpen && !postBoundary.isMathOpen) {
-                                    continueNeeded = false;
-                                } else {
-                                    continueNeeded = true;
                                 }
                             }
 
@@ -9650,9 +9670,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     botMsg.content = rawMarkdownBuffer || botMsg.content || 'Không thể tạo phản hồi.';
                                     botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
 
-                                    if (!botMsg.isContinuing && !botMsg.isTruncated && lastFinishReason !== 'STOP' && botMsg.content.trim()) {
+                                    // Chỉ đánh dấu ngắt quãng khi API thật sự báo chạm trần token
+                                    if (!botMsg.isContinuing && lastFinishReason === 'MAX_TOKENS') {
                                         botMsg.isTruncated = true;
-                                        botMsg.interruptionReason = 'STREAM_UNEXPECTED_END';
+                                        botMsg.interruptionReason = 'MAX_TOKENS_REACHED';
+                                    } else {
+                                        botMsg.isTruncated = false;
                                     }
                                     scheduleDbSave(botMsg);
                                 }
