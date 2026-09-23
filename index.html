@@ -5232,22 +5232,24 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
          * Khắc phục triệt để lỗi thẻ <p> bọc KaTeX và bảo toàn khối code
          */
         function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
-        if (!rawText) return '';
+            if (!rawText) return '';
 
-        // Tự động chuẩn hóa và mã hóa an toàn các đường dẫn ảnh AI Pollinations
-        let working = String(rawText).replace(/!\[(.*?)\]\((https?:\/\/image\.pollinations\.ai\/prompt\/)([^)]+)\)/g, (match, alt, base, rest) => {
-            const qIndex = rest.indexOf('?');
-            let promptPart = qIndex !== -1 ? rest.substring(0, qIndex) : rest;
-            const queryPart = qIndex !== -1 ? rest.substring(qIndex) : '';
-            try { promptPart = decodeURIComponent(promptPart); } catch (_) {}
-            const safePrompt = encodeURIComponent(promptPart.trim());
-            
-            // **SỬA LỖI TẠI ĐÂY:** Bọc URL hình ảnh bằng proxy CORS để hiển thị
-            const finalImageUrl = `${base}${safePrompt}${queryPart}`;
-            const proxiedImageUrl = `https://corsproxy.io/?${encodeURIComponent(finalImageUrl)}`;
-            
-            return `![${alt}](${proxiedImageUrl})`; // Sử dụng URL đã qua proxy
-        });
+            // 1. Khôi phục và làm sạch các URL từng bị gán corsproxy.io từ dữ liệu cũ
+            let working = String(rawText)
+                .replace(/https?:\/\/corsproxy\.io\/\?(?:https?%3A%2F%2F|https?:\/\/)/gi, 'https://');
+
+            // 2. Chuẩn hóa và mã hóa an toàn các đường dẫn ảnh AI Pollinations (Tải trực tiếp)
+            working = working.replace(/!\[(.*?)\]\((https?:\/\/image\.pollinations\.ai\/prompt\/)([^)]+)\)/g, (match, alt, base, rest) => {
+                const qIndex = rest.indexOf('?');
+                let promptPart = qIndex !== -1 ? rest.substring(0, qIndex) : rest;
+                const queryPart = qIndex !== -1 ? rest.substring(qIndex) : '';
+                try { promptPart = decodeURIComponent(promptPart); } catch (_) {}
+                const safePrompt = encodeURIComponent(promptPart.trim());
+                
+                // HIỂN THỊ TRỰC TIẾP - TUYỆT ĐỐI KHÔNG BỌC QUA PROXY
+                const finalImageUrl = `${base}${safePrompt}${queryPart}`;
+                return `![${alt}](${finalImageUrl})`;
+            });
 
             // Tiếp tục cân bằng cấu trúc nếu đang trong tiến trình streaming
             working = isFinal
@@ -6977,16 +6979,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         characterSeed: Math.floor(Math.random() * 899999) + 100000
                     });
 
-                    // Hàm ánh xạ phong cách tạo ảnh sang tên model của Pollinations.ai
+                    // Hàm ánh xạ phong cách tạo ảnh sang model chuẩn xác của Pollinations.ai
                     const getImageGenModel = (style) => {
                         switch (style) {
                             case 'photorealistic': return 'flux-realism';
-                            case 'cinematic': return 'cinematic';
-                            case 'anime': return 'anime';
-                            case '3d_pixar': return '3d-render'; // Hoặc 'pixar-style' nếu có
-                            case 'digital_art': return 'digital-art';
-                            case 'vintage': return 'vintage-art'; // Hoặc 'retro-art', 'old-photo' tùy API hỗ trợ
-                            default: return 'flux-realism'; // Mặc định là chân thực
+                            case 'cinematic': return 'flux';
+                            case 'anime': return 'flux-anime';
+                            case '3d_pixar': return 'flux-3d';
+                            case 'digital_art': return 'flux';
+                            case 'vintage': return 'flux';
+                            default: return 'flux';
                         }
                     };
 
@@ -9206,23 +9208,18 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 else if (imageConfig.aspectRatio === "3:4") { w = 864; h = 1152; }
                                 else if (imageConfig.aspectRatio === "21:9") { w = 1344; h = 576; }
 
-                                // Đảm bảo kích thước ảnh chia hết cho 16 để tối ưu cho các mô hình tạo ảnh
                                 w = Math.round(w / 16) * 16;
                                 h = Math.round(h / 16) * 16;
 
-                                // Lấy tên model tạo ảnh dựa trên phong cách đã chọn
                                 const selectedImageModel = getImageGenModel(imageConfig.style);
 
                                 systemPrompt += `\n[CHẾ ĐỘ SÁNG TẠO HÌNH ẢNH]
-1. Tự động dịch và phát triển ý tưởng thành câu mô tả tiếng Anh chi tiết về chủ thể, ánh sáng, góc máy, chi tiết nghệ thuật. Phong cách: ${imageConfig.style}.
-2. (Nội bộ) Tạo PROMPT_TIENG_ANH. Sau đó, mã hóa nó bằng encodeURIComponent để tạo PROMPT_TIENG_ANH_ENCODED_URL.
-3. **BẮT BUỘC PHẢI XUẤT RA THẺ ẢNH MARKDOWN HOÀN CHỈNH** theo cấu trúc sau. TUYỆT ĐỐI KHÔNG hiển thị PROMPT_TIENG_ANH hay PROMPT_TIENG_ANH_ENCODED_URL trực tiếp trong phản hồi.
-   \`\`\`markdown
-   ![Tác phẩm nghệ thuật](https://image.pollinations.ai/prompt/%7BPROMPT_TIENG_ANH_ENCODED_URL%7D?width=${w}&height=${h}&model=${selectedImageModel}&nologo=true&seed=${randomSeed})
+1. Tự động dịch và phát triển ý tưởng của người dùng thành một câu prompt mô tả chi tiết bằng tiếng Anh (chủ thể, bối cảnh, ánh sáng, góc máy, chi tiết 8k, phong cách nghệ thuật ${imageConfig.style}).
+2. Xuất trực tiếp thẻ ảnh Markdown theo định dạng:
+![Tác phẩm nghệ thuật](https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_ENCODED_URL}?width=${w}&height=${h}&model=${selectedImageModel}&nologo=true&seed=${randomSeed})
 
-   Lời bình ngắn gọn về tác phẩm bằng tiếng Việt.
-   \`\`\`
-4. Đảm bảo toàn bộ đầu ra của bạn nằm trong khối mã Markdown trên, bao gồm cả thẻ ảnh và lời bình. KHÔNG thêm bất kỳ văn bản nào khác bên ngoài khối này.`;
+3. Kèm theo lời bình ngắn gọn về tác phẩm bằng tiếng Việt ở phía dưới ảnh.
+(LƯU Ý: Thay {PROMPT_TIENG_ANH_ENCODED_URL} bằng câu mô tả tiếng Anh đã được URL-encode, khoảng trắng thay bằng %20. TUYỆT ĐỐI KHÔNG bọc thẻ ảnh trong khối mã code block \`\`\`markdown).`;
                             }
 
                             // TRA CỨU WEB
