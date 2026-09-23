@@ -7432,26 +7432,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
                                 else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
                             } else if (msg?.content) {
-                                // Trích xuất chính xác URL kể cả khi URL có chứa dấu ngoặc đơn
-                                const imgMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
-                                if (imgMatch && imgMatch[2]) {
-                                    directImageDataUrl = imgMatch[2].trim();
+                                // Tự động trích xuất liên kết ảnh từ thẻ Markdown ![...](URL) của tin nhắn
+                                const imgMatch = msg.content.match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
+                                if (imgMatch && imgMatch[1]) {
+                                    directImageDataUrl = imgMatch[1];
                                 }
-                            }
-
-                            // Tải trước ảnh từ máy chủ về dạng Blob an toàn ngay tại luồng chính để Worker xử lý tức thời
-                            if (directImageDataUrl && directImageDataUrl.startsWith('http')) {
-                                searchStatusText.value = "Đang nạp dữ liệu ảnh gốc...";
-                                try {
-                                    let imgRes = await fetch(directImageDataUrl).catch(() => null);
-                                    if (!imgRes || !imgRes.ok) {
-                                        imgRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`).catch(() => null);
-                                    }
-                                    if (imgRes && imgRes.ok) {
-                                        const imgBlob = await imgRes.blob();
-                                        directImageDataUrl = ObjectUrlRegistry.create(imgBlob);
-                                    }
-                                } catch (_) {}
                             }
 
                             const result = await AICinemaWorkerBridge.runProductionInWorker({
