@@ -602,12 +602,12 @@
 
             <div class="flex items-center gap-2 min-w-0">
                 <div class="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surfaceElevated border border-white/5 text-[10.5px] font-mono shadow-sm">
-                    <span class="w-1.5 h-1.5 rounded-full" :class="isMemoryRetrievalActive ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'"></span>
+                    <span class="w-1.5 h-1.5 rounded-full" :class="(isMemoryRetrievalActive && currentMessages.length > 0) ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'"></span>
                     <span class="text-textMuted font-medium">Bộ nhớ:</span>
                     <span :style="{ color: selectedAccent }" class="font-bold">
                         {{ currentInputTokensDisplay }}
                     </span>
-                    <span v-if="isMemoryRetrievalActive" class="text-[8.5px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-bold tracking-wider">
+                    <span v-if="isMemoryRetrievalActive && currentMessages.length > 0" class="text-[8.5px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-bold tracking-wider">
                         TRUY XUẤT SÂU
                     </span>
                     <span v-else class="text-[8.5px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold tracking-wider">
@@ -1111,7 +1111,7 @@
                                         <lucide-icon name="download" class="w-3.5 h-3.5"></lucide-icon> Tải Video Về Máy
                                     </button>
                                 </div>
-                                <video :src="msg.renderedVideoUrl" controls autoplay loop class="w-full max-h-[460px] rounded-xl object-contain bg-black shadow-inner"></video>
+                                <video :src="msg.renderedVideoUrl" @error="msg.renderedVideoUrl = null" controls autoplay loop class="w-full max-h-[460px] rounded-xl object-contain bg-black shadow-inner"></video>
                             </div>
 
                             <!-- ACTIONS TOOLBAR -->
@@ -1962,11 +1962,23 @@ function createAudioBufferMultiTrack({ blueprint, durationSec, sampleRate, voice
         for (const vb of voiceBuffers) {
             const start = Math.floor(vb.startTimeSec * sampleRate);
             const pcm = vb.samples;
-            for (let j = 0; j < pcm.length; j++) {
-                if (start + j < totalSamples) {
-                    leftChannel[start + j] += pcm[j] * 0.95;
-                    rightChannel[start + j] += pcm[j] * 0.95;
-                }
+            const srcRate = vb.sampleRate || 24000; // Gemini TTS mặc định là 24kHz
+            const ratio = srcRate / sampleRate;    // 24000 / 48000 = 0.5
+            const targetLen = Math.floor(pcm.length / ratio);
+
+            for (let j = 0; j < targetLen; j++) {
+                const targetIdx = start + j;
+                if (targetIdx >= totalSamples) break;
+
+                // Nội suy tuyến tính (Linear Interpolation) chuẩn xác âm sắc
+                const srcIdx = j * ratio;
+                const i0 = Math.floor(srcIdx);
+                const i1 = Math.min(pcm.length - 1, i0 + 1);
+                const frac = srcIdx - i0;
+                const sampleVal = (pcm[i0] * (1 - frac) + pcm[i1] * frac) * 0.95;
+
+                leftChannel[targetIdx] += sampleVal;
+                rightChannel[targetIdx] += sampleVal;
             }
         }
     }
@@ -2145,7 +2157,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                 const charObj = (userCharacters || []).find(c => c.name?.toLowerCase() === (cue.speaker || '').toLowerCase()) || userCharacters?.[0];
                 const voiceName = charObj?.geminiVoice || 'Puck';
                 try {
-                    const ttsUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-tts-preview:generateContent?key=${apiKey}`;
+                    const ttsUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey}`;
                     const ttsRes = await fetch(ttsUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -2864,7 +2876,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                 }
 
                 if (totalActualTokens <= safeLimit) {
-                    return fullTurns.map(t => ({ role: t.role, parts: t.parts }));
+                    // Giữ Base64 cho tối đa 2 lượt người dùng gần nhất để tránh lỗi máy chủ HTTP 413
+                    const recentUserThreshold = 20;
+                    let userTurnsSeen = 0;
+                    return fullTurns.map((t, idx) => {
+                        const isRecent = idx >= (fullTurns.length - 4);
+                        if (t.role === 'user' && !isRecent) {
+                            return this.compressHistoricalTurnPreservingContext(t, idx);
+                        }
+                        return { role: t.role, parts: t.parts };
+                    });
                 }
 
                 const retrievedMemories = await EpistemicMemoryEngine.retrieveRelevantMemories(
@@ -2971,12 +2992,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ THEO ĐÚNG CẤU TRÚC:
                         view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
                     }
 
-                    // Chuyển đổi thành Base64
-                    let binary = '';
+                    // Chuyển đổi thành Base64 an toàn tuyệt đối với mảng dung lượng lớn
                     const bytes = new Uint8Array(wavBuffer);
-                    const chunkSize = 0x8000;
-                    for (let i = 0; i < bytes.length; i += chunkSize) {
-                        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+                    const CHUNK_SIZE = 0x4000; // 16KB per slice an toàn cho mọi Call Stack
+                    let binary = '';
+                    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+                        const chunk = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
+                        for (let j = 0; j < chunk.length; j++) {
+                            binary += String.fromCharCode(chunk[j]);
+                        }
                     }
 
                     return {
@@ -6567,7 +6591,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
             // LÀM SẠCH DỮ LIỆU TRƯỚC KHI LƯU INDEXEDDB
             const cleanForDb = (obj) => {
                 if (!obj) return obj;
-                const uiFields = ['longPressTimer', 'showActions', 'isEditing', 'longPressStartPos', 'isLongPressTriggered', 'editContent', 'expanded', 'userExpanded', 'searchExpanded', 'executionExpanded', 'urlSourcesExpanded', 'lastRenderSeq', '_isFlashing'];
+                // Thêm renderedVideoUrl vào uiFields vì blob URL sẽ mất hiệu lực sau khi F5
+                const uiFields = ['renderedVideoUrl', 'longPressTimer', 'showActions', 'isEditing', 'longPressStartPos', 'isLongPressTriggered', 'editContent', 'expanded', 'userExpanded', 'searchExpanded', 'executionExpanded', 'urlSourcesExpanded', 'lastRenderSeq', '_isFlashing'];
                 const copy = {};
                 const raw = window.Vue ? window.Vue.toRaw(obj) : obj;
 
@@ -6600,17 +6625,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                 if (!msgObj?.id || !msgObj?.threadId) return;
                 const cleaned = cleanForDb(msgObj);
 
+                const nowTs = getMonotonicTimestamp();
                 try {
                     if (db) {
                         await db.messages.put(cleaned);
                         const existingThread = await db.threads.get(msgObj.threadId);
                         if (existingThread) {
-                            await db.threads.update(msgObj.threadId, { updatedAt: getMonotonicTimestamp() });
+                            await db.threads.update(msgObj.threadId, { updatedAt: nowTs });
                         }
                     }
                 } catch (err) {
                     console.warn("[Database] Ghi IndexedDB thất bại:", err);
                 }
+
+                // Cập nhật an toàn updatedAt qua CustomEvent để RAM Vue tự đồng bộ
+                window.dispatchEvent(new CustomEvent('gdeep:thread-updated', { detail: { threadId: msgObj.threadId, updatedAt: nowTs } }));
 
                 try {
                     const backupKey = `gdeep_msg_backup_${msgObj.threadId}`;
@@ -7038,13 +7067,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     const updateInputTokensDisplay = async () => {
                         if (isGenerating.value) return;
                         const activeKey = getNextHealthyApiKey()?.key || null;
-                        const currentPayload = await TokenBudgetManager.assembleInfiniteContextPayload(
+                        const rawPayload = await TokenBudgetManager.assembleInfiniteContextPayload(
                             currentMessages.value,
                             inputText.value,
                             null,
                             currentModel.value,
                             activeKey
                         );
+                        // Bắt buộc chuẩn hóa luân phiên lượt User/Model trước khi gửi tới API :countTokens
+                        const currentPayload = sanitizeHistoryForGemini(rawPayload, false);
                         
                         let totalTokens = 0;
                         const activeModelId = currentModel.value?.apiEndpointId || currentModel.value?.id;
@@ -7198,6 +7229,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         for (const file of files) {
                             const isVideo = file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm)$/i.test(file.name);
                             const isAudio = file.type.startsWith('audio/') || /\.(mp3|wav|m4a|ogg|aac|opus|flac)$/i.test(file.name);
+                            const isImage = file.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|avif|heic|svg)$/i.test(file.name);
                             const sizeStr = (file.size / 1048576).toFixed(2) + ' MB';
 
                             try {
@@ -7250,14 +7282,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         rawType: file.type
                                     });
                                     notify(`Đã bóc tách tài liệu PDF: ${file.name}`);
-                                } else if (file.type.startsWith('image/')) {
+                                } else if (isImage) {
                                     const comp = await compressImage(file);
                                     pendingAttachments.value.push({
                                         name: file.name,
-                                        mimeType: normalizeMimeType(comp.mimeType, file.name),
+                                        mimeType: normalizeMimeType(comp.mimeType || file.type, file.name),
                                         data: comp.data,
                                         size: sizeStr,
-                                        rawType: file.type
+                                        rawType: file.type || 'image/jpeg'
                                     });
                                 } else {
                                     const isBin = await isBinaryFile(file);
@@ -7315,6 +7347,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             if (directImageInput) {
                                 if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
                                 else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
+                            } else if (msg?.content) {
+                                // Tự động trích xuất liên kết ảnh từ thẻ Markdown ![...](URL) của tin nhắn
+                                const imgMatch = msg.content.match(/!\[.*?\]\(((?:https?:\/\/|data:image\/)[^\)]+)\)/i);
+                                if (imgMatch && imgMatch[1]) {
+                                    directImageDataUrl = imgMatch[1];
+                                }
                             }
 
                             const result = await AICinemaWorkerBridge.runProductionInWorker({
@@ -7437,6 +7475,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         if (isGenerating.value) cancelGeneration();
                         await flushAllPendingDbWrites();
                         if (window.speechSynthesis) { window.speechSynthesis.cancel(); isSpeaking.value = false; }
+                        
+                        // Thu hồi toàn bộ các ObjectURL tạm của thread trước để giải phóng RAM
+                        currentMessages.value.forEach(m => {
+                            if (m.renderedVideoUrl) ObjectUrlRegistry.revoke(m.renderedVideoUrl);
+                            (m.attachments || []).forEach(a => {
+                                if (a.videoUrl) ObjectUrlRegistry.revoke(a.videoUrl);
+                            });
+                        });
+
                         currentThreadId.value = id;
                         try { localStorage.setItem('gdeep_current_thread_id', id); } catch (_) {}
                         disablePagination.value = false;
@@ -7614,7 +7661,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 importedThread.id = generateUUID();
                                 importedThread.title = (importedThread.title || 'Phiên trò chuyện') + ' (Đã nhập)';
                                 importedThread.updatedAt = getMonotonicTimestamp();
-                                const importedMsgs = parsed.messages.map(m => normalizeMessageRecord(m, importedThread.id));
+                                // Tạo UUID mới cho từng tin nhắn để chống ghi đè dữ liệu phiên cũ
+                                const importedMsgs = parsed.messages.map(m => {
+                                    const rec = normalizeMessageRecord(m, importedThread.id);
+                                    rec.id = generateUUID();
+                                    return rec;
+                                });
                                 
                                 threads.value.unshift(importedThread);
                                 saveThreadToLocalStorageBackup(importedThread);
@@ -7666,6 +7718,23 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     else await createNewThread();
                                 }
                             } else {
+                                // Xóa sạch toàn bộ phiên và tin nhắn thuộc Chuyên gia này
+                                const orphanThreads = threads.value.filter(t => t.gemId === targetId);
+                                for (const ot of orphanThreads) {
+                                    try { localStorage.removeItem(`gdeep_msg_backup_${ot.id}`); } catch (_) {}
+                                    if (db) {
+                                        try {
+                                            await db.messages.where('threadId').equals(ot.id).delete();
+                                            await db.threads.delete(ot.id);
+                                        } catch (_) {}
+                                    }
+                                }
+                                threads.value = threads.value.filter(t => t.gemId !== targetId);
+                                try {
+                                    const tList = JSON.parse(localStorage.getItem('gdeep_threads_backup') || '[]').filter(t => t.gemId !== targetId);
+                                    localStorage.setItem('gdeep_threads_backup', JSON.stringify(tList));
+                                } catch (_) {}
+
                                 gems.value = gems.value.filter(g => g.id !== targetId);
                                 if (db) await db.gems.delete(targetId);
                                 if (activeGemId.value === targetId) switchGemTab('default');
@@ -7675,8 +7744,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     const executeConfirm = async () => {
-                        if (confirmActionCallback) await confirmActionCallback();
-                        showConfirmModal.value = false;
+                        try {
+                            if (confirmActionCallback) await confirmActionCallback();
+                        } finally {
+                            showConfirmModal.value = false;
+                            confirmActionCallback = null;
+                        }
                     };
 
                     const closeConfirmModal = () => {
@@ -7776,9 +7849,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         await db.threads.clear();
                                         await db.messages.clear();
                                         await db.gems.clear();
-                                        await db.threads.bulkAdd(data.threads.map(t => cleanForDb(t)));
-                                        await db.messages.bulkAdd(data.messages.map(m => cleanForDb(m)));
-                                        await db.gems.bulkAdd(data.gems.map(g => cleanForDb(g)));
+                                        await db.threads.bulkPut(data.threads.map(t => cleanForDb(t)));
+                                        await db.messages.bulkPut(data.messages.map(m => cleanForDb(m)));
+                                        await db.gems.bulkPut(data.gems.map(g => cleanForDb(g)));
                                     });
                                 }
                                 await loadThreadsForActiveGem();
@@ -7941,13 +8014,33 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         cancelLongPress(msg);
                         triggerHaptic('heavy');
                         if (currentStreamingMsg.value?.id === msg.id) cancelGeneration();
-                        currentMessages.value = currentMessages.value.filter(m => m.id !== msg.id);
+                        
+                        const toDeleteIds = new Set([msg.id]);
+
+                        // Nếu xóa tin nhắn AI, dọn luôn các khối suy luận và kết quả tính toán đi kèm phía trước
+                        if (msg.role === 'model') {
+                            const idx = currentMessages.value.findIndex(m => m.id === msg.id);
+                            if (idx !== -1) {
+                                for (let i = idx - 1; i >= 0; i--) {
+                                    const prev = currentMessages.value[i];
+                                    if (prev.role === 'system_thought' || prev.role === 'system_execution') {
+                                        toDeleteIds.add(prev.id);
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        currentMessages.value = currentMessages.value.filter(m => !toDeleteIds.has(m.id));
                         try {
                             const backupKey = `gdeep_msg_backup_${msg.threadId}`;
-                            const existing = JSON.parse(localStorage.getItem(backupKey) || '[]').filter(m => m.id !== msg.id);
+                            const existing = JSON.parse(localStorage.getItem(backupKey) || '[]').filter(m => !toDeleteIds.has(m.id));
                             localStorage.setItem(backupKey, JSON.stringify(existing));
                         } catch (_) {}
-                        if (db) dbWriteQueue.enqueue(async () => { await db.messages.delete(msg.id); });
+                        if (db) dbWriteQueue.enqueue(async () => { 
+                            for (const id of toDeleteIds) await db.messages.delete(id); 
+                        });
                         updateInputTokensDisplay();
                     };
 
@@ -7976,6 +8069,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     const startInlineEdit = (msg) => {
+                        // Ngắt giọng đọc lập tức nếu đang phát để tránh xung đột âm thanh và giao diện
+                        if (window.speechSynthesis && isSpeaking.value) {
+                            currentSpeechToken++;
+                            window.speechSynthesis.cancel();
+                            activeUtterances.length = 0;
+                            isSpeaking.value = false;
+                        }
+
                         msg.editContent = msg.content;
                         msg.isEditing = true;
                         msg.showActions = false;
@@ -8412,6 +8513,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             return;
                         }
                         if (e.key === 'Escape') {
+                            // Hủy chế độ chỉnh sửa tin nhắn người dùng nếu đang mở
+                            const editingMsg = currentMessages.value.find(m => m.isEditing);
+                            if (editingMsg) {
+                                editingMsg.isEditing = false;
+                                return;
+                            }
                             if (showConfirmModal.value) { closeConfirmModal(); return; }
                             if (showRenameModal.value) { closeRenameModal(); return; }
                             if (showGemModal.value) { closeGemModal(); return; }
@@ -8457,11 +8564,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             const queued = await db.offlineQueue.orderBy('createdAt').toArray();
                             for (const item of queued) {
                                 if (!isOnline.value) break;
-                                await db.offlineQueue.delete(item.id);
+                                // Đợi nếu hệ thống đang bận phản hồi tin nhắn trước đó
+                                while (isGenerating.value) {
+                                    await new Promise(r => setTimeout(r, 600));
+                                }
                                 inputText.value = item.text || '';
                                 pendingAttachments.value = item.attachments || [];
+                                await db.offlineQueue.delete(item.id);
                                 try { await sendMessage(); } catch (_) {}
-                                await new Promise(r => setTimeout(r, 1000));
+                                await new Promise(r => setTimeout(r, 1200));
                             }
                         } catch (_) {
                         } finally {
@@ -8522,8 +8633,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         return alternating;
                     };
 
-                    const buildCleanHistory = async (upToMessageId = null) => {
-                        const rawPromptText = inputText.value || '';
+                    const buildCleanHistory = async (upToMessageId = null, currentQueryText = '') => {
+                        const rawPromptText = currentQueryText || inputText.value || '';
                         const activeKey = getNextHealthyApiKey()?.key || null;
                         const assembled = await TokenBudgetManager.assembleInfiniteContextPayload(
                             currentMessages.value,
@@ -8784,7 +8895,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         try {
                             let limitedHistory = [];
                             if (!isRegenerate) {
-                                limitedHistory = await buildCleanHistory();
+                                // Truyền biến text đã lưu tạm trước khi ô nhập bị xóa rỗng
+                                limitedHistory = await buildCleanHistory(null, text);
                                 const newUserParts = buildTurnParts(text, attachments);
 
                                 const userMsg = createMessageRecord({
@@ -8825,7 +8937,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 } else {
                                     const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                                     if (lastUser) {
-                                        limitedHistory = await buildCleanHistory(lastUser.id);
+                                        limitedHistory = await buildCleanHistory(lastUser.id, lastUser.content || '');
                                         const userParts = buildTurnParts(lastUser.promptContent || lastUser.content || '', lastUser.attachments || []);
                                         limitedHistory.push({ role: 'user', parts: userParts });
                                     } else {
@@ -8847,6 +8959,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                             // ĐỐI SOÁT LIÊN KẾT BẰNG URL GROUNDING ENGINE TỐI THƯỢNG
                             const detectedUrls = UrlGroundingEngine.extractUrls(text);
+                            let webContextToPersist = '';
                             if (detectedUrls.length > 0) {
                                 searchStatusText.value = `Đang giải mã liên kết trực tiếp...`;
                                 const fetchedSources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (status) => {
@@ -8860,6 +8973,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                         groundingBlock += `[${idx + 1}] NGUỒN: ${src.title} (${src.url})\nNỘI DUNG: ${src.text}\n`;
                                     });
                                     systemPrompt += groundingBlock;
+                                    webContextToPersist = groundingBlock;
+
+                                    // Cập nhật ngay vào tin nhắn User hiện tại trong mảng để lưu giữ vào DB
+                                    const curUserMsg = currentMessages.value.find(m => m.role === 'user' && m.content === text);
+                                    if (curUserMsg) {
+                                        curUserMsg.promptContent = (curUserMsg.promptContent || curUserMsg.content || '') + webContextToPersist;
+                                        scheduleDbSave(curUserMsg);
+                                    }
                                 }
                             }
 
@@ -9077,6 +9198,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                                     });
                                                     executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                                     scheduleDbSave(executionMsg);
+
+                                                    // Đồng bộ hóa kết quả vào phiên bản đang hoạt động của tin nhắn Bot
+                                                    if (botMsg && botMsg.versions && botMsg.versions.length > 0) {
+                                                        const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
+                                                        if (activeVer) {
+                                                            activeVer.rawExecutionParts = JSON.parse(JSON.stringify(executionMsg.rawExecutionParts));
+                                                            scheduleDbSave(botMsg);
+                                                        }
+                                                    }
                                                 }
                                             });
                                         } else if (p.codeExecutionResult) {
@@ -9346,10 +9476,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                     }
                                     scheduleDbSave(botMsg);
                                 }
-
-                                if (isFirstPrompt || currentMessages.value.filter(m => m.role === 'user').length === 1) {
-                                    setTimeout(() => autoNameThread(text, targetThreadId), 1000);
-                                }
                                 updateInputTokensDisplay();
                             }
                         }
@@ -9385,6 +9511,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             generationConfig: { temperature: 0.1, maxOutputTokens: 65536 },
                             safetySettings: SAFETY_SETTINGS
                         };
+                        if (enableCodeExecution.value) continuationPayload.tools = [{ codeExecution: {} }];
+                        if (enableDeepThinking.value) {
+                            continuationPayload.generationConfig.thinkingConfig = { includeThoughts: true };
+                        }
 
                         const modelId = targetModelObj.apiEndpointId || targetModelObj.id;
                         let isFirstManualChunk = true;
@@ -9479,15 +9609,25 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }, 200);
                     });
 
-                    // Lưu tự động bản nháp tin nhắn khi gõ
+                    // Lưu tự động bản nháp tin nhắn khi gõ kèm chống nghẽn API (Debounce)
+                    let inputTokensDebounceTimer = null;
                     watch(inputText, (val) => {
                         try { sessionStorage.setItem('gdeep_draft_input', val); } catch (_) {}
-                        updateInputTokensDisplay();
+                        if (inputTokensDebounceTimer) clearTimeout(inputTokensDebounceTimer);
+                        inputTokensDebounceTimer = setTimeout(() => {
+                            updateInputTokensDisplay();
+                        }, 600);
                     });
 
-                    let visualViewportCleanup = null, docClickCleanup = null, unsubscribeBus = null;
+                    let visualViewportCleanup = null, docClickCleanup = null, unsubscribeBus = null, handlePopState = null;
 
                     onMounted(async () => {
+                        if (typeof window.__REVEAL_APP__ === 'function') {
+                            window.__REVEAL_APP__();
+                        }
+
+                        // Lắng nghe nút Back trên điện thoại để đóng Modal
+                        window.addEventListener('popstate', onBrowserBack);
                         if (typeof window.__REVEAL_APP__ === 'function') {
                             window.__REVEAL_APP__();
                         }
@@ -9566,6 +9706,26 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         document.addEventListener('click', handleDocClick, true);
                         docClickCleanup = () => document.removeEventListener('click', handleDocClick, true);
 
+                        handlePopState = (e) => {
+                            if (lightbox.show) {
+                                closeLightbox();
+                                return;
+                            }
+                            if (sandboxModal.show) {
+                                closeSandboxModal();
+                                return;
+                            }
+                            if (showCmdPalette.value) {
+                                showCmdPalette.value = false;
+                                return;
+                            }
+                            if (isSidebarOpen.value) {
+                                isSidebarOpen.value = false;
+                                return;
+                            }
+                        };
+                        window.addEventListener('popstate', handlePopState);
+
                         window.addEventListener('online', handleOnline);
                         window.addEventListener('offline', handleOffline);
                         window.addEventListener('keydown', handleKeydownGlobal);
@@ -9602,7 +9762,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }
                     });
 
+                    // Hàm xử lý nút Back không bị lỗi khởi tạo
+                    function onBrowserBack(e) {
+                        if (lightbox.show) { closeLightbox(); return; }
+                        if (sandboxModal.show) { closeSandboxModal(); return; }
+                        if (showCmdPalette.value) { showCmdPalette.value = false; return; }
+                        if (isSidebarOpen.value) { isSidebarOpen.value = false; return; }
+                    }
+
                     onUnmounted(() => {
+                        window.removeEventListener('popstate', onBrowserBack);
                         window.removeEventListener('online', handleOnline);
                         window.removeEventListener('offline', handleOffline);
                         window.removeEventListener('keydown', handleKeydownGlobal);
