@@ -6857,17 +6857,30 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         characterSeed: Math.floor(Math.random() * 899999) + 100000
                     });
 
-                    // Hàm ánh xạ phong cách tạo ảnh sang model chuẩn xác của Pollinations.ai
+                    // Ánh xạ chính xác định danh Model kỹ thuật của Pollinations.ai
                     const getImageGenModel = (style) => {
-                        switch (style) {
-                            case 'photorealistic': return 'flux-realism';
-                            case 'cinematic': return 'flux';
-                            case 'anime': return 'flux-anime';
-                            case '3d_pixar': return 'flux-3d';
-                            case 'digital_art': return 'flux';
-                            case 'vintage': return 'flux';
-                            default: return 'flux';
-                        }
+                        const modelRegistry = {
+                            'photorealistic': 'flux-realism',
+                            'cinematic': 'flux',
+                            'anime': 'flux-anime',
+                            '3d_pixar': 'flux-3d',
+                            'digital_art': 'flux',
+                            'vintage': 'flux'
+                        };
+                        return modelRegistry[style] || 'flux';
+                    };
+
+                    // Mô tả chi tiết phong cách bằng tiếng Anh để hỗ trợ model vẽ đúng chất ảnh
+                    const getImageStylePromptModifier = (style) => {
+                        const styleModifiers = {
+                            'photorealistic': 'photorealistic, ultra-detailed 8k, raw photography, natural lighting',
+                            'cinematic': 'cinematic 35mm film still, dramatic lighting, anamorphic lens, depth of field, blockbuster movie visual',
+                            'anime': 'japanese anime art style, makoto shinkai aesthetic, vibrant colors, detailed illustration, crisp linework',
+                            '3d_pixar': '3d pixar disney animation style, cute character design, octane render 3d, ray tracing, soft studio lighting',
+                            'digital_art': 'concept digital art, artstation trending, highly detailed, dramatic atmosphere, painterly style',
+                            'vintage': 'vintage retro 1980s photograph, faded colors, film grain, nostalgic aesthetic, analog camera look'
+                        };
+                        return styleModifiers[style] || 'high quality, highly detailed';
                     };
 
                     // CẤU HÌNH XƯỞNG PHIM
@@ -9089,16 +9102,18 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 w = Math.round(w / 16) * 16;
                                 h = Math.round(h / 16) * 16;
 
-                                // Lấy đúng model dựa trên phong cách người dùng đã lựa chọn
+                                // Lấy đúng tên model kỹ thuật và bổ từ phong cách tiếng Anh
                                 const selectedImageModel = getImageGenModel(imageConfig.style);
+                                const styleModifier = getImageStylePromptModifier(imageConfig.style);
 
                                 systemPrompt += `\n[CHẾ ĐỘ SÁNG TẠO HÌNH ẢNH]
-1. Tự động dịch và phát triển ý tưởng của người dùng thành một câu prompt mô tả chi tiết bằng tiếng Anh (chủ thể, bối cảnh, ánh sáng, góc máy, chi tiết 8k, phong cách nghệ thuật ${imageConfig.style}).
-2. Xuất trực tiếp thẻ ảnh Markdown theo đúng định dạng:
+Quy tắc bắt buộc:
+1. Tự động dịch và phát triển ý tưởng của người dùng thành một đoạn mô tả phong cảnh/chủ thể chi tiết bằng tiếng Anh, đồng thời luôn bổ sung các từ khóa phong cách: "${styleModifier}".
+2. Xuất trực tiếp thẻ ảnh Markdown ngay đầu phản hồi (TUYỆT ĐỐI KHÔNG bọc thẻ ảnh trong khối mã \`\`\`):
 ![Tác phẩm nghệ thuật](https://image.pollinations.ai/prompt/%7BPROMPT_TIENG_ANH_ENCODED_URL%7D?width=${w}&height=${h}&model=${selectedImageModel}&nologo=true&seed=${randomSeed})
 
-3. Kèm theo lời bình ngắn gọn về tác phẩm bằng tiếng Việt ở phía dưới ảnh.
-(LƯU Ý: Thay {PROMPT_TIENG_ANH_ENCODED_URL} bằng câu mô tả tiếng Anh đã được URL-encode, khoảng trắng thay bằng %20. TUYỆT ĐỐI KHÔNG bọc thẻ ảnh trong khối mã code block \`\`\`markdown).`;
+3. {PROMPT_TIENG_ANH_ENCODED_URL} là đoạn mô tả tiếng Anh đã được URL-encode (khoảng trắng đổi thành %20, không chứa dấu ngoặc đơn () hoặc ngoặc vuông []).
+4. Viết lời bình ngắn gọn về tác phẩm bằng tiếng Việt ở phía dưới ảnh.`;
                             }
 
                             // TRA CỨU WEB
