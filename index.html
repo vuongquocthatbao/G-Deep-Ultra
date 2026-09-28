@@ -739,8 +739,10 @@
                 margin-right: 28px;
             }
             .code-content-wrap {
-                max-height: 65vh !important;
-                overflow: auto !important;
+                /* SỬA TRIỆT ĐỂ LỖI GIẬT VỀ HEADER: Bỏ max-height nội bộ và overflow-y để không bị reset scrollTop khi re-render v-html */
+                max-height: none !important;
+                overflow-x: auto !important;
+                overflow-y: visible !important;
                 background: #08090f !important;
                 font-family: var(--font-mono);
                 font-size: 12.5px;
@@ -749,6 +751,12 @@
                 /* Bật font ligatures khoa học: toán tử =>, !=, === tự ghép nét mượt */
                 font-variant-ligatures: normal;
                 font-feature-settings: "liga" 1, "calt" 1;
+            }
+            .code-header .action-btn {
+                padding: 4.5px !important;
+                min-width: 28px !important;
+                min-height: 28px !important;
+                border-radius: 6px !important;
             }
 
             /* Khung Cách Ly Công Thức Toán Học LaTeX Khoa Học */
@@ -4524,7 +4532,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         }
 
         /**
-         * Sao chép mã nguồn vào bộ nhớ đệm
+         * Sao chép mã nguồn vào bộ nhớ đệm (Tối ưu hóa Icon Feedback)
          */
         window.copyCodeToClipboard = async function(btn) {
             const rawText = getCodeFromBlock(btn);
@@ -4532,7 +4540,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
 
             const ok = await safeCopyToClipboard(rawText);
             if (ok) {
-                flashButtonFeedback(btn, '<span style="color:#34d399;font-weight:bold;display:inline-flex;align-items:center;gap:3px;"><svg style="width:12px;height:12px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Đã chép</span>');
+                // Hiển thị icon Check xanh lá nhỏ gọn, không làm biến dạng nút bấm
+                flashButtonFeedback(btn, '<svg style="width:14px;height:14px;color:#34d399;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>');
                 if (typeof triggerHaptic === 'function') triggerHaptic('light');
             }
         };
@@ -4575,7 +4584,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         };
 
         /**
-         * Thu gọn / Mở rộng khối mã mượt mà kèm đếm số dòng
+         * Thu gọn / Mở rộng khối mã với hiệu ứng xoay Icon mượt mà
          */
         window.toggleCodeCollapse = function(btn) {
             if (!btn) return;
@@ -4584,17 +4593,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
 
             container.classList.toggle('is-collapsed');
             const isCollapsed = container.classList.contains('is-collapsed');
-            const txt = btn.querySelector('.collapse-text');
-
-            if (txt) {
-                if (isCollapsed) {
-                    const code = getCodeFromBlock(btn);
-                    const lineCount = code ? code.split('\n').length : 0;
-                    txt.textContent = `Mở rộng (${lineCount} dòng)`;
-                } else {
-                    txt.textContent = 'Thu gọn';
-                }
+            const icon = btn.querySelector('.collapse-icon');
+            if (icon) {
+                icon.style.transform = isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)';
             }
+            const code = getCodeFromBlock(btn);
+            const lineCount = code ? code.split('\n').length : 0;
+            btn.setAttribute('title', isCollapsed ? `Mở rộng (${lineCount} dòng)` : 'Thu gọn khối mã');
             if (typeof triggerHaptic === 'function') triggerHaptic('light');
         };
 
@@ -5340,15 +5345,19 @@ async function readSSEStream(response, signal, onChunk) {
                     }
 
                     return `<div class="code-block-wrapper" data-lang="${validLang}" data-raw-code="${encodeURIComponent(textCode || '')}">` +
-                           `<header class="code-header">` +
-                           `<span class="font-mono text-blue-300 font-bold shrink-0 uppercase tracking-wider">${validLang}</span>` +
-                           `<menu class="flex items-center gap-1.5 shrink-0 flex-wrap m-0 p-0">` +
-                           (isPreviewable ? `<button type="button" class="btn-instant action-btn" data-code-action="preview" title="Xem trước kết quả">Xem trước</button>` : '') +
-                           `<button type="button" class="btn-instant action-btn" data-code-action="download" title="Tải về máy">Tải về</button>` +
-                           `<button type="button" class="btn-instant action-btn" data-code-action="copy" title="Sao chép toàn bộ">Sao chép</button>` +
-                           `<button type="button" class="btn-instant action-btn text-cyan-400 hover:text-cyan-300" data-code-action="collapse"><span class="collapse-text">Thu gọn</span></button>` +
-                           `</menu></header>` +
-                           `<div class="code-content-wrap custom-scrollbar"><pre><code class="hljs language-${validLang}">${highlightedCode}</code></pre></div></div>`;
+               `<header class="code-header">` +
+               `<span class="font-mono text-blue-300 font-bold shrink-0 uppercase tracking-wider">${validLang}</span>` +
+               `<menu class="flex items-center gap-1 shrink-0 flex-wrap m-0 p-0">` +
+               (isPreviewable ? `<button type="button" class="btn-instant action-btn hover:!text-purple-300" data-code-action="preview" title="Chạy thử giao diện (Live Preview)">` +
+                   `<svg class="w-3.5 h-3.5 pointer-events-none text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>` : '') +
+               `<button type="button" class="btn-instant action-btn hover:!text-emerald-300" data-code-action="download" title="Tải tệp mã nguồn về máy">` +
+                   `<svg class="w-3.5 h-3.5 pointer-events-none text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>` +
+               `<button type="button" class="btn-instant action-btn hover:!text-sky-300" data-code-action="copy" title="Sao chép toàn bộ mã nguồn">` +
+                   `<svg class="w-3.5 h-3.5 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg></button>` +
+               `<button type="button" class="btn-instant action-btn hover:!text-cyan-300 text-cyan-400" data-code-action="collapse" title="Thu gọn / Mở rộng khối mã">` +
+                   `<svg class="w-3.5 h-3.5 collapse-icon transition-transform duration-200 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>` +
+               `</menu></header>` +
+               `<div class="code-content-wrap custom-scrollbar"><pre><code class="hljs language-${validLang}">${highlightedCode}</code></pre></div></div>`;
                 },
 
                 // RENDER BẢNG DỮ LIỆU MA TRẬN
