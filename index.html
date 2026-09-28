@@ -409,18 +409,22 @@
                 }
             }
 
+            /* Con trỏ quang học cao cấp (Sleek Neon Caret) */
             .streaming-terminal-cursor {
                 display: inline-block;
-                width: 7.5px;
-                height: 16px;
+                width: 2.2px;
+                height: 1.15em;
                 background: var(--accent-color, #a8c7fa);
                 margin-left: 3px;
-                vertical-align: -2.5px;
-                animation: blink-terminal-cursor 0.8s infinite step-end;
-                box-shadow: 0 0 10px var(--glow-color);
-                border-radius: 2px;
+                vertical-align: -0.15em;
+                border-radius: 1.5px;
+                animation: blink-caret 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+                box-shadow: 0 0 8px var(--accent-color, #a8c7fa);
             }
-            @keyframes blink-terminal-cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+            @keyframes blink-caret {
+                0%, 100% { opacity: 1; transform: scaleY(1); }
+                50% { opacity: 0.15; transform: scaleY(0.8); }
+            }
 
             .dot-loader span {
                 display: inline-block; 
@@ -1224,8 +1228,8 @@
                             </div>
                         </div>
 
-                        <!-- AI MODEL OUTPUT -->
-                        <div v-else-if="msg.role === 'model' && (msg.content || (currentStreamingMsg && currentStreamingMsg.id === msg.id))" class="ai-response-canvas space-y-3 md:space-y-4 pt-1">
+                        <!-- AI MODEL OUTPUT (CHỈ VẼ KHI THỰC SỰ CÓ CHỮ, TRIỆT TIÊU CON TRỎ ĐỨNG TRƠ TRỌI) -->
+                        <div v-else-if="msg.role === 'model' && (msg.content || (currentStreamingMsg && currentStreamingMsg.id === msg.id && msg.content))" class="ai-response-canvas space-y-3 md:space-y-4 pt-1">
 
                             <!-- URL GROUNDING SOURCES -->
                             <div v-if="msg.urlSources && msg.urlSources.length > 0" class="url-grounding-box overflow-hidden allow-select min-w-0 max-w-full">
@@ -1394,8 +1398,8 @@
                     </article>
                 </transition-group>
 
-                <!-- STATUS INDICATOR (SINGLE-LINE ULTRA CLEAN) -->
-                <div v-if="isGenerating && (!currentStreamingMsg || !currentStreamingMsg.content)" class="flex items-center space-x-2.5 text-textMuted ml-1 my-3 shrink-0 max-w-[92vw] overflow-hidden">
+                <!-- STATUS INDICATOR (TINH TẾ: CHỈ HIỆN KHI CHƯA MỞ HỘP SUY LUẬN) -->
+                <div v-if="isGenerating && (!currentStreamingMsg || !currentStreamingMsg.content) && !currentMessages.some(m => m.role === 'system_thought' && m.isThinking)" class="flex items-center space-x-2.5 text-textMuted ml-1 my-3 shrink-0 max-w-[92vw] overflow-hidden">
                     <div class="dot-loader shrink-0"><span></span><span></span><span></span></div>
                     <span class="text-xs italic font-medium truncate whitespace-nowrap tracking-wide" :style="{ color: selectedAccent }">{{ formattedStatusText }}</span>
                 </div>
@@ -9363,11 +9367,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 }
                             }
 
-                            // OPTIMISTIC ZERO-LATENCY: Bật ngay khung tin nhắn AI lên UI ở mili-giây 0
+                            // OPTIMISTIC ZERO-LATENCY: Chuẩn bị sẵn vỏ tin nhắn, không chèn con trỏ rác khi chưa có text
                             if (existingBotMsgTarget) {
                                 botMsg = existingBotMsgTarget;
                                 botMsg.content = '';
-                                botMsg.htmlContent = '<span class="streaming-terminal-cursor"></span>';
+                                botMsg.htmlContent = '';
                                 botMsg.serperMetadata = null;
                                 botMsg.urlSources = [];
                                 botMsg.isContinuing = false;
@@ -9377,7 +9381,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 botMsg = createMessageRecord({ 
                                     threadId: targetThreadId, 
                                     role: GDeepDataProtocol.Roles.MODEL, 
-                                    htmlContent: '<span class="streaming-terminal-cursor"></span>',
+                                    htmlContent: '',
                                     searchExpanded: true, 
                                     urlSourcesExpanded: true 
                                 });
