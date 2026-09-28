@@ -167,7 +167,12 @@
                 font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'tnum';
             }
             
-            body.modal-open { overflow: hidden !important; }
+            body.modal-open { 
+                overflow: hidden !important; 
+                /* SỬA LỖI UI: Khóa cứng cuộn nền, chống trôi và nảy cao su (Rubber banding) trên iOS Safari */
+                touch-action: none !important; 
+                overscroll-behavior: none !important; 
+            }
             :focus, :focus-visible, input, textarea, select { outline: none !important; box-shadow: none !important; }
         }
 
@@ -377,10 +382,12 @@
                 cursor: pointer;
                 border: 1px solid var(--border-subtle) !important;
             }
-            .action-btn:hover { 
-                color: #ffffff; 
-                background: rgba(255, 255, 255, 0.11); 
-                border-color: var(--border-medium) !important;
+            @media (hover: hover) {
+                .action-btn:hover { 
+                    color: #ffffff; 
+                    background: rgba(255, 255, 255, 0.11); 
+                    border-color: var(--border-medium) !important;
+                }
             }
 
             .streaming-terminal-cursor {
@@ -605,8 +612,7 @@
                 box-shadow: var(--shadow-card);
                 display: block !important;
                 border: 1px solid var(--border-subtle);
-                mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
-                -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent 100%);
+                /* SỬA LỖI UI: Bỏ CSS mask-image vì nó làm mờ vĩnh viễn 24px nội dung cột cuối cùng khi cuộn hết cỡ */
             }
             .table-header-tools {
                 display: flex;
@@ -1287,14 +1293,14 @@
                                     <button type="button" @click.stop="regenerateFromMsg(msg)" title="Tạo lại" class="btn-instant action-btn shrink-0"><lucide-icon name="rotate-cw" class="w-3.5 h-3.5 text-emerald-400"></lucide-icon></button>
                                     <button type="button" @click.stop="copyFullMessage(msg.content)" title="Sao chép" class="btn-instant action-btn shrink-0"><lucide-icon name="copy" class="w-3.5 h-3.5"></lucide-icon></button>
 
-                                    <button type="button" v-if="msg.content && msg.content.includes('![')" @click.stop="animateImageToVideo(msg)"
+                                    <button type="button" v-if="msg.content && (msg.content.includes('![') || msg.content.includes('<img') || msg.content.includes('image.pollinations.ai'))" @click.stop="animateImageToVideo(msg)"
                                             class="btn-instant action-btn shrink-0 !text-purple-300 !bg-purple-500/15 hover:!bg-purple-500/30"
                                             title="Tạo video chuyển động từ ảnh này">
                                         <lucide-icon name="film" class="w-3.5 h-3.5 text-purple-400"></lucide-icon>
                                         <span class="text-[10px] font-bold text-purple-300">Dựng Phim</span>
                                     </button>
 
-                                    <button type="button" v-if="msg.content && msg.content.includes('![')" @click.stop="downloadImageFromMessage(msg)" 
+                                    <button type="button" v-if="msg.content && (msg.content.includes('![') || msg.content.includes('<img') || msg.content.includes('image.pollinations.ai'))" @click.stop="downloadImageFromMessage(msg)" 
                                             class="btn-instant action-btn shrink-0 !text-amber-400 !bg-amber-500/10 hover:!bg-amber-500/20" 
                                             title="Lưu ảnh">
                                         <lucide-icon name="download" class="w-3.5 h-3.5 text-amber-400"></lucide-icon>
@@ -2595,6 +2601,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         try { renderer.dispose(); } catch (_) {}
         try { planeGeo.dispose(); } catch (_) {}
         try { shaderMat.dispose(); } catch (_) {}
+        try { if (shotTexture) shotTexture.dispose(); } catch (_) {}
+        try { if (depthTexture) depthTexture.dispose(); } catch (_) {}
         if (particleSystem) {
             try { particleSystem.mesh.geometry.dispose(); } catch (_) {}
             try { particleSystem.mesh.material.dispose(); } catch (_) {}
@@ -2623,6 +2631,75 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
     <!-- SCRIPT CHÍNH: HỆ THỐNG ĐIỀU PHỐI VÀ ỨNG DỤNG VUE 3 -->
     <script>
         'use strict';
+
+        // =========================================================================================
+        // [ROOT] CẤU HÌNH HỆ THỐNG VÀ BỘ QUẢN LÝ LƯU TRỮ TẬP TRUNG (CENTRALIZED SYSTEM CONFIG)
+        // =========================================================================================
+        const GDeepSystemConfig = Object.freeze({
+            StorageKeys: {
+                ACTIVE_GEM_ID: 'gdeep_active_gem_id',
+                DRAFT_INPUT: 'gdeep_draft_input',
+                API_KEYS_POOL: 'gdeep_api_keys_pool',
+                SERPER_KEYS_POOL: 'gdeep_serper_keys_pool',
+                ACCENT_COLOR: 'gdeep_accent_color',
+                VOICE_NAME: 'gdeep_voice_name',
+                CURRENT_THREAD_ID: 'gdeep_current_thread_id',
+                THREADS_BACKUP: 'gdeep_threads_backup',
+                MSG_BACKUP_PREFIX: 'gdeep_msg_backup_',
+                FEAT_CODE_EXEC: 'gdeep_code_exec',
+                FEAT_DEEP_THINK: 'gdeep_deep_thinking',
+                FEAT_WEB_SEARCH: 'gdeep_google_search',
+                FEAT_IMAGE_GEN: 'gdeep_image_gen',
+                FEAT_CINEMA: 'gdeep_cinema_studio'
+            },
+            Models: {
+                AVAILABLE: [
+                    { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra", maxContextTokens: 1048576 },
+                    { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", maxContextTokens: 1048576 },
+                    { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", maxContextTokens: 1048576 },
+                    { id: "gemini-3.5-flash", apiEndpointId: "gemini-3.5-flash", name: "Flash 01", maxContextTokens: 1048576 },
+                    { id: "gemini-3-flash-preview", apiEndpointId: "gemini-3-flash-preview", name: "Flash 02", maxContextTokens: 1048576 }
+                ],
+                FALLBACK_CHAIN: ["gemini-2.5-flash", "gemini-2.0-flash"],
+                BACKGROUND: { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" }
+            },
+            UI: {
+                ACCENT_COLORS: [
+                    { name: "Lam", color: "#a8c7fa", gradient: "linear-gradient(135deg, #6366f1 0%, #a8c7fa 50%, #d0bcff 100%)", glow: "rgba(168, 199, 250, 0.2)" },
+                    { name: "Tím", color: "#d0bcff", gradient: "linear-gradient(135deg, #a855f7 0%, #d0bcff 50%, #ec4899 100%)", glow: "rgba(208, 188, 255, 0.2)" },
+                    { name: "Lục", color: "#a8f0e6", gradient: "linear-gradient(135deg, #10b981 0%, #a8f0e6 50%, #14b8a6 100%)", glow: "rgba(168, 240, 230, 0.2)" },
+                    { name: "Hồng", color: "#fbb8c1", gradient: "linear-gradient(135deg, #f43f5e 0%, #fbb8c1 50%, #fb7185 100%)", glow: "rgba(251, 184, 193, 0.2)" },
+                    { name: "Hổ Phách", color: "#fed7aa", gradient: "linear-gradient(135deg, #f97316 0%, #fed7aa 50%, #fcd34d 100%)", glow: "rgba(254, 215, 170, 0.2)" },
+                    { name: "Ngọc Lam", color: "#7dd3fc", gradient: "linear-gradient(135deg, #0284c7 0%, #7dd3fc 50%, #a5f3fc 100%)", glow: "rgba(125, 211, 252, 0.2)" },
+                    { name: "Hoàng Kim", color: "#fde68a", gradient: "linear-gradient(135deg, #eab308 0%, #fde68a 50%, #fef08a 100%)", glow: "rgba(253, 230, 138, 0.2)" },
+                    { name: "Lục Bảo", color: "#86efac", gradient: "linear-gradient(135deg, #059669 0%, #86efac 50%, #bbf7d0 100%)", glow: "rgba(134, 239, 172, 0.2)" },
+                    { name: "San Hô", color: "#fca5a5", gradient: "linear-gradient(135deg, #dc2626 0%, #fca5a5 50%, #fda4af 100%)", glow: "rgba(252, 165, 165, 0.2)" },
+                    { name: "Bạch Kim", color: "#e2e8f0", gradient: "linear-gradient(135deg, #64748b 0%, #e2e8f0 50%, #f8fafc 100%)", glow: "rgba(226, 232, 240, 0.2)" }
+                ]
+            }
+        });
+
+        const StorageManager = {
+            get(key, defaultValue, isJson = false) {
+                try {
+                    const store = key === GDeepSystemConfig.StorageKeys.DRAFT_INPUT ? sessionStorage : localStorage;
+                    const val = store.getItem(key);
+                    if (val === null) return defaultValue;
+                    if (isJson) return JSON.parse(val);
+                    if (typeof defaultValue === 'boolean') return val === 'true';
+                    return val;
+                } catch (_) { return defaultValue; }
+            },
+            set(key, value, isJson = false) {
+                try {
+                    const store = key === GDeepSystemConfig.StorageKeys.DRAFT_INPUT ? sessionStorage : localStorage;
+                    store.setItem(key, isJson ? JSON.stringify(value) : String(value));
+                } catch (_) {}
+            },
+            remove(key) {
+                try { localStorage.removeItem(key); sessionStorage.removeItem(key); } catch (_) {}
+            }
+        };
 
         // ============================================================
         // MẠNG LƯỚI NƠ-RON NHẬN THỨC VÀ HỒI QUY
@@ -3037,8 +3114,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                     onProgress(35, "Đang giải mã luồng sóng âm thanh...");
                     const decodedAudio = await audioCtx.decodeAudioData(arrayBuffer);
                     
-                    // Render lại âm thanh bằng OfflineAudioContext với sampleRate tối ưu cho LLM (16kHz mono)
-                    const offlineCtx = new OfflineAudioContext(1, Math.ceil(decodedAudio.duration * targetSampleRate), targetSampleRate);
+                    // CỨU LUỒNG XỬ LÝ: Đảm bảo độ dài buffer tối thiểu là 1 để chống sập OfflineAudioContext khi video bị hỏng metadata duration
+                    const audioLength = Math.max(1, Math.ceil(decodedAudio.duration * targetSampleRate));
+                    const offlineCtx = new OfflineAudioContext(1, audioLength, targetSampleRate);
                     const source = offlineCtx.createBufferSource();
                     source.buffer = decodedAudio;
                     source.connect(offlineCtx.destination);
@@ -3112,6 +3190,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                     video.crossOrigin = "anonymous";
 
                     video.onerror = () => {
+                        if (audioCtx) { try { audioCtx.close(); } catch (_) {} }
                         URL.revokeObjectURL(videoUrl);
                         resolve(null);
                     };
@@ -4443,8 +4522,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                     }
 
                     const text = extractCleanCellText(cell);
-                    const rowspan = Math.max(1, parseInt(cell.getAttribute('rowspan'), 10) || 1);
-                    const colspan = Math.max(1, parseInt(cell.getAttribute('colspan'), 10) || 1);
+                    // CHỐNG TREO CPU CỰC HẠN: Giới hạn rowspan/colspan tối đa 50 để chặn đứng vòng lặp vô tận từ HTML rác
+                    const rowspan = Math.min(50, Math.max(1, parseInt(cell.getAttribute('rowspan'), 10) || 1));
+                    const colspan = Math.min(50, Math.max(1, parseInt(cell.getAttribute('colspan'), 10) || 1));
 
                     // Điền dữ liệu vào các tọa độ bị chiếm giữ bởi ô này
                     for (let r = 0; r < rowspan; r++) {
@@ -4721,18 +4801,18 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 }
 
                 // 5. CÂN BẰNG INLINE CODE TICKS (`) TRÊN DÒNG CUỐI
-                const lastLineTicks = (lastLine.match(/(?<!\\)`/g) || []).length;
+                const lastLineTicks = (lastLine.match(/(^|[^\\])`/g) || []).length;
                 if (lastLineTicks % 2 !== 0) {
                     working += '`';
                 }
 
                 // 6. CÂN BẰNG CÁC ĐỊNH DẠNG TEXT (BOLD, ITALIC, STRIKETHROUGH) BỊ TREO
                 // Bold: **
-                const boldMatches = (working.match(/(?<!\\)\*\*/g) || []).length;
+                const boldMatches = (working.match(/(^|[^\\])\*\*/g) || []).length;
                 if (boldMatches % 2 !== 0) working += '**';
 
                 // Strikethrough: ~~
-                const strikeMatches = (working.match(/(?<!\\)~~/g) || []).length;
+                const strikeMatches = (working.match(/(^|[^\\])~~/g) || []).length;
                 if (strikeMatches % 2 !== 0) working += '~~';
 
                 // Link dở dạng [text](url...
@@ -5245,7 +5325,10 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
 
     // Chuẩn hóa đường dẫn hình ảnh AI Pollinations và render trực tiếp thẻ HTML
     working = working.replace(/!\[(.*?)\]\((https?:\/\/image\.pollinations\.ai\/prompt\/[^\)\s]+)\)/gi, (match, alt, fullUrl) => {
-        return `\n\n<img src="${fullUrl}" alt="${alt || 'Tác phẩm nghệ thuật'}" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-105 transition-all" loading="lazy" />\n\n`;
+        // BẢO MẬT XSS: Ép buộc mã hóa HTML (Escape) đối với Alt text và URL để chặn đứng mã độc khi DOMPurify đang tạm tắt
+        const safeAlt = escapeHTML(alt || 'Tác phẩm nghệ thuật');
+        const safeUrl = escapeHTML(fullUrl);
+        return `\n\n<img src="${safeUrl}" alt="${safeAlt}" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-105 transition-all" loading="lazy" />\n\n`;
     });
 
             // Tiếp tục cân bằng cấu trúc nếu đang trong tiến trình streaming
@@ -6069,6 +6152,10 @@ _gdeep_stderr_val = sys.stderr.getvalue()
                 if (pdf?.destroy) {
                     try { pdf.destroy(); } catch (_) {}
                 }
+                // CHỐNG RÒ RỈ RAM NGẦM: Bắt buộc phải hủy cả loadingTask để ngăn PDF.js tiếp tục giải mã ngầm sau khi Timeout
+                if (loadingTask?.destroy) {
+                    try { loadingTask.destroy(); } catch (_) {}
+                }
             }
         }
 
@@ -6598,32 +6685,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
             const { createApp, ref, reactive, onMounted, onUnmounted, nextTick, computed, watch, toRaw, h } = window.Vue;
 
-                        // DANH SÁCH MÔ HÌNH HỆ THỐNG VÀ GIỚI HẠN INPUT CONTEXT CHUẨN XÁC
-            const MODELS = [
-                { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra", maxContextTokens: 1048576 },
-                { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", maxContextTokens: 1048576 },
-                { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", maxContextTokens: 1048576 },
-                { id: "gemini-3.5-flash", apiEndpointId: "gemini-3.5-flash", name: "Flash 01", maxContextTokens: 1048576 },
-                { id: "gemini-3-flash-preview", apiEndpointId: "gemini-3-flash-preview", name: "Flash 02", maxContextTokens: 1048576 }
-            ];
-            const FALLBACK_MODEL_CHAIN = ["gemini-2.5-flash", "gemini-2.0-flash"];
-            const BACKGROUND_MODELS = { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" };
-
-            // BẢNG MÀU GIAO DIỆN
-            const ACCENT_COLORS = [
-                { name: "Lam", color: "#a8c7fa", gradient: "linear-gradient(135deg, #6366f1 0%, #a8c7fa 50%, #d0bcff 100%)", glow: "rgba(168, 199, 250, 0.2)" },
-                { name: "Tím", color: "#d0bcff", gradient: "linear-gradient(135deg, #a855f7 0%, #d0bcff 50%, #ec4899 100%)", glow: "rgba(208, 188, 255, 0.2)" },
-                { name: "Lục", color: "#a8f0e6", gradient: "linear-gradient(135deg, #10b981 0%, #a8f0e6 50%, #14b8a6 100%)", glow: "rgba(168, 240, 230, 0.2)" },
-                { name: "Hồng", color: "#fbb8c1", gradient: "linear-gradient(135deg, #f43f5e 0%, #fbb8c1 50%, #fb7185 100%)", glow: "rgba(251, 184, 193, 0.2)" },
-                { name: "Hổ Phách", color: "#fed7aa", gradient: "linear-gradient(135deg, #f97316 0%, #fed7aa 50%, #fcd34d 100%)", glow: "rgba(254, 215, 170, 0.2)" },
-                { name: "Ngọc Lam", color: "#7dd3fc", gradient: "linear-gradient(135deg, #0284c7 0%, #7dd3fc 50%, #a5f3fc 100%)", glow: "rgba(125, 211, 252, 0.2)" },
-                { name: "Hoàng Kim", color: "#fde68a", gradient: "linear-gradient(135deg, #eab308 0%, #fde68a 50%, #fef08a 100%)", glow: "rgba(253, 230, 138, 0.2)" },
-                { name: "Lục Bảo", color: "#86efac", gradient: "linear-gradient(135deg, #059669 0%, #86efac 50%, #bbf7d0 100%)", glow: "rgba(134, 239, 172, 0.2)" },
-                { name: "San Hô", color: "#fca5a5", gradient: "linear-gradient(135deg, #dc2626 0%, #fca5a5 50%, #fda4af 100%)", glow: "rgba(252, 165, 165, 0.2)" },
-                { name: "Bạch Kim", color: "#e2e8f0", gradient: "linear-gradient(135deg, #64748b 0%, #e2e8f0 50%, #f8fafc 100%)", glow: "rgba(226, 232, 240, 0.2)" }
-            ];
-
-            // KHỞI TẠO CƠ SỞ DỮ LIỆU INDEXEDDB (DEXIE)
+                        // KHỞI TẠO CƠ SỞ DỮ LIỆU INDEXEDDB (DEXIE)
             let db = null;
             try {
                 if (typeof window.Dexie !== 'undefined') {
@@ -6705,7 +6767,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 return JSON.parse(JSON.stringify(window.Vue ? window.Vue.toRaw(attCopy) : attCopy));
                             });
                         } else {
-                            copy[k] = JSON.parse(JSON.stringify(window.Vue ? window.Vue.toRaw(val) : val));
+                            // TĂNG TỐC I/O: Sử dụng structuredClone (Native V8) thay vì JSON Stringify để chống thắt cổ chai Main Thread
+                            const rawVal = window.Vue ? window.Vue.toRaw(val) : val;
+                            copy[k] = (typeof structuredClone === 'function') ? structuredClone(rawVal) : JSON.parse(JSON.stringify(rawVal));
                         }
                     } catch (_) {}
                 }
@@ -6813,10 +6877,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     const currentMessages = ref([]);
                     const currentThreadId = ref(null);
                     const gems = ref([]);
-                    const activeGemId = ref((() => { try { return localStorage.getItem('gdeep_active_gem_id') || 'default'; } catch (_) { return 'default'; } })());
+                    const activeGemId = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.ACTIVE_GEM_ID, 'default'));
                     
                     // Khôi phục bản nháp tin nhắn nếu có
-                    const inputText = ref((() => { try { return sessionStorage.getItem('gdeep_draft_input') || ''; } catch (_) { return ''; } })());
+                    const inputText = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.DRAFT_INPUT, ''));
                     const isGenerating = ref(false);
                     const searchStatusText = ref("");
                     const isSidebarOpen = ref(false);
@@ -6839,11 +6903,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     let lastLongPressTimestamp = 0;
 
                     // QUẢN LÝ POOL KHÓA API GEMINI VỚI CHỈ SỐ HEALTH SCORE
-                    const apiKeyPool = ref((() => {
-                        try { const s = localStorage.getItem('gdeep_api_keys_pool'); if (s) return JSON.parse(s); } catch (_) {}
-                        return [];
-                    })());
-                    const rawApiKeysInput = ref((() => { try { return apiKeyPool.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
+                    const apiKeyPool = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.API_KEYS_POOL, [], true));
+                    const rawApiKeysInput = ref(apiKeyPool.value.map(k => k.key).join('\n'));
                     const apiKeyCount = computed(() => apiKeyPool.value.length);
 
                     const parseKeysFromText = (rawText, minLen = 20) => {
@@ -6915,11 +6976,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     // QUẢN LÝ POOL KHÓA SERPER WEB SEARCH
-                    const serperApiKeys = ref((() => {
-                        try { const s = localStorage.getItem('gdeep_serper_keys_pool'); if (s) return JSON.parse(s); } catch (_) {}
-                        return [];
-                    })());
-                    const rawSerperKeysInput = ref((() => { try { return serperApiKeys.value.map(k => k.key).join('\n'); } catch (_) { return ''; } })());
+                    const serperApiKeys = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.SERPER_KEYS_POOL, [], true));
+                    const rawSerperKeysInput = ref(serperApiKeys.value.map(k => k.key).join('\n'));
                     const serperKeyCount = computed(() => serperApiKeys.value.length);
 
                     const saveSerperKeyPoolFromInput = () => {
@@ -6963,10 +7021,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     // CÁC CHẾ ĐỘ NÂNG CAO
-                    const enableCodeExecution = ref((() => { try { return localStorage.getItem('gdeep_code_exec') === 'true'; } catch (_) { return false; } })());
-                    const enableDeepThinking = ref((() => { try { return localStorage.getItem('gdeep_deep_thinking') === 'true'; } catch (_) { return false; } })());
-                    const enableGoogleSearch = ref((() => { try { return localStorage.getItem('gdeep_google_search') === 'true'; } catch (_) { return false; } })());
-                    const enableImageGen = ref((() => { try { return localStorage.getItem('gdeep_image_gen') === 'true'; } catch (_) { return false; } })());
+                    const enableCodeExecution = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.FEAT_CODE_EXEC, false));
+                    const enableDeepThinking = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.FEAT_DEEP_THINK, false));
+                    const enableGoogleSearch = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.FEAT_WEB_SEARCH, false));
+                    const enableImageGen = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.FEAT_IMAGE_GEN, false));
 
                     // CẤU HÌNH TẠO ẢNH
                     const imageConfig = reactive({
@@ -7135,14 +7193,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     const showInputMenu = ref(false);
                     const isListening = ref(false);
-                    const models = ref(MODELS);
+                    const models = ref(GDeepSystemConfig.Models.AVAILABLE);
                     const currentModelIndex = ref(0);
                     const currentModel = computed(() => models.value[currentModelIndex.value] || models.value[0]);
-                    const accentColors = ref(ACCENT_COLORS);
-                    const selectedAccent = ref((() => { try { return localStorage.getItem('gdeep_accent_color') || ACCENT_COLORS[0].color; } catch (_) { return ACCENT_COLORS[0].color; } })());
-                    const currentAccentGradient = computed(() => accentColors.value.find(c => c.color === selectedAccent.value)?.gradient || ACCENT_COLORS[0].gradient);
+                    const accentColors = ref(GDeepSystemConfig.UI.ACCENT_COLORS);
+                    const selectedAccent = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.ACCENT_COLOR, GDeepSystemConfig.UI.ACCENT_COLORS[0].color));
+                    const currentAccentGradient = computed(() => accentColors.value.find(c => c.color === selectedAccent.value)?.gradient || GDeepSystemConfig.UI.ACCENT_COLORS[0].gradient);
                     const availableVoices = ref([]);
-                    const selectedVoiceName = ref((() => { try { return localStorage.getItem('gdeep_voice_name') || ''; } catch (_) { return ''; } })());
+                    const selectedVoiceName = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.VOICE_NAME, ''));
                     const showGemModal = ref(false), editingGemId = ref(null);
                     const gemForm = reactive({ name: '', description: '', instruction: '', showPreview: false });
                     const showRenameModal = ref(false), renameThreadTarget = ref(null), renameTitle = ref('');
@@ -7199,9 +7257,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         
                         let totalTokens = 0;
                         const activeModelId = currentModel.value?.apiEndpointId || currentModel.value?.id;
-                        if (activeKey && activeModelId && currentPayload.length > 0) {
-                            totalTokens = await TokenBudgetManager.countContentsViaApi(currentPayload, activeModelId, activeKey);
-                        }
+                        // TỐI ƯU HÓA: Tuyệt đối KHÔNG gọi API countTokens trong lúc gõ phím để chống nghẽn Rate Limit (Lỗi 429). 
+                        // Chỉ dùng bộ tính toán xấp xỉ Local (siêu nhanh) cho UI.
                         if (!totalTokens) {
                             totalTokens = TokenBudgetManager.measureHistoryTokens(currentPayload);
                         }
@@ -7250,7 +7307,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         if (textareaResizeRaf) cancelAnimationFrame(textareaResizeRaf);
                         textareaResizeRaf = requestAnimationFrame(() => {
                             if (!messageInput.value) return;
-                            messageInput.value.style.height = 'auto';
+                            // SỬA LỖI UI: Dùng '1px' thay vì 'auto' để tính toán kích thước mà không làm sập layout flexbox
+                            messageInput.value.style.height = '1px';
                             const newHeight = Math.min(Math.max(messageInput.value.scrollHeight, 38), 160);
                             messageInput.value.style.height = `${newHeight}px`;
                             isInputExpanded.value = newHeight > 50;
@@ -7259,7 +7317,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     const handleInputFocus = () => {
                         setTimeout(() => {
-                            if (messageInput.value) messageInput.value.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            // SỬA LỖI UI: Bỏ scrollIntoView() vì nó gây xung đột dữ dội với Bàn phím ảo trên iOS/Android.
                             scrollToBottom(true);
                         }, 280);
                     };
@@ -7654,7 +7712,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         let rawMsgs = [];
                         if (db) {
                             try {
-                                rawMsgs = (await db.messages.where('threadId').equals(id).toArray()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                                // TỐI ƯU CƠ SỞ DỮ LIỆU: Dùng sortBy() trực tiếp bằng Index để không kéo dữ liệu thừa vào RAM
+                                rawMsgs = await db.messages.where('threadId').equals(id).sortBy('createdAt');
                             } catch (_) {}
                         }
 
@@ -7959,10 +8018,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         for (const t of allThreads) {
                             try {
                                 const msgs = db ? await db.messages.where('threadId').equals(t.id).toArray() : [];
-                                if (msgs.length) allMessages.push(...msgs);
+                                if (msgs.length) allMessages = allMessages.concat(msgs);
                                 else {
                                     const bMsgs = JSON.parse(localStorage.getItem(`gdeep_msg_backup_${t.id}`) || '[]');
-                                    allMessages.push(...bMsgs);
+                                    allMessages = allMessages.concat(bMsgs);
                                 }
                             } catch (_) {}
                         }
@@ -8768,7 +8827,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         const alternating = [];
                         for (let i = 0; i < filtered.length; i++) {
                             const cur = filtered[i];
-                            const validParts = cur.parts.filter(p => (p.text !== undefined && String(p.text).trim() !== '') || (p.inlineData && p.inlineData.data) || p.fileData);
+                            // BẢO MẬT CẤU TRÚC: Cấm dùng .trim() ở đây, phải giữ lại chuỗi " " do TokenBudgetManager tạo ra để cứu luồng luân phiên
+                            const validParts = cur.parts.filter(p => (p.text !== undefined && String(p.text) !== '') || (p.inlineData && p.inlineData.data) || p.fileData);
                             if (!validParts.length) continue;
 
                             if (!alternating.length) {
@@ -8834,7 +8894,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     const dispatchBackgroundTaskWithFallback = async (payload) => {
                         const keyObj = getNextHealthyApiKey();
                         if (!keyObj) return null;
-                        const candidateModels = [BACKGROUND_MODELS.FAST, BACKGROUND_MODELS.LITE].filter(Boolean);
+                        const candidateModels = [GDeepSystemConfig.Models.BACKGROUND.FAST, GDeepSystemConfig.Models.BACKGROUND.LITE].filter(Boolean);
 
                         for (const targetModel of candidateModels) {
                             try {
@@ -8914,7 +8974,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         // Chuỗi mô hình dự phòng động: Ưu tiên Model người dùng chọn, nếu 404/503 sẽ tự cứu luồng bằng các model ổn định nhất
                         const candidateModels = Array.from(new Set([
                             activeModelId,
-                            ...(Array.isArray(FALLBACK_MODEL_CHAIN) ? FALLBACK_MODEL_CHAIN : ["gemini-2.5-flash", "gemini-2.0-flash"])
+                            ...(Array.isArray(GDeepSystemConfig.Models.FALLBACK_CHAIN) ? GDeepSystemConfig.Models.FALLBACK_CHAIN : ["gemini-2.5-flash", "gemini-2.0-flash"])
                         ])).filter(Boolean);
                         
                         let currentModelIdx = 0;
@@ -9738,6 +9798,7 @@ if (!shouldContinue) {
                         let isFirstManualChunk = true;
                         let lastRenderTime = 0;
                         const startManualRenderLoop = () => {
+                            if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; } // TIÊU DIỆT LOOP BÓNG MA
                             const loop = () => {
                                 if (!isGenerating.value && !msg.isContinuing) return;
                                 const now = performance.now();
@@ -9818,7 +9879,9 @@ if (!shouldContinue) {
                             try {
                                 let allMsgs = [];
                                 if (db) {
-                                    allMsgs = (await db.messages.toArray()).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                                    // Tối ưu hóa: Filter trực tiếp ở Dexie, chỉ kéo tối đa 50 kết quả vào RAM
+                                    const matchedDb = await db.messages.filter(m => m.content && typeof m.content === 'string' && m.content.toLowerCase().includes(q)).limit(50).toArray();
+                                    allMsgs = matchedDb.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
                                 }
                                 if (!allMsgs.length) {
                                     threads.value.forEach(t => {
@@ -9837,9 +9900,9 @@ if (!shouldContinue) {
                     // Lưu tự động bản nháp tin nhắn khi gõ kèm chống nghẽn API (Debounce)
                     let inputTokensDebounceTimer = null;
                     watch(inputText, (val) => {
-                        try { sessionStorage.setItem('gdeep_draft_input', val); } catch (_) {}
                         if (inputTokensDebounceTimer) clearTimeout(inputTokensDebounceTimer);
                         inputTokensDebounceTimer = setTimeout(() => {
+                            try { sessionStorage.setItem('gdeep_draft_input', val); } catch (_) {}
                             updateInputTokensDisplay();
                         }, 600);
                     });
