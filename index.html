@@ -3779,8 +3779,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
 
                 const dfMap = {};
                 const docTokensList = candidatePool.map(m => {
-                    const text = (m.promptContent || m.content || '') + ' ' + (m.attachments?.map(a => a.name).join(' ') || '');
-                    const tokens = this.tokenize(text);
+                    if (!m._bm25Tokens) {
+                        const text = (m.promptContent || m.content || '') + ' ' + (m.attachments?.map(a => a.name).join(' ') || '');
+                        m._bm25Tokens = this.tokenize(text);
+                    }
+                    const tokens = m._bm25Tokens;
                     const unique = new Set(tokens);
                     for (const u of unique) dfMap[u] = (dfMap[u] || 0) + 1;
                     return { msg: m, tokens };
@@ -4078,17 +4081,29 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 });
             },
 
+            _sharedAudioCtx: null,
+            _getAudioContext() {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContextClass) return null;
+                if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
+                    this._sharedAudioCtx = new AudioContextClass();
+                }
+                if (this._sharedAudioCtx.state === 'suspended') {
+                    this._sharedAudioCtx.resume();
+                }
+                return this._sharedAudioCtx;
+            },
+
             async _executeRawAudioExtraction(videoFile, targetSampleRate = 16000, onProgress = () => {}) {
                 try {
                     onProgress(15, "Đang nạp dữ liệu âm thanh từ video...");
                     const arrayBuffer = await videoFile.arrayBuffer();
                     
-                    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-                    if (!AudioContextClass) return null;
+                    const audioCtx = this._getAudioContext();
+                    if (!audioCtx) return null;
                     
-                    const audioCtx = new AudioContextClass();
                     onProgress(35, "Đang giải mã luồng sóng âm thanh...");
-                    const decodedAudio = await audioCtx.decodeAudioData(arrayBuffer);
+                    const decodedAudio = await audioCtx.decodeAudioData(arrayBuffer.slice(0)); // Giữ bản sao bảo vệ buffer
                     
                     // CỨU LUỒNG XỬ LÝ: Đảm bảo độ dài buffer tối thiểu là 1 để chống sập OfflineAudioContext khi video bị hỏng metadata duration
                     const audioLength = Math.max(1, Math.ceil(decodedAudio.duration * targetSampleRate));
@@ -4100,7 +4115,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                     
                     onProgress(60, "Đang kết xuất âm thanh chuẩn hóa...");
                     const renderedBuffer = await offlineCtx.startRendering();
-                    await audioCtx.close();
 
                     // Đóng gói thành chuẩn PCM WAV
                     const pcmData = renderedBuffer.getChannelData(0);
@@ -7376,22 +7390,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                 const transfers = new Set();
                 if (!payload || typeof payload !== 'object') return [];
 
-                const checkAndAdd = (item) => {
-                    if (!item) return;
-                    if (item instanceof ArrayBuffer) transfers.add(item);
-                    else if (typeof ImageBitmap !== 'undefined' && item instanceof ImageBitmap) transfers.add(item);
-                    else if (typeof OffscreenCanvas !== 'undefined' && item instanceof OffscreenCanvas) transfers.add(item);
-                    else if (item.buffer instanceof ArrayBuffer) transfers.add(item.buffer);
+                // Đệ quy quét sạch mọi ArrayBuffer/ImageBitmap để chuyển giao quyền sở hữu bộ nhớ Zero-Copy
+                const deepScan = (obj, depth = 0) => {
+                    if (!obj || depth > 4) return;
+                    if (obj instanceof ArrayBuffer) { transfers.add(obj); return; }
+                    if (typeof ImageBitmap !== 'undefined' && obj instanceof ImageBitmap) { transfers.add(obj); return; }
+                    if (obj.buffer instanceof ArrayBuffer) { transfers.add(obj.buffer); return; }
+                    
+                    if (typeof obj === 'object') {
+                        for (const k in obj) {
+                            try { deepScan(obj[k], depth + 1); } catch (_) {}
+                        }
+                    }
                 };
 
-                // Quét nông các trường dữ liệu lớn phổ biến
-                if (payload.directImageDataUrl instanceof ArrayBuffer) checkAndAdd(payload.directImageDataUrl);
-                if (payload.userCharacters && Array.isArray(payload.userCharacters)) {
-                    payload.userCharacters.forEach(c => {
-                        if (c.audioBuffer) checkAndAdd(c.audioBuffer);
-                    });
-                }
-
+                deepScan(payload);
                 return Array.from(transfers);
             },
 
@@ -8130,31 +8143,23 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     const currentInputTokensDisplay = ref('0%');
                     const isMemoryRetrievalActive = ref(false);
 
-                    const updateInputTokensDisplay = async () => {
+                    let cachedHistoryTokens = 0;
+                    let lastMessageCount = -1;
+
+                    const updateInputTokensDisplay = () => {
                         if (isGenerating.value) return;
-                        const activeKey = getNextHealthyApiKey()?.key || null;
-                        const rawPayload = await TokenBudgetManager.assembleInfiniteContextPayload(
-                            currentMessages.value,
-                            inputText.value,
-                            null,
-                            currentModel.value,
-                            activeKey
-                        );
-                        // Bắt buộc chuẩn hóa luân phiên lượt User/Model trước khi gửi tới API :countTokens
-                        const currentPayload = sanitizeHistoryForGemini(rawPayload, false);
                         
-                        let totalTokens = 0;
-                        const activeModelId = currentModel.value?.apiEndpointId || currentModel.value?.id;
-                        // TỐI ƯU HÓA: Tuyệt đối KHÔNG gọi API countTokens trong lúc gõ phím để chống nghẽn Rate Limit (Lỗi 429). 
-                        // Chỉ dùng bộ tính toán xấp xỉ Local (siêu nhanh) cho UI.
-                        if (!totalTokens) {
-                            totalTokens = TokenBudgetManager.measureHistoryTokens(currentPayload);
+                        // Chỉ tính lại lịch sử khi danh sách tin nhắn có sự thay đổi thực sự
+                        if (lastMessageCount !== currentMessages.value.length) {
+                            cachedHistoryTokens = TokenBudgetManager.measureHistoryTokens(currentMessages.value);
+                            lastMessageCount = currentMessages.value.length;
                         }
 
+                        const inputTokens = Math.ceil((inputText.value || '').length / 3.2);
+                        const totalTokens = cachedHistoryTokens + inputTokens;
                         const limits = TokenBudgetManager.getModelLimits(currentModel.value);
                         const percentage = Math.min(100, Math.round((totalTokens / limits.safeLimit) * 100));
-                        
-                        // Hiển thị chuẩn xác số token cộng dồn và tỉ lệ %
+
                         const kFormatted = totalTokens >= 1000 ? (totalTokens / 1000).toFixed(1) + 'k' : totalTokens;
                         currentInputTokensDisplay.value = `${kFormatted} (${percentage}%)`;
                         isMemoryRetrievalActive.value = totalTokens > limits.recentBudget;
@@ -8217,22 +8222,27 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }, 280);
                     };
 
-                    // [HẠT NHÂN ĐIỀU TIẾT ÁP SUẤT NGƯỢC]: Hủy bỏ các lệnh ghi trùng lặp trong hàng đợi
+                    // [BỘ TIẾT LƯU GHI ĐĨA CHỐNG NGHẼN I/O THỜI GIAN THỰC]
                     const pendingSaveMap = new Map();
-                    const scheduleDbSave = (msg) => {
+                    let lastStreamSaveTs = 0;
+
+                    const scheduleDbSave = (msg, forceImmediate = false) => {
                         if (!msg?.id || !msg?.threadId) return;
-                        
-                        // Nếu tin nhắn đang chờ ghi, chỉ cập nhật bản snapshot mới nhất thay vì tạo thêm task
-                        if (pendingSaveMap.has(msg.id)) {
-                            pendingSaveMap.set(msg.id, msg);
+                        pendingSaveMap.set(msg.id, msg);
+
+                        const now = Date.now();
+                        // Nếu đang stream và chưa đủ 1000ms: Gom dữ liệu chờ nhịp sau, không gọi IndexedDB
+                        if (!forceImmediate && isGenerating.value && (now - lastStreamSaveTs < 1000)) {
                             return;
                         }
-                        
-                        pendingSaveMap.set(msg.id, msg);
+                        lastStreamSaveTs = now;
+
                         dbWriteQueue.enqueue(async () => {
-                            const latestSnapshot = pendingSaveMap.get(msg.id) || msg;
-                            pendingSaveMap.delete(msg.id);
-                            await saveMsgToDbImmediate(latestSnapshot);
+                            const latestSnapshot = pendingSaveMap.get(msg.id);
+                            if (latestSnapshot) {
+                                pendingSaveMap.delete(msg.id);
+                                await saveMsgToDbImmediate(latestSnapshot);
+                            }
                         }, { priority: 1 });
                     };
 
@@ -10634,6 +10644,7 @@ QUY TẮC BẮT BUỘC:
                             let lastRenderedLength = 0, lastRenderTime = 0;
                             const FRAME_BUDGET_MS = 8;
 
+                            let lastThoughtRenderLength = 0;
                             const startRenderLoop = () => {
                                 if (renderLoopActive) return;
                                 renderLoopActive = true;
@@ -10666,8 +10677,9 @@ QUY TẮC BẮT BUỘC:
                                             }
                                             lastRenderedLength = rawMarkdownBuffer.length;
                                         }
-                                        if (thoughtMsg?.isThinking) {
+                                        if (thoughtMsg?.isThinking && thoughtMsg.content.length !== lastThoughtRenderLength) {
                                             thoughtMsg.htmlContent = compileMarkdownSync(thoughtMsg.content, false);
+                                            lastThoughtRenderLength = thoughtMsg.content.length;
                                             if (!userIsScrolledUp && !eye.isUserReading) {
                                                 scrollToBottom();
                                             }
@@ -11154,14 +11166,16 @@ if (!shouldContinue) {
                     watch(cmdQuery, (query) => {
                         if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
                         searchDebounceTimer = setTimeout(async () => {
-                            if (!query.trim()) { fullTextSearchResults.value = []; return; }
-                            const q = query.toLowerCase();
+                            const cleanQ = query.trim().toLowerCase();
+                            if (!cleanQ) { fullTextSearchResults.value = []; return; }
                             try {
                                 let allMsgs = [];
                                 if (db) {
-                                    // Tối ưu hóa: Filter trực tiếp ở Dexie, chỉ kéo tối đa 50 kết quả vào RAM
-                                    const matchedDb = await db.messages.filter(m => m.content && typeof m.content === 'string' && m.content.toLowerCase().includes(q)).limit(50).toArray();
-                                    allMsgs = matchedDb.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                                    // TỐI ƯU HÓA: Dùng orderBy để chỉ duyệt các tin nhắn mới nhất, ngắt ngay khi đủ 25 kết quả
+                                    allMsgs = await db.messages.orderBy('createdAt').reverse()
+                                        .filter(m => typeof m.content === 'string' && m.content.toLowerCase().includes(cleanQ))
+                                        .limit(25)
+                                        .toArray();
                                 }
                                 if (!allMsgs.length) {
                                     threads.value.forEach(t => {
