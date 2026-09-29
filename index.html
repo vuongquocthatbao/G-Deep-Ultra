@@ -10724,9 +10724,12 @@ let isFirstContinuationChunk = false;
                                 const parts = candidate.content?.parts || [];
                                 for (const rawPart of parts) {
                                     const routing = GDeepDataProtocol.classifyPart(rawPart);
+                                    const type = routing.type;
+                                    const payload = routing.payload;
+                                    const remainingText = routing.remainingText;
 
                                     // ĐÍCH ĐẾN 1: Luồng suy luận (Đồng bộ với Hội đồng O1)
-                                    if (routing.type === GDeepDataProtocol.DataTypes.THOUGHT) {
+                                    if (type === GDeepDataProtocol.DataTypes.THOUGHT) {
                                         if (!thoughtMsg) {
                                             thoughtMsg = createMessageRecord({ threadId: targetThreadId, role: GDeepDataProtocol.Roles.THOUGHT, isThinking: true, userOpenedThought: true });
                                             thoughtMsg.createdAt = botMsg.createdAt - 2;
@@ -10740,11 +10743,11 @@ let isFirstContinuationChunk = false;
                                             thoughtMsg.content += '\n\n*--- Luồng suy luận chi tiết ---*\n';
                                             thoughtMsg._hasStreamedThought = true;
                                         }
-                                        thoughtMsg.content += routing.payload;
+                                        thoughtMsg.content += (payload || '');
                                         
                                         // Nếu có văn bản đi kèm sau thẻ <thought>, điều tuyến tiếp vào Markdown
-                                        if (routing.remainingText) {
-                                            rawMarkdownBuffer += routing.remainingText;
+                                        if (remainingText) {
+                                            rawMarkdownBuffer += remainingText;
                                         }
                                     }
                                     // ĐÍCH ĐẾN 2: Luồng mã Python -> Hộp Execution & Máy ảo Pyodide
@@ -10756,12 +10759,13 @@ let isFirstContinuationChunk = false;
                                             if (botIdx !== -1) currentMessages.value.splice(botIdx, 0, executionMsg);
                                             else currentMessages.value.push(executionMsg);
                                         }
-                                        executionMsg.rawExecutionParts.push({ type: 'code', content: payload.code });
+                                        const codeContent = (payload && payload.code) ? payload.code : String(payload || '');
+                                        executionMsg.rawExecutionParts.push({ type: 'code', content: codeContent });
                                         const targetOutputIdx = executionMsg.rawExecutionParts.length;
                                         executionMsg.rawExecutionParts.push({ type: 'output', content: 'Đang thực thi...', outcome: 'RUNNING' });
                                         executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                         
-                                        PythonEngine.run(payload.code).then(res => {
+                                        PythonEngine.run(codeContent).then(res => {
                                             if (executionMsg.rawExecutionParts[targetOutputIdx]) {
                                                 executionMsg.rawExecutionParts[targetOutputIdx] = { 
                                                     type: 'output', 
@@ -10795,17 +10799,19 @@ let isFirstContinuationChunk = false;
                                         if (lastPart && lastPart.outcome === 'RUNNING') {
                                             executionMsg.rawExecutionParts.pop();
                                         }
-                                        executionMsg.rawExecutionParts.push({ type: 'output', content: payload.output, outcome: payload.outcome });
+                                        const outText = (payload && payload.output !== undefined) ? payload.output : String(payload || '');
+                                        const outStatus = (payload && payload.outcome) ? payload.outcome : 'COMPLETED';
+                                        executionMsg.rawExecutionParts.push({ type: 'output', content: outText, outcome: outStatus });
                                         executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                     }
                                     // ĐÍCH ĐẾN 4: Luồng văn bản phản hồi chính -> Buffer Markdown
                                     else if (type === GDeepDataProtocol.DataTypes.TEXT) {
-                                        let newText = payload;
+                                        let newText = (payload !== undefined && payload !== null) ? String(payload) : '';
                                         if (isContinuation && isFirstContinuationChunk && newText) {
                                             newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
                                             if (newText.length > 0) isFirstContinuationChunk = false;
                                         }
-                                        rawMarkdownBuffer += (newText || '');
+                                        rawMarkdownBuffer += newText;
                                     }
                                 }
 
