@@ -1413,7 +1413,25 @@
                                 </button>
                             </div>
 
-<!-- CINEMATIC VIDEO PLAYER -->
+                            <!-- HỘP TÓM TẮT TRỌNG TÂM (TL;DR) TỪ MODEL NỀN -->
+                            <div v-if="msg.summaryText" class="mb-3 p-3 bg-amber-500/10 border border-amber-500/25 rounded-2xl space-y-1.5 shadow-sm">
+                                <div class="flex items-center justify-between text-[11px] font-bold text-amber-300 uppercase tracking-wider">
+                                    <span class="flex items-center gap-1.5"><lucide-icon name="zap" class="w-3.5 h-3.5"></lucide-icon> Tóm Tắt Trọng Tâm (TL;DR)</span>
+                                    <button type="button" @click.stop="msg.summaryText = ''" class="btn-instant text-textMuted hover:text-white">&times;</button>
+                                </div>
+                                <div class="text-[12.5px] leading-relaxed text-amber-100 markdown-body" v-html="compileMarkdown(msg.summaryText)"></div>
+                            </div>
+
+                            <!-- HỘP BẢN DỊCH TỨC THÌ TỪ MODEL NỀN -->
+                            <div v-if="msg.translatedText" class="mb-3 p-3 bg-sky-500/10 border border-sky-500/25 rounded-2xl space-y-1.5 shadow-sm">
+                                <div class="flex items-center justify-between text-[11px] font-bold text-sky-300 uppercase tracking-wider">
+                                    <span class="flex items-center gap-1.5"><lucide-icon name="globe" class="w-3.5 h-3.5"></lucide-icon> Bản Dịch Tức Thì</span>
+                                    <button type="button" @click.stop="msg.translatedText = ''" class="btn-instant text-textMuted hover:text-white">&times;</button>
+                                </div>
+                                <div class="text-[13px] leading-relaxed text-sky-100 markdown-body" v-html="compileMarkdown(msg.translatedText)"></div>
+                            </div>
+
+                            <!-- CINEMATIC VIDEO PLAYER -->
 <div v-if="msg.renderedVideoUrl" class="mt-3 p-3 bg-[#0a0c12] rounded-2xl shadow-xl space-y-2 border border-purple-500/30">
     <div class="flex items-center justify-between text-xs">
         <span class="font-bold text-purple-300 flex items-center gap-1.5">
@@ -1438,6 +1456,8 @@
                                     <button type="button" @click.stop="forkThreadFromMsg(msg)" class="btn-instant action-btn shrink-0" title="Tách nhánh"><lucide-icon name="git-fork" class="w-3.5 h-3.5 text-sky-400"></lucide-icon></button>
                                     <button type="button" @click.stop="reactMessage(msg, 'up')" :class="['btn-instant action-btn shrink-0', msg.reaction === 'up' ? '!text-emerald-400 !bg-emerald-500/20' : '']"><lucide-icon name="thumbs-up" class="w-3.5 h-3.5"></lucide-icon></button>
                                     <button type="button" @click.stop="reactMessage(msg, 'down')" :class="['btn-instant action-btn shrink-0', msg.reaction === 'down' ? '!text-red-400 !bg-red-500/20' : '']"><lucide-icon name="thumbs-down" class="w-3.5 h-3.5"></lucide-icon></button>
+                                    <button type="button" @click.stop="extractMsgSummary(msg)" title="Tóm tắt trọng tâm (TL;DR)" class="btn-instant action-btn shrink-0 hover:!text-amber-300"><lucide-icon name="zap" class="w-3.5 h-3.5 text-amber-400"></lucide-icon></button>
+                                    <button type="button" @click.stop="translateMsg(msg)" title="Dịch nhanh" class="btn-instant action-btn shrink-0 hover:!text-sky-300"><lucide-icon name="globe" class="w-3.5 h-3.5 text-sky-400"></lucide-icon></button>
                                     <button type="button" @click.stop="speakText(msg.content)" title="Đọc" class="btn-instant action-btn shrink-0"><lucide-icon name="volume-2" class="w-3.5 h-3.5" :style="{ color: selectedAccent }"></lucide-icon></button>
                                     <button type="button" @click.stop="regenerateFromMsg(msg)" title="Tạo lại" class="btn-instant action-btn shrink-0"><lucide-icon name="rotate-cw" class="w-3.5 h-3.5 text-emerald-400"></lucide-icon></button>
                                     <button type="button" @click.stop="copyFullMessage(msg.content)" title="Sao chép" class="btn-instant action-btn shrink-0"><lucide-icon name="copy" class="w-3.5 h-3.5"></lucide-icon></button>
@@ -1459,6 +1479,16 @@
                                     <button type="button" @click.stop="deleteSingleMessage(msg)" title="Xóa" class="btn-instant action-btn hover:!text-red-400 shrink-0"><lucide-icon name="trash-2" class="w-3.5 h-3.5"></lucide-icon></button>
                                 </menu>
                             </transition>
+
+                            <!-- GỢI Ý TƯƠNG TÁC TIẾP THEO SINH BỞI MODEL NỀN -->
+                            <div v-if="msg.followUps && msg.followUps.length > 0 && !isGenerating" class="flex flex-wrap items-center gap-1.5 pt-1.5">
+                                <button type="button" v-for="(chip, chipIdx) in msg.followUps" :key="chipIdx"
+                                        @click="sendQuickPrompt(chip)"
+                                        class="btn-instant px-3 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.09] border border-white/5 hover:border-white/15 text-[11px] text-textMuted hover:text-white transition-all flex items-center gap-1.5 text-left shadow-xs">
+                                    <lucide-icon name="sparkles" class="w-3 h-3 text-indigo-400 shrink-0"></lucide-icon>
+                                    <span class="truncate max-w-[280px]">{{ chip }}</span>
+                                </button>
+                            </div>
                         </div>
                     </article>
                 </transition-group>
@@ -8358,6 +8388,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                             targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                             scheduleDbSave(targetMsg);
+                            triggerGenerateFollowUps(targetMsg);
                             scrollToBottom(true);
                             notify("Đã kết xuất hoàn tất video nghệ thuật!");
                         } catch (err) {
@@ -9750,6 +9781,111 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         return await AutoTitleNeuron.fire({ prompt: firstPrompt, threadId }, 'SessionManager');
                     };
 
+                    // NƠ-RON AI RÚT TRÍCH TRỌNG TÂM TL;DR BẰNG MODEL NỀN
+                    const SummaryNeuron = SynapticNeuralMesh.register(
+                        'SummaryNeuron',
+                        (p) => p && typeof p.content === 'string' && p.content.trim().length > 0,
+                        async (msg) => {
+                            notify("Model nền đang tổng hợp trọng tâm...");
+                            const prompt = `[NHIỆM VỤ RÚT TRÍCH TRỌNG TÂM / TL;DR]
+Trích xuất tối đa 3-4 gạch đầu dòng then chốt, súc tích nhất từ văn bản sau (giữ văn phong nguyên bản):
+"""${msg.content.slice(0, 3500)}"""`;
+                            const res = await dispatchBackgroundTaskWithFallback({
+                                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                                generationConfig: { temperature: 0.2, maxOutputTokens: 512 }
+                            });
+                            const resultText = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                            if (resultText) {
+                                msg.summaryText = resultText.trim();
+                                scheduleDbSave(msg);
+                                notify("Đã hoàn tất tóm tắt!");
+                            }
+                        },
+                        null,
+                        { tags: ['ai', 'background', 'tldr'] }
+                    );
+
+                    const extractMsgSummary = (msg) => {
+                        if (!msg?.content) return;
+                        triggerHaptic('light');
+                        if (msg.summaryText) { msg.summaryText = ''; return; }
+                        SummaryNeuron.fire(msg, 'BackgroundTLDR');
+                    };
+
+                    // NƠ-RON AI DỊCH THUẬT SIÊU TỐC BẰNG MODEL NỀN
+                    const TranslatorNeuron = SynapticNeuralMesh.register(
+                        'TranslatorNeuron',
+                        (p) => p && typeof p.content === 'string' && p.content.trim().length > 0,
+                        async (msg) => {
+                            notify("Model nền đang tiến hành chuyển ngữ...");
+                            const isVietnamese = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(msg.content);
+                            const targetLang = isVietnamese ? "Tiếng Anh (English)" : "Tiếng Việt";
+                            const prompt = `[NHIỆM VỤ DỊCH THUẬT CHUẨN XÁC]
+Hãy dịch toàn bộ nội dung sau sang ${targetLang}. Bảo toàn nguyên vẹn 100% các khối mã (\`\`\`), công thức toán ($) và bảng Markdown:
+"""${msg.content.slice(0, 4000)}"""`;
+                            const res = await dispatchBackgroundTaskWithFallback({
+                                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                                generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
+                            });
+                            const resultText = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                            if (resultText) {
+                                msg.translatedText = resultText.trim();
+                                scheduleDbSave(msg);
+                                notify("Đã dịch xong!");
+                            }
+                        },
+                        null,
+                        { tags: ['ai', 'background', 'translate'] }
+                    );
+
+                    const translateMsg = (msg) => {
+                        if (!msg?.content) return;
+                        triggerHaptic('light');
+                        if (msg.translatedText) { msg.translatedText = ''; return; }
+                        TranslatorNeuron.fire(msg, 'BackgroundTranslate');
+                    };
+
+                    // NƠ-RON AI SINH GỢI Ý HỎI TIẾP BẰNG MODEL NỀN (FOLLOW-UP GENERATOR NEURON)
+                    const FollowUpGeneratorNeuron = SynapticNeuralMesh.register(
+                        'FollowUpGeneratorNeuron',
+                        (p) => p && typeof p.content === 'string' && p.content.trim().length > 0,
+                        async ({ botMsg, recentUserText }) => {
+                            const prompt = `[NHIỆM VỤ SINH GỢI Ý TƯƠNG TÁC THÔNG MINH]
+Dựa vào câu hỏi của người dùng: """${recentUserText.slice(0, 300)}"""
+Và câu trả lời của AI: """${botMsg.content.slice(0, 600)}"""
+
+Hãy tạo đúng 3 gợi ý ngắn gọn cho bước tiếp theo hoặc câu hỏi đào sâu hữu ích nhất.
+Trả về duy nhất định dạng JSON:
+{
+  "suggestions": [
+    "câu gợi ý 1",
+    "câu gợi ý 2",
+    "câu gợi ý 3"
+  ]
+}`;
+                            const res = await dispatchBackgroundTaskWithFallback({
+                                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                                generationConfig: { temperature: 0.3, maxOutputTokens: 256, responseMimeType: "application/json" }
+                            });
+                            const rawJson = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                            if (rawJson) {
+                                const parsed = SearchIntelligenceEngine.robustJsonRepair(rawJson);
+                                if (parsed && Array.isArray(parsed.suggestions)) {
+                                    botMsg.followUps = parsed.suggestions.filter(s => typeof s === 'string' && s.trim()).slice(0, 3);
+                                    scheduleDbSave(botMsg);
+                                }
+                            }
+                        },
+                        null,
+                        { tags: ['ai', 'background', 'suggestions'] }
+                    );
+
+                    const triggerGenerateFollowUps = (targetBotMsg) => {
+                        if (!targetBotMsg || !targetBotMsg.content || targetBotMsg.content.length < 20) return;
+                        const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
+                        FollowUpGeneratorNeuron.fire({ botMsg: targetBotMsg, recentUserText: lastUser?.content || '' }, 'BackgroundWorker');
+                    };
+
                     const rawExecuteAutoName = async (firstPrompt, threadId) => {
                         try {
                             const cur = threads.value.find(t => t.id === threadId);
@@ -10600,6 +10736,7 @@ if (!shouldContinue) {
                             if ((!abortController || !abortController.signal.aborted) && thisRequestToken === activeRequestToken) {
                                 nextTick(() => renderMermaidDiagrams());
                                 triggerHaptic('light');
+                                triggerGenerateFollowUps(botMsg);
                             }
                        } catch (error) {
                             const isMsgAlive = botMsg && currentMessages.value.some(m => m.id === botMsg.id);
@@ -11060,6 +11197,7 @@ if (!shouldContinue) {
                         serperApiKeys, rawSerperKeysInput, serperKeyCount, saveSerperKeyPoolFromInput,
                         enableImageGen, toggleImageGen, imageConfig, randomizeCharacterSeed,
                         downloadImageFile, downloadLightboxImage, downloadImageFromMessage, downloadDirectMedia,
+                        extractMsgSummary, translateMsg,
                         enableCinemaStudio, toggleCinemaStudio, cinemaStudioTab, cinemaConfig, animateImageToVideo, animateCurrentLightboxImage,
                         cinemaVoiceCharacters, addNewVoiceCharacter, removeVoiceCharacter,
                         userTimelineCues, timelineCursorPercent, handleTimelineRulerClick, addTimelineDialogueCue, removeTimelineCue, getCharacterBadgeColor,
