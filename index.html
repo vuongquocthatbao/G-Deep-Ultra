@@ -2043,8 +2043,8 @@
 
     </div>
 
-    <!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM -->
-    <script id="cinema-worker-code" type="text/plain">
+<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM -->
+<script id="cinema-worker-code" type="text/plain">
 if (typeof self.window === 'undefined') { self.window = self; }
 if (typeof self.requestAnimationFrame !== 'function') {
     self.requestAnimationFrame = function(cb) { return setTimeout(cb, 16); };
@@ -2114,7 +2114,7 @@ function createDynamicDepthTexture(width, height, depthTopology, imageBitmap) {
                 for (const layer of layers) {
                     const box = layer.uv_box;
                     if (Array.isArray(box) && box.length === 4) {
-                        if (u >= box[0] && u <= box[2] && v >= box[1] && v <= box[3]) {
+                        if (u >= box[0] && u >= box[0] && u <= box[2] && v >= box[1] && v <= box[3]) {
                             const edgeDistX = Math.min(u - box[0], box[2] - u) / Math.max(0.001, (box[2] - box[0]) * 0.2);
                             const edgeDistY = Math.min(v - box[1], box[3] - v) / Math.max(0.001, (box[3] - box[1]) * 0.2);
                             const blend = Math.max(0.0, Math.min(1.0, Math.min(edgeDistX, edgeDistY)));
@@ -2132,6 +2132,7 @@ function createDynamicDepthTexture(width, height, depthTopology, imageBitmap) {
             dst[idx] = byteVal;
             dst[idx + 1] = byteVal;
             dst[idx + 2] = byteVal;
+            dst[idx + 1] = byteVal;
             dst[idx + 3] = 255;
         }
     }
@@ -2405,16 +2406,9 @@ function createAudioBufferMultiTrack({ blueprint, durationSec, sampleRate, voice
 // BỘ ĐIỀU PHỐI CHÍNH WORKER (CHỐNG ĐÓNG BĂNG KHI CHUYỂN TAB)
 self.onmessage = async function(e) {
     const {
-        userPrompt,
-        userDuration,
-        userAspectRatio,
-        userStyle,
-        userSeed,
-        userCues,
-        userCharacters,
-        userFps,
-        directImageDataUrl,
-        apiKey
+        masterScript, // Mới: Kịch bản phim dài tập từ AI
+        apiKey,
+        geminiTTSApiKey // Mới: API Key cho Gemini TTS
     } = e.data;
 
     // Nhịp tim nhân tạo: Phát tín hiệu liên tục để luồng CPU không bị hệ điều hành treo ngầm
@@ -2425,132 +2419,106 @@ self.onmessage = async function(e) {
     const postStatus = (text) => self.postMessage({ type: 'STATUS', text });
 
     try {
-        const fps = Number(userFps) || 24;
-        const totalDuration = Math.max(1, Math.round(Number(userDuration) || 5));
-        const sampleRate = 48000;
+        const overallDuration = masterScript.total_duration;
+        const overallAspectRatio = masterScript.overall_aspect_ratio;
+        const overallResolution = masterScript.overall_resolution; // { width, height }
+        const voiceCharacters = masterScript.voice_characters;
+        const fps = Number(masterScript.overall_fps || 24); // Lấy FPS từ script hoặc mặc định
+        const shotSampleRate = 48000; // Sample rate cố định cho audio muxer
 
-        postStatus("Đang phân tích kịch bản và đo đạc bố cục không gian...");
-
-        const dispatchBg = async (payload) => {
-            const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.0-flash"];
-            for (const m of candidateModels) {
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    if (res.ok) return await res.json();
-                } catch (_) {}
+        // Hàm gọi Gemini TTS (định nghĩa trong Worker)
+        const callGeminiTTS = async (text, voiceName, apiKey) => {
+            if (!text || !apiKey || !voiceName) return null;
+            try {
+                const res = await fetch(`https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        input: { text: text },
+                        voice: { languageCode: 'vi-VN', name: `vi-VN-Standard-${voiceName}` }, // Giả định voice name chuẩn
+                        audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 }
+                    })
+                });
+                if (!res.ok) {
+                    console.warn(`Gemini TTS API error for voice ${voiceName}: ${res.status} ${res.statusText}`);
+                    return null;
+                }
+                const data = await res.json();
+                if (data.audioContent) {
+                    const audioBytes = Uint8Array.from(atob(data.audioContent), c => c.charCodeAt(0));
+                    // Giải mã PCM LINEAR16 thành Float32Array
+                    const pcm16 = new Int16Array(audioBytes.buffer);
+                    const float32 = new Float32Array(pcm16.length);
+                    for (let i = 0; i < pcm16.length; i++) {
+                        float32[i] = pcm16[i] / 32768; // Chuyển đổi từ 16-bit signed int sang float [-1, 1]
+                    }
+                    return { samples: float32, sampleRate: 24000, duration: float32.length / 24000 };
+                }
+            } catch (err) {
+                console.error("Lỗi gọi Gemini TTS:", err);
             }
             return null;
         };
 
-        // 1. LẬP KẾ HOẠCH ĐIỆN ẢNH VÀ QUANG HỌC DỰA TRÊN NGỮ CẢNH NGƯỜI DÙNG
-        const promptPlanner = `[ĐẠO DIỄN VÀ NHÀ VẬT LÝ QUANG HỌC ĐIỆN ẢNH]
-Yêu cầu kịch bản: "${userPrompt || 'Khung cảnh điện ảnh'}"
-Thời lượng: ${totalDuration}s | Tỷ lệ: ${userAspectRatio} | Phong cách: ${userStyle}
-
-Hãy tính toán ĐỘNG HOÀN TOÀN (tuyệt đối KHÔNG gán cứng giá trị mẫu):
-1. "resolution": Chiều rộng & chiều cao chia hết cho 16 chuẩn tỷ lệ ${userAspectRatio}.
-2. "optics": fov (độ), plane_distance (khoảng cách mặt phẳng), overscan (tỷ lệ dự phòng biên), mesh_grid (độ mịn lưới đa giác).
-3. "visual_dna": Prompt chi tiết tiếng Anh tạo hình ảnh keyframe gốc bám sát phong cách ${userStyle}.
-4. "soundscape_blueprint": Chords Hz và sub_bass Hz phản ánh đúng không khí bối cảnh.
-5. "cinematic_post": vignette (0.1 đến 0.5), grain (0.01 đến 0.05).
-6. "camera_trajectory": Tính toán tọa độ di chuyển camera thực sự phục vụ kịch bản:
-   - Danh sách các mốc nội suy: {"t": 0.0 đến 1.0, "cam": [x, y, z], "rot": [pitch, yaw, roll]}.
-
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
-{
-  "resolution": { "width": 1024, "height": 576 },
-  "optics": { "fov": 36.0, "plane_distance": 2.2, "overscan": 1.4, "mesh_grid": 180 },
-  "visual_dna": "detailed prompt...",
-  "cinematic_post": { "vignette": 0.28, "grain": 0.025 },
-  "soundscape_blueprint": { "music": { "chords": [146.8, 220.0], "sub_bass": 40.0, "volume": 0.2 } },
-  "camera_trajectory": [
-    { "t": 0.0, "cam": [0, 0, 2.2], "rot": [0, 0, 0] },
-    { "t": 1.0, "cam": [0.08, -0.02, 2.05], "rot": [0.5, -1.2, 0] }
-  ]
-}`;
-
-        let narrativePlan = null;
-        if (apiKey) {
-            try {
-                const res = await dispatchBg({
-                    contents: [{ role: 'user', parts: [{ text: promptPlanner }] }],
-                    generationConfig: { temperature: 0.15, maxOutputTokens: 4096, responseMimeType: "application/json" }
-                });
-                narrativePlan = robustJsonParse(res?.candidates?.[0]?.content?.parts?.[0]?.text);
-            } catch (_) {}
-        }
-
-        if (!narrativePlan || !narrativePlan.camera_trajectory) {
-            let resW = 1024, resH = 576;
-            if (userAspectRatio === '9:16') { resW = 576; resH = 1024; }
-            else if (userAspectRatio === '1:1') { resW = 768; resH = 768; }
-            else if (userAspectRatio === '21:9') { resW = 1200; resH = 512; }
-
-            narrativePlan = {
-                resolution: { width: resW, height: resH },
-                optics: { fov: 36.0, plane_distance: 2.2, overscan: 1.4, mesh_grid: 180 },
-                visual_dna: userPrompt || "Cinematic 8k masterpiece",
-                cinematic_post: { vignette: 0.25, grain: 0.02 },
-                soundscape_blueprint: { music: { chords: [], sub_bass: 0, volume: 0 } },
-                camera_trajectory: [
-                    { t: 0.0, cam: [0, 0, 2.2], rot: [0, 0, 0] },
-                    { t: 1.0, cam: [0.05, 0.02, 2.08], rot: [0.2, -0.8, 0] }
-                ]
-            };
-        }
-
-        const width = Math.max(16, Math.round(Number(narrativePlan.resolution.width || 1024) / 16) * 16);
-        const height = Math.max(16, Math.round(Number(narrativePlan.resolution.height || 576) / 16) * 16);
-
-        // 2. TẠO HOẶC NẠP HÌNH ẢNH KEYFRAME THỰC TẾ
-        let imageBitmap = null;
-        if (directImageDataUrl) {
-            let blob = null;
-            if (directImageDataUrl.startsWith('data:') || directImageDataUrl.startsWith('blob:')) {
-                const res = await fetch(directImageDataUrl);
-                blob = await res.blob();
-            } else {
-                try {
+        // Hàm tạo keyframe (có thể dùng Flux hoặc directImageDataUrl nếu có)
+        const generateKeyframe = async (visualDna, width, height, seed, directImageDataUrl) => {
+            if (directImageDataUrl) {
+                let blob = null;
+                if (directImageDataUrl.startsWith('data:') || directImageDataUrl.startsWith('blob:')) {
                     const res = await fetch(directImageDataUrl);
-                    if (res.ok) blob = await res.blob();
-                } catch (_) {}
-                if (!blob) {
-                    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`;
-                    const res = await fetch(proxyUrl);
                     blob = await res.blob();
-                }
-            }
-            imageBitmap = await createImageBitmap(blob);
-        } else {
-            postStatus("Đang khởi tạo khung hình nghệ thuật độ phân giải cao...");
-            const cleanPrompt = encodeURIComponent(narrativePlan.visual_dna.slice(0, 300).replace(/[()[\]{}]/g, ' ').trim());
-            const modelsToTry = ['flux', 'flux-realism', 'turbo'];
-            let imgBlob = null;
-
-            for (const m of modelsToTry) {
-                try {
-                    const fluxUrl = `https://image.pollinations.ai/prompt/${cleanPrompt}?width=${width}&height=${height}&model=${m}&seed=${userSeed}&nologo=true`;
-                    const imgRes = await fetch(fluxUrl);
-                    if (imgRes.ok) {
-                        const b = await imgRes.blob();
-                        if (b.size > 1500) { imgBlob = b; break; }
+                } else {
+                    try {
+                        const res = await fetch(directImageDataUrl);
+                        if (res.ok) blob = await res.blob();
+                    } catch (_) {}
+                    if (!blob) {
+                        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`;
+                        const res = await fetch(proxyUrl);
+                        blob = await res.blob();
                     }
-                } catch (_) {}
+                }
+                return await createImageBitmap(blob);
+            } else {
+                const cleanPrompt = encodeURIComponent(visualDna.slice(0, 300).replace(/[()[\]{}]/g, ' ').trim());
+                const modelsToTry = ['flux', 'flux-realism', 'turbo'];
+                let imgBlob = null;
+
+                for (const m of modelsToTry) {
+                    try {
+                        const fluxUrl = `https://image.pollinations.ai/prompt/${cleanPrompt}?width=${width}&height=${height}&model=${m}&seed=${seed}&nologo=true`;
+                        const imgRes = await fetch(fluxUrl);
+                        if (imgRes.ok) {
+                            const b = await imgRes.blob();
+                            if (b.size > 1500) { imgBlob = b; break; }
+                        }
+                    } catch (_) {}
+                }
+                if (!imgBlob) throw new Error("Máy chủ tạo ảnh tạm thời bận, vui lòng thử lại.");
+                return await createImageBitmap(imgBlob);
             }
-            if (!imgBlob) throw new Error("Máy chủ tạo ảnh tạm thời bận, vui lòng thử lại.");
-            imageBitmap = await createImageBitmap(imgBlob);
-        }
+        };
 
-        // 3. ĐO ĐẠC VẬT LÝ VÀ PHÂN TÍCH BỐ CỤC KHÔNG GIAN
-        postStatus("Đang phân tích cấu trúc không gian và chiều sâu...");
-        const base64Keyframe = await bitmapToBase64(imageBitmap, 512);
+        // Hàm phân tích vật lý (sử dụng Gemini Vision)
+        const analyzePhysicalMatrix = async (imageBitmap, prompt, apiKey) => {
+            const base64Keyframe = await bitmapToBase64(imageBitmap, 512); // Helper function already exists
+            const dispatchBg = async (payload) => {
+                const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.0-flash"];
+                for (const m of candidateModels) {
+                    try {
+                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        if (res.ok) return await res.json();
+                    } catch (_) {}
+                }
+                return null;
+            };
 
-        const promptVisionDynamicPhysics = `[PHÂN TÍCH VẬT LÝ VÀ KHÍ HẬU MÔI TRƯỜNG ĐỘC LẬP TỪ THỊ GIÁC]
-Hãy quan sát bức ảnh thực tế đính kèm và kịch bản: "${userPrompt}".
+            const promptVisionDynamicPhysics = `[PHÂN TÍCH VẬT LÝ VÀ KHÍ HẬU MÔI TRƯỜNG ĐỘC LẬP TỪ THỊ GIÁ]
+Hãy quan sát bức ảnh thực tế đính kèm và kịch bản: "${prompt}".
 Đo đạc chính xác các thuộc tính vật lý của bức ảnh này:
 1. "depth_topology": Xác định các vùng phân tầng không gian [u_min, v_min, u_max, v_max] và depth_val (0.0 đến 1.0) cho tiền cảnh, chủ thể, hậu cảnh.
 2. "global_wind": Véc-tơ gió quyển thực tế [x, y, z] phù hợp với bối cảnh ảnh.
@@ -2577,98 +2545,168 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
   "kinematic_nodes": [],
   "atmospheric_particles": { "type": "dust", "count": 250, "color": "#ffffff", "size": 0.02, "opacity": 0.4, "velocity": [0.002, -0.01, 0.0] }
 }`;
+            let physicalMatrix = null;
+            if (apiKey) {
+                try {
+                    const visionRes = await dispatchBg({
+                        contents: [{
+                            role: 'user',
+                            parts: [
+                                { text: promptVisionDynamicPhysics },
+                                { inlineData: { mimeType: "image/jpeg", data: base64Keyframe } }
+                            ]
+                        }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
+                    });
+                    physicalMatrix = robustJsonParse(visionRes?.candidates?.[0]?.content?.parts?.[0]?.text);
+                } catch (_) {}
+            }
+            if (!physicalMatrix) {
+                physicalMatrix = {
+                    depth_topology: { layers: [] },
+                    global_wind: [0.003, 0.0, 0.001],
+                    kinematic_nodes: [],
+                    atmospheric_particles: { type: "motes", count: 100, color: "#ffffff", size: 0.02, opacity: 0.3, velocity: [0, -0.005, 0] }
+                };
+            }
+            return physicalMatrix;
+        };
 
-        let physicalMatrix = null;
-        if (apiKey) {
-            try {
-                const visionRes = await dispatchBg({
-                    contents: [{
-                        role: 'user',
-                        parts: [
-                            { text: promptVisionDynamicPhysics },
-                            { inlineData: { mimeType: "image/jpeg", data: base64Keyframe } }
-                        ]
-                    }],
-                    generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
-                });
-                physicalMatrix = robustJsonParse(visionRes?.candidates?.[0]?.content?.parts?.[0]?.text);
-            } catch (_) {}
-        }
+        // Hàm mới: renderShotToFramesAndAudio
+        const renderShotToFramesAndAudio = async ({
+            imageBitmap,
+            physicalMatrix,
+            narrativePlan,
+            overallResolution,
+            overallAspectRatio,
+            fps,
+            shotAudioBuffers,
+            shotSampleRate
+        }) => {
+            const width = overallResolution.width;
+            const height = overallResolution.height;
+            const shotDuration = Number(narrativePlan.target_duration) || 5;
+            const totalFrames = shotDuration * fps;
+            const frameMicros = 1000000 / fps;
+            const deltaSec = 1 / fps;
 
-        if (!physicalMatrix) {
-            physicalMatrix = {
-                depth_topology: { layers: [] },
-                global_wind: [0.003, 0.0, 0.001],
-                kinematic_nodes: [],
-                atmospheric_particles: { type: "motes", count: 100, color: "#ffffff", size: 0.02, opacity: 0.3, velocity: [0, -0.005, 0] }
+            const threeCanvas = new OffscreenCanvas(width, height);
+            const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, alpha: false });
+            renderer.setSize(width, height, false);
+
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(Number(narrativePlan.optics.fov), width / height, 0.01, 100);
+            camera.position.set(0, 0, Number(narrativePlan.optics.plane_distance));
+
+            const visibleHeight = 2 * Math.tan((Number(narrativePlan.optics.fov) * Math.PI) / 180 / 2) * Number(narrativePlan.optics.plane_distance);
+            const visibleWidth = visibleHeight * (width / height);
+            const planeWidth = visibleWidth * Number(narrativePlan.optics.overscan);
+            const planeHeight = visibleHeight * Number(narrativePlan.optics.overscan);
+
+            const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, Number(narrativePlan.optics.mesh_grid), Number(narrativePlan.optics.mesh_grid));
+            const shaderMat = new THREE.ShaderMaterial({
+                side: THREE.DoubleSide,
+                uniforms: THREE.UniformsUtils.clone(Dynamic4DSceneShader.uniforms),
+                vertexShader: Dynamic4DSceneShader.vertexShader,
+                fragmentShader: Dynamic4DSceneShader.fragmentShader
+            });
+
+            const shotTexture = new THREE.CanvasTexture(imageBitmap);
+            shotTexture.flipY = true;
+            shaderMat.uniforms.uTexture.value = shotTexture;
+
+            const depthTexture = createDynamicDepthTexture(width, height, physicalMatrix.depth_topology, imageBitmap);
+            shaderMat.uniforms.uDepthMap.value = depthTexture;
+
+            const gWind = Array.isArray(physicalMatrix.global_wind) ? physicalMatrix.global_wind : [0, 0, 0];
+            shaderMat.uniforms.uGlobalWind.value.set(gWind[0] || 0, gWind[1] || 0, gWind[2] || 0);
+
+            const postConf = narrativePlan.cinematic_post || {};
+            shaderMat.uniforms.uVignette.value = Number(postConf.vignette) || 0.25;
+            shaderMat.uniforms.uGrainIntensity.value = Number(postConf.grain) || 0.02;
+
+            const nodes = Array.isArray(physicalMatrix.kinematic_nodes) ? physicalMatrix.kinematic_nodes.slice(0, 8) : [];
+            shaderMat.uniforms.uNodeCount.value = nodes.length;
+            for (let i = 0; i < nodes.length; i++) {
+                const n = nodes[i];
+                const c = Array.isArray(n.center) ? n.center : [0.5, 0.5];
+                const v = Array.isArray(n.vector) ? n.vector : [0, 0, 0];
+                shaderMat.uniforms.uNodeCenter.value[i].set(c[0] || 0, c[1] || 0);
+                shaderMat.uniforms.uNodeRadius.value[i] = Number(n.radius) || 0.1;
+                shaderMat.uniforms.uNodeType.value[i] = Number(n.type) || 0;
+                shaderMat.uniforms.uNodeVector.value[i].set(v[0] || 0, v[1] || 0, v[2] || 0);
+                shaderMat.uniforms.uNodeFreq.value[i] = Number(n.freq) || 1.0;
+                shaderMat.uniforms.uNodePhase.value[i] = Number(n.phase) || 0.0;
+            }
+
+            const mesh = new THREE.Mesh(planeGeo, shaderMat);
+            scene.add(mesh);
+
+            const particleSystem = buildAtmosphericParticleSystem(physicalMatrix.atmospheric_particles, planeWidth, planeHeight, Number(narrativePlan.optics.plane_distance));
+            if (particleSystem) scene.add(particleSystem.mesh);
+
+            let prevCamPos = new THREE.Vector3(0, 0, Number(narrativePlan.optics.plane_distance));
+
+            const yieldFrame = async (frameIndex) => {
+                const currentSecond = frameIndex / fps;
+                const progress = frameIndex / Math.max(1, totalFrames - 1);
+
+                const camState = evaluateSpline(narrativePlan.camera_trajectory, progress, Number(narrativePlan.optics.plane_distance));
+                camera.position.set(camState.cam[0], camState.cam[1], camState.cam[2]);
+                camera.rotation.set(
+                    (camState.rot[0] * Math.PI) / 180,
+                    (camState.rot[1] * Math.PI) / 180,
+                    (camState.rot[2] * Math.PI) / 180
+                );
+
+                const velX = (camera.position.x - prevCamPos.x) * fps;
+                const velY = (camera.position.y - prevCamPos.y) * fps;
+                shaderMat.uniforms.uCameraVelocity.value.set(velX, velY);
+                prevCamPos.copy(camera.position);
+
+                shaderMat.uniforms.uTime.value = currentSecond;
+
+                if (particleSystem) particleSystem.update(deltaSec);
+
+                renderer.render(scene, camera);
+                return threeCanvas;
             };
-        }
 
-        // 4. THIẾT LẬP CAMERA, THREE.JS VÀ HỆ THỐNG HẠT ĐỘC LẬP
-        const optics = narrativePlan.optics;
-        const fovRad = (Number(optics.fov) * Math.PI) / 180;
-        const planeDist = Number(optics.plane_distance);
-        const overscan = Number(optics.overscan);
+            const cleanupShot = () => {
+                try { renderer.dispose(); } catch (_) {}
+                try { planeGeo.dispose(); } catch (_) {}
+                try { shaderMat.dispose(); } catch (_) {}
+                try { if (shotTexture) shotTexture.dispose(); } catch (_) {}
+                try { if (depthTexture) depthTexture.dispose(); } catch (_) {}
+                if (particleSystem) {
+                    try { particleSystem.mesh.geometry.dispose(); } catch (_) {}
+                    try { particleSystem.mesh.material.dispose(); } catch (_) {}
+                }
+            };
 
-        const visibleHeight = 2 * Math.tan(fovRad / 2) * planeDist;
-        const visibleWidth = visibleHeight * (width / height);
-        const planeWidth = visibleWidth * overscan;
-        const planeHeight = visibleHeight * overscan;
+            const shotAudio = createAudioBufferMultiTrack({
+                blueprint: narrativePlan.soundscape_blueprint,
+                durationSec: shotDuration,
+                sampleRate: shotSampleRate,
+                voiceBuffers: shotAudioBuffers
+            });
 
-        const threeCanvas = new OffscreenCanvas(width, height);
-        const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, alpha: false });
-        renderer.setSize(width, height, false);
+            return {
+                totalFrames,
+                shotDuration,
+                yieldFrame,
+                cleanupShot,
+                shotAudio
+            };
+        };
 
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(Number(optics.fov), width / height, 0.01, 100);
-        camera.position.set(0, 0, planeDist);
+        // BẮT ĐẦU DÂY CHUYỀN SẢN XUẤT PHIM ĐA PHÂN CẢNH TỰ ĐỘNG
+        const totalScenes = masterScript.scenes.length;
+        const width = overallResolution.width;
+        const height = overallResolution.height;
 
-        const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, Number(optics.mesh_grid), Number(optics.mesh_grid));
-        const shaderMat = new THREE.ShaderMaterial({
-            side: THREE.DoubleSide,
-            uniforms: THREE.UniformsUtils.clone(Dynamic4DSceneShader.uniforms),
-            vertexShader: Dynamic4DSceneShader.vertexShader,
-            fragmentShader: Dynamic4DSceneShader.fragmentShader
-        });
+        postStatus(`Khởi tạo dây chuyền sản xuất phim dài tập (${totalScenes} phân cảnh)...`);
 
-        const shotTexture = new THREE.CanvasTexture(imageBitmap);
-        shotTexture.flipY = true;
-        shaderMat.uniforms.uTexture.value = shotTexture;
-
-        const depthTexture = createDynamicDepthTexture(width, height, physicalMatrix.depth_topology, imageBitmap);
-        shaderMat.uniforms.uDepthMap.value = depthTexture;
-
-        const gWind = Array.isArray(physicalMatrix.global_wind) ? physicalMatrix.global_wind : [0, 0, 0];
-        shaderMat.uniforms.uGlobalWind.value.set(gWind[0] || 0, gWind[1] || 0, gWind[2] || 0);
-
-        const postConf = narrativePlan.cinematic_post || {};
-        shaderMat.uniforms.uVignette.value = Number(postConf.vignette) || 0.25;
-        shaderMat.uniforms.uGrainIntensity.value = Number(postConf.grain) || 0.02;
-
-        const nodes = Array.isArray(physicalMatrix.kinematic_nodes) ? physicalMatrix.kinematic_nodes.slice(0, 8) : [];
-        shaderMat.uniforms.uNodeCount.value = nodes.length;
-        for (let i = 0; i < nodes.length; i++) {
-            const n = nodes[i];
-            const c = Array.isArray(n.center) ? n.center : [0.5, 0.5];
-            const v = Array.isArray(n.vector) ? n.vector : [0, 0, 0];
-            shaderMat.uniforms.uNodeCenter.value[i].set(c[0] || 0, c[1] || 0);
-            shaderMat.uniforms.uNodeRadius.value[i] = Number(n.radius) || 0.1;
-            shaderMat.uniforms.uNodeType.value[i] = Number(n.type) || 0;
-            shaderMat.uniforms.uNodeVector.value[i].set(v[0] || 0, v[1] || 0, v[2] || 0);
-            shaderMat.uniforms.uNodeFreq.value[i] = Number(n.freq) || 1.0;
-            shaderMat.uniforms.uNodePhase.value[i] = Number(n.phase) || 0.0;
-        }
-
-        const mesh = new THREE.Mesh(planeGeo, shaderMat);
-        scene.add(mesh);
-
-        // Khởi tạo hệ thống hạt vật lý thích ứng từ Vision
-        const particleSystem = buildAtmosphericParticleSystem(physicalMatrix.atmospheric_particles, planeWidth, planeHeight, planeDist);
-        if (particleSystem) {
-            scene.add(particleSystem.mesh);
-        }
-
-        // 5. THIẾT LẬP BỘ MÃ HÓA VIDEO & ÂM THANH
         const MuxerClass = self.Mp4Muxer?.Muxer || self.Muxer;
         const TargetClass = self.Mp4Muxer?.ArrayBufferTarget || self.ArrayBufferTarget;
 
@@ -2679,9 +2717,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
             try {
                 audioEngine = new AudioEncoder({
                     output: (chunk, meta) => rawMuxer && rawMuxer.addAudioChunk(chunk, meta),
-                    error: err => { console.warn("AudioEncoder cảnh báo:", err); }
+                    error: err => { console.warn("[MasterAudio] Cảnh báo mã hóa:", err); }
                 });
-                audioEngine.configure({ codec: 'mp4a.40.2', numberOfChannels: 2, sampleRate, bitrate: 128000 });
+                audioEngine.configure({ codec: 'mp4a.40.2', numberOfChannels: 2, sampleRate: shotSampleRate, bitrate: 192000 });
             } catch (_) {
                 supportsAudio = false;
                 audioEngine = null;
@@ -2691,14 +2729,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         const rawMuxer = new MuxerClass({
             target: new TargetClass(),
             video: { codec: 'avc', width, height },
-            audio: (supportsAudio && audioEngine) ? { codec: 'aac', numberOfChannels: 2, sampleRate } : undefined,
+            audio: (supportsAudio && audioEngine) ? { codec: 'aac', numberOfChannels: 2, sampleRate: shotSampleRate } : undefined,
             fastStart: 'in-memory'
         });
 
-        // [SELF-HEALING WEBCODECS PROXY]: Tự động tái tạo và cấu hình lại codec ngay khi đóng
-        const targetBitrate = Math.min(6000000, Math.max(1500000, Math.round(width * height * fps * 0.12)));
+        const targetBitrate = Math.min(8000000, Math.max(2000000, Math.round(width * height * fps * 0.14)));
         let activeEncoder = null;
-
         const codecChain = ['avc1.42001f', 'avc1.4d002a', 'avc1.42e01e', 'vp8'];
         let activeCodecIdx = 0;
 
@@ -2709,7 +2745,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
             activeEncoder = new VideoEncoder({
                 output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
                 error: (err) => {
-                    console.warn("[WorkerCodec] Codec đóng do lỗi phần cứng, chuyển luồng dự phòng:", err);
+                    console.warn("[MasterCodec] Đổi codec dự phòng:", err);
                     activeCodecIdx = (activeCodecIdx + 1) % codecChain.length;
                 }
             });
@@ -2725,18 +2761,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
 
         instantiateEncoder();
 
-        // Proxy bảo vệ: Nếu encoder bị 'closed', tự hủy và tạo mới tức thời trước khi gọi .encode()
         const videoEncoder = new Proxy({}, {
             get: (_, prop) => {
                 if (prop === 'encode') {
                     return (frame, options) => {
-                        if (!activeEncoder || activeEncoder.state === 'closed') {
-                            instantiateEncoder();
-                        }
+                        if (!activeEncoder || activeEncoder.state === 'closed') instantiateEncoder();
                         try {
                             activeEncoder.encode(frame, options);
-                        } catch (encodeErr) {
-                            // Vi phẫu nóng: Tái tạo codec mới và thử lại ngay frame hiện tại
+                        } catch (_) {
                             instantiateEncoder();
                             activeEncoder.encode(frame, options);
                         }
@@ -2744,134 +2776,167 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 }
                 if (prop === 'flush') {
                     return async () => {
-                        if (activeEncoder && activeEncoder.state !== 'closed') {
-                            return await activeEncoder.flush();
-                        }
+                        if (activeEncoder && activeEncoder.state !== 'closed') return await activeEncoder.flush();
                         return Promise.resolve();
                     };
                 }
-                if (prop === 'encodeQueueSize') {
-                    return activeEncoder ? activeEncoder.encodeQueueSize : 0;
-                }
+                if (prop === 'encodeQueueSize') return activeEncoder ? activeEncoder.encodeQueueSize : 0;
                 return activeEncoder ? activeEncoder[prop] : undefined;
             }
         });
 
-        // 6. TIẾN HÀNH KẾT XUẤT TỪNG FRAME CHUẨN XÁC
-        postStatus("Đang kết xuất quang học 4D và chuyển động camera thích ứng...");
-        const totalFrames = totalDuration * fps;
-        const frameMicros = 1000000 / fps;
-        const deltaSec = 1 / fps;
-        let prevCamPos = new THREE.Vector3(0, 0, planeDist);
+        let cumulativeGlobalFrameCount = 0;
+        let cumulativeAudioOffsetSamples = 0;
+        const shotsLog = [];
 
-        for (let f = 0; f < totalFrames; f++) {
-            const currentSecond = f / fps;
-            const progress = f / Math.max(1, totalFrames - 1);
+        // DUYỆT TỪNG PHÂN CẢNH ĐIỆN ẢNH VÀ THỰC THI PIPELINE VÔ HẠN
+        for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
+            const sceneSpec = masterScript.scenes[sIdx];
+            const currentSceneNum = sIdx + 1;
 
-            // Nội suy góc máy điện ảnh từ ma trận camera do AI tính toán
-            const camState = evaluateSpline(narrativePlan.camera_trajectory, progress, planeDist);
-            camera.position.set(camState.cam[0], camState.cam[1], camState.cam[2]);
-            camera.rotation.set(
-                (camState.rot[0] * Math.PI) / 180,
-                (camState.rot[1] * Math.PI) / 180,
-                (camState.rot[2] * Math.PI) / 180
+            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang tổng hợp giọng thoại nhân vật...`);
+
+            // 1. Thu âm toàn bộ thoại của phân cảnh bằng Gemini TTS
+            const shotAudioBuffers = [];
+            if (geminiTTSApiKey && Array.isArray(sceneSpec.dialogue_cues)) {
+                for (const cue of sceneSpec.dialogue_cues) {
+                    const charObj = voiceCharacters.find(c => c.name === cue.speaker);
+                    const voiceName = charObj ? charObj.geminiVoice : 'Puck';
+                    const voicePcm = await callGeminiTTS(cue.text, voiceName, geminiTTSApiKey);
+                    if (voicePcm) {
+                        shotAudioBuffers.push({
+                            startTimeSec: Number(cue.startTimeSec) || 0,
+                            samples: voicePcm.samples,
+                            sampleRate: voicePcm.sampleRate
+                        });
+                    }
+                }
+            }
+
+            // 2. Khởi tạo Keyframe hình ảnh thông qua Flux / Direct URL
+            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang kết xuất bố cục thị giác nghệ thuật...`);
+            const shotBitmap = await generateKeyframe(
+                sceneSpec.narrative_plan.visual_dna,
+                width,
+                height,
+                sceneSpec.seed || (masterScript.base_seed + sIdx),
+                sceneSpec.directImageDataUrl || null
             );
 
-            const velX = (camera.position.x - prevCamPos.x) * fps;
-            const velY = (camera.position.y - prevCamPos.y) * fps;
-            shaderMat.uniforms.uCameraVelocity.value.set(velX, velY);
-            prevCamPos.copy(camera.position);
+            // 3. Phân tích chiều sâu & động học vật lý quang học từ Gemini Vision
+            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang phân tầng chiều sâu và trường vectơ 4D...`);
+            const physicalMatrix = await analyzePhysicalMatrix(shotBitmap, sceneSpec.action_description, apiKey);
 
-            shaderMat.uniforms.uTime.value = currentSecond;
-
-            // Cập nhật động học hệ thống hạt tự nhiên
-            if (particleSystem) particleSystem.update(deltaSec);
-
-            renderer.render(scene, camera);
-
-            while (videoEncoder.encodeQueueSize > 30) {
-                await new Promise(r => setTimeout(r, 6));
-            }
-
-            let vFrame = null;
-            try {
-                vFrame = new VideoFrame(threeCanvas, {
-                    timestamp: Math.round(f * frameMicros)
-                });
-                videoEncoder.encode(vFrame, { keyFrame: f % (fps * 2) === 0 });
-            } finally {
-                if (vFrame) {
-                    try { vFrame.close(); } catch (_) {}
-                }
-            }
-        }
-
-        // 7. MÃ HÓA ÂM THANH THEO KHÍ HẬU
-        if (supportsAudio && audioEngine) {
-            postStatus("Đang hòa trộn âm hưởng bối cảnh...");
-            const audioTrack = createAudioBufferMultiTrack({
-                blueprint: narrativePlan.soundscape_blueprint,
-                durationSec: totalDuration,
-                sampleRate,
-                voiceBuffers: []
+            // 4. Khởi tạo pipeline render phân cảnh
+            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang quay cú máy điện ảnh...`);
+            const shotInstance = await renderShotToFramesAndAudio({
+                imageBitmap: shotBitmap,
+                physicalMatrix,
+                narrativePlan: sceneSpec.narrative_plan,
+                overallResolution,
+                overallAspectRatio,
+                fps,
+                shotAudioBuffers,
+                shotSampleRate
             });
 
-            const aacFrameSize = 1024;
-            const left = audioTrack.leftChannel;
-            const right = audioTrack.rightChannel;
-            const totalAudioSamples = audioTrack.totalSamples;
+            // 5. Kết xuất frame theo luồng liên tục sang MP4 Muxer
+            const frameMicros = 1000000 / fps;
+            for (let f = 0; f < shotInstance.totalFrames; f++) {
+                const canvasSource = await shotInstance.yieldFrame(f);
 
-            for (let offset = 0; offset < totalAudioSamples; offset += aacFrameSize) {
-                while (audioEngine.encodeQueueSize > 40) {
+                while (videoEncoder.encodeQueueSize > 30) {
                     await new Promise(r => setTimeout(r, 6));
                 }
-                const samplesInChunk = Math.min(aacFrameSize, totalAudioSamples - offset);
-                const planarData = new Float32Array(aacFrameSize * 2);
-                planarData.set(left.subarray(offset, offset + samplesInChunk), 0);
-                planarData.set(right.subarray(offset, offset + samplesInChunk), aacFrameSize);
 
-                const aData = new AudioData({
-                    format: 'f32-planar',
-                    sampleRate,
-                    numberOfFrames: aacFrameSize,
-                    numberOfChannels: 2,
-                    timestamp: Math.round((offset / sampleRate) * 1000000),
-                    data: planarData
-                });
-                audioEngine.encode(aData);
-                aData.close();
+                let vFrame = null;
+                try {
+                    vFrame = new VideoFrame(canvasSource, {
+                        timestamp: Math.round(cumulativeGlobalFrameCount * frameMicros)
+                    });
+                    videoEncoder.encode(vFrame, { keyFrame: cumulativeGlobalFrameCount % (fps * 2) === 0 });
+                    cumulativeGlobalFrameCount++;
+                } finally {
+                    if (vFrame) {
+                        try { vFrame.close(); } catch (_) {}
+                    }
+                }
+
+                if (f % 12 === 0) {
+                    const percent = Math.round(((cumulativeGlobalFrameCount) / (overallDuration * fps)) * 100);
+                    self.postMessage({
+                        type: 'STATUS',
+                        text: `[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang mã hóa quang học: ${percent}%`,
+                        percent
+                    });
+                }
             }
-            await audioEngine.flush();
+
+            // 6. Hòa âm và nối dải sóng âm thanh phân cảnh vào dòng thời gian chính
+            if (supportsAudio && audioEngine) {
+                const aacFrameSize = 1024;
+                const left = shotInstance.shotAudio.leftChannel;
+                const right = shotInstance.shotAudio.rightChannel;
+                const totalSamples = shotInstance.shotAudio.totalSamples;
+
+                for (let offset = 0; offset < totalSamples; offset += aacFrameSize) {
+                    while (audioEngine.encodeQueueSize > 40) {
+                        await new Promise(r => setTimeout(r, 6));
+                    }
+                    const samplesInChunk = Math.min(aacFrameSize, totalSamples - offset);
+                    const planarData = new Float32Array(aacFrameSize * 2);
+                    planarData.set(left.subarray(offset, offset + samplesInChunk), 0);
+                    planarData.set(right.subarray(offset, offset + samplesInChunk), aacFrameSize);
+
+                    const currentSamplePosition = cumulativeAudioOffsetSamples + offset;
+                    const aData = new AudioData({
+                        format: 'f32-planar',
+                        sampleRate: shotSampleRate,
+                        numberOfFrames: aacFrameSize,
+                        numberOfChannels: 2,
+                        timestamp: Math.round((currentSamplePosition / shotSampleRate) * 1000000),
+                        data: planarData
+                    });
+                    audioEngine.encode(aData);
+                    aData.close();
+                }
+                cumulativeAudioOffsetSamples += totalSamples;
+            }
+
+            // Giải phóng bộ nhớ đệm phân cảnh tức thì để không bao giờ tràn RAM tab
+            shotInstance.cleanupShot();
+            shotBitmap.close();
+
+            shotsLog.push({
+                shot_id: currentSceneNum,
+                title: sceneSpec.title || `Cảnh ${currentSceneNum}`,
+                duration: sceneSpec.narrative_plan.target_duration,
+                action: sceneSpec.action_description,
+                camera: sceneSpec.narrative_plan.camera_style || "Catmull-Rom Trajectory Dynamic",
+                particles_generated: physicalMatrix.atmospheric_particles?.type || "None"
+            });
         }
 
+        postStatus("Đang hoàn tất đóng gói bộ phim điện ảnh...");
+        if (supportsAudio && audioEngine) {
+            await audioEngine.flush();
+        }
         await videoEncoder.flush();
         rawMuxer.finalize();
 
         const finalMp4Blob = new Blob([rawMuxer.target.buffer], { type: 'video/mp4' });
 
-        try { renderer.dispose(); } catch (_) {}
-        try { planeGeo.dispose(); } catch (_) {}
-        try { shaderMat.dispose(); } catch (_) {}
-        try { if (shotTexture) shotTexture.dispose(); } catch (_) {}
-        try { if (depthTexture) depthTexture.dispose(); } catch (_) {}
-        if (particleSystem) {
-            try { particleSystem.mesh.geometry.dispose(); } catch (_) {}
-            try { particleSystem.mesh.material.dispose(); } catch (_) {}
-        }
-        imageBitmap.close();
-
         clearInterval(heartbeatTimer);
         self.postMessage({
             type: 'SUCCESS',
             videoBlob: finalMp4Blob,
-            narrativePlan,
-            shotsLog: [{
-                shot_id: 1,
-                duration: totalDuration,
-                action: userPrompt,
-                camera: "Chuyển động điện ảnh thích ứng theo chiều sâu",
-                particles_generated: physicalMatrix.atmospheric_particles?.type || "None"
-            }]
+            narrativePlan: {
+                resolution: overallResolution,
+                total_duration: overallDuration,
+                aspect_ratio: overallAspectRatio,
+                total_scenes: totalScenes
+            },
+            shotsLog
         });
 
     } catch (err) {
@@ -7956,18 +8021,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         return GDeepMasterConfig.Studio.ImageStyles[style]?.desc || 'high quality, highly detailed';
                     };
 
-                    // CẤU HÌNH XƯỞNG PHIM (DATA CONFIG BOUND)
-                    const enableCinemaStudio = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.FEAT_CINEMA, false));
-                    const cinemaStudioTab = ref('timeline');
-                    const cinemaConfig = reactive({
-                        aspectRatio: "16:9",
-                        duration: 5,
-                        style: "cinematic",
-                        characterSeed: Math.floor(Math.random() * 899999) + 100000
-                    });
-                    const cinemaVoiceCharacters = ref([]);
-                    const userTimelineCues = ref([]);
-                    const timelineCursorPercent = ref(0);
+                            // CẤU HÌNH XƯỞNG PHIM NGHỆ THUẬT (DATA CONFIG BOUND)
+        const enableCinemaStudio = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.FEAT_CINEMA, false));
+        const cinemaStudioTab = ref('timeline');
+        const cinemaConfig = reactive({
+            aspectRatio: "16:9",
+            duration: 15, // Mới: thời lượng mặc định 15s
+            style: "cinematic",
+            characterSeed: Math.floor(Math.random() * 899999) + 100000
+        });
+        const cinemaVoiceCharacters = ref([
+            { id: 1, name: 'Nhân vật 1', gender: 'male', geminiVoice: 'Puck' },
+            { id: 2, name: 'Nhân vật 2', gender: 'female', geminiVoice: 'Kore' }
+        ]); // Mới: Khởi tạo 2 nhân vật mặc định
+        const userTimelineCues = ref([]);
+        const timelineCursorPercent = ref(0);
 
                     const getCharacterBadgeColor = (speakerName) => {
                         const idx = cinemaVoiceCharacters.value.findIndex(c => c.name === speakerName);
@@ -8463,129 +8531,226 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         return await CinemaStudioNeuron.fire({ msg, customPrompt, directImageInput }, 'StudioController');
                     };
 
-                    const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null) => {
-                        if (isGenerating.value) return;
-                        isGenerating.value = true;
-                        triggerHaptic('heavy');
+        const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null) => {
+            if (isGenerating.value) return;
+            isGenerating.value = true;
+            triggerHaptic('heavy');
 
-                        const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
-                        if (!msg) currentMessages.value.push(targetMsg);
+            const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
+            if (!msg) currentMessages.value.push(targetMsg);
 
-                        try {
-                            const userDuration = Number(cinemaConfig.duration) || 5;
-                            const userAspectRatio = cinemaConfig.aspectRatio || '16:9';
-                            const userSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
-                            const userStyle = cinemaConfig.style || 'cinematic';
-                            const userPrompt = (customPrompt || inputText.value || '').trim();
-                            const userCues = toRaw(userTimelineCues.value);
-                            const userCharacters = toRaw(cinemaVoiceCharacters.value);
-                            const healthyKey = getNextHealthyApiKey()?.key || '';
-                            const userFps = 24;
+            try {
+                const requestedDuration = Number(cinemaConfig.duration) || 15;
+                const userAspectRatio = cinemaConfig.aspectRatio || '16:9';
+                const userSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
+                const userStyle = cinemaConfig.style || 'cinematic';
+                const userPrompt = (customPrompt || inputText.value || '').trim() || 'Một bộ phim nghệ thuật đậm chất điện ảnh về sự chuyển biến không gian và cảm xúc.';
+                const userCues = toRaw(userTimelineCues.value);
+                const userCharacters = toRaw(cinemaVoiceCharacters.value);
+                const healthyKey = getNextHealthyApiKey()?.key || '';
+                const userFps = 24;
 
-                            let directImageDataUrl = null;
-                            if (directImageInput) {
-                                if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
-                                else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
-                            } else if (msg?.content) {
-                                // Trích xuất chính xác URL kể cả khi URL có chứa dấu ngoặc đơn
-                                const imgMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
-                                if (imgMatch && imgMatch[2]) {
-                                    directImageDataUrl = imgMatch[2].trim();
-                                }
-                            }
+                let directImageDataUrl = null;
+                if (directImageInput) {
+                    if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
+                    else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
+                } else if (msg?.content) {
+                    const imgMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+                    if (imgMatch && imgMatch[2]) {
+                        directImageDataUrl = imgMatch[2].trim();
+                    }
+                }
 
-                            // Tải trước ảnh từ máy chủ về dạng Blob an toàn ngay tại luồng chính để Worker xử lý tức thời
-                            if (directImageDataUrl && directImageDataUrl.startsWith('http')) {
-                                searchStatusText.value = "Đang nạp dữ liệu ảnh gốc...";
-                                try {
-                                    let imgRes = await fetch(directImageDataUrl).catch(() => null);
-                                    if (!imgRes || !imgRes.ok) {
-                                        imgRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`).catch(() => null);
-                                    }
-                                    if (imgRes && imgRes.ok) {
-                                        const imgBlob = await imgRes.blob();
-                                        directImageDataUrl = ObjectUrlRegistry.create(imgBlob);
-                                    }
-                                } catch (_) {}
-                            }
-
-                            let productionAttempts = 0;
-                            const MAX_PRODUCTION_ATTEMPTS = 4;
-                            let finalResult = null;
-                            let currentSeed = userSeed;
-
-                            // VÒNG LẶP HỘI ĐỒNG THẨM ĐỊNH KHẮT KHE (CHỈ DUYỆT TỪ 9.5/10)
-                            while (productionAttempts < MAX_PRODUCTION_ATTEMPTS) {
-                                productionAttempts++;
-                                searchStatusText.value = productionAttempts > 1 
-                                    ? `Thành phẩm chưa đạt 9.5/10. Hội đồng đang tái tối ưu (Lần ${productionAttempts})...`
-                                    : "Đang sản xuất và kiểm định phân cảnh chuẩn 9.5/10...";
-
-                                const result = await AICinemaWorkerBridge.runProductionInWorker({
-                                    userPrompt,
-                                    userDuration,
-                                    userAspectRatio,
-                                    userStyle,
-                                    userSeed: currentSeed,
-                                    userCues,
-                                    userCharacters,
-                                    userFps,
-                                    directImageDataUrl,
-                                    apiKey: healthyKey
-                                }, (statusText) => {
-                                    searchStatusText.value = statusText;
-                                });
-
-                                // Hội đồng nơ-ron chấm điểm chất lượng video
-                                const audit = await SynapticNeuralMesh.NeuralCouncil.auditCommercialVideo(result.videoBlob, result.narrativePlan);
-                                if (audit.passed) {
-                                    finalResult = result;
-                                    break;
-                                } else {
-                                    // Đột biến thông số cho lần sản xuất kế tiếp
-                                    currentSeed = Math.floor(Math.random() * 899999) + 100000;
-                                }
-                            }
-
-                            if (!finalResult) throw new Error("Thành phẩm chưa đạt tiêu chuẩn kiểm duyệt thương mại sau nhiều lần tối ưu.");
-
-                            const videoUrl = ObjectUrlRegistry.create(finalResult.videoBlob);
-                            targetMsg.renderedVideoUrl = videoUrl;
-
-                            const shotsDetail = (finalResult.shotsLog || []).map(s => 
-                                `- **Phân cảnh ${s.shot_id} (${s.duration}s):** *${s.action || 'Chuyển động điện ảnh'}* [Góc máy: ${s.camera || 'Tự động'}]`
-                            ).join('\n\n');
-
-                            const dialogueSummary = userCues
-                                .filter(d => d.text && d.text.trim())
-                                .map(d => `- **${d.speaker} (${d.startTimeSec}s):** "${d.text}"`)
-                                .join('\n');
-
-                            targetMsg.content = (targetMsg.content || '') + 
-                                `\n\n🎬 **Video Nghệ Thuật Hoàn Thiện**\n` +
-                                `- **Độ phân giải:** ${finalResult.narrativePlan.resolution.width}x${finalResult.narrativePlan.resolution.height} (Tỷ lệ ${userAspectRatio})\n` +
-                                `- **Thời lượng:** ${userDuration}s\n\n` +
-                                `🎞️ **Chi tiết các phân cảnh do AI biên kịch & đạo diễn:**\n${shotsDetail}\n` +
-                                (dialogueSummary ? `\n🎙️ **Lời thoại:**\n${dialogueSummary}` : '');
-
-                            targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-                            scheduleDbSave(targetMsg);
-                            triggerGenerateFollowUps(targetMsg);
-                            scrollToBottom(true);
-                            notify("Đã kết xuất hoàn tất video nghệ thuật!");
-                        } catch (err) {
-                            notify(`Lỗi tạo video: ${err.message}`, true);
-                            targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi xử lý: ${err.message})*`;
-                            targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-                            scheduleDbSave(targetMsg);
-                        } finally {
-                            isGenerating.value = false;
-                            searchStatusText.value = "";
-                            updateInputTokensDisplay();
+                if (directImageDataUrl && directImageDataUrl.startsWith('http')) {
+                    searchStatusText.value = "Đang nạp dữ liệu ảnh gốc...";
+                    try {
+                        let imgRes = await fetch(directImageDataUrl).catch(() => null);
+                        if (!imgRes || !imgRes.ok) {
+                            imgRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`).catch(() => null);
                         }
+                        if (imgRes && imgRes.ok) {
+                            const imgBlob = await imgRes.blob();
+                            directImageDataUrl = ObjectUrlRegistry.create(imgBlob);
+                        }
+                    } catch (_) {}
+                }
+
+                // BƯỚC 1: BIÊN KỊCH VÀ ĐẠO DIỄN TOÀN CẢNH PHIM DÀI TẬP VỚI GEMINI
+                searchStatusText.value = "Tổng đạo diễn Gemini đang phân tách cấu trúc hồi kịch bản...";
+
+                const promptMasterDirector = `[TỔNG ĐẠO DIỄN VÀ BIÊN KỊCH ĐIỆN ẢNH TỐI THƯỢNG]
+Hãy chuyển thể ý tưởng sau đây thành kịch bản phân cảnh của một bộ phim điện ảnh hoàn chỉnh:
+Yêu cầu tác phẩm: "${userPrompt}"
+Tổng thời lượng mục tiêu: ${requestedDuration} giây.
+Tỷ lệ khung hình: ${userAspectRatio}
+Phong cách tạo hình: ${userStyle}
+Danh sách nhân vật thoại: ${JSON.stringify(userCharacters.map(c => ({ name: c.name, geminiVoice: c.geminiVoice })))}
+
+YÊU CẦU ĐỘNG HỌC TUYỆT ĐỐI (CẤM HARDCODE):
+1. Tự động tính toán số phân cảnh (scenes) tối ưu (từ 2 đến 6 cảnh tùy thuộc vào tổng thời lượng ${requestedDuration}s).
+2. "overall_resolution": Tính toán độ rộng & cao chuẩn tỷ lệ ${userAspectRatio} (chia hết cho 16, tối thiểu 768px).
+3. Với mỗi phân cảnh trong "scenes":
+   - "scene_index": Thứ tự cảnh (1, 2, 3...).
+   - "title": Tên phân đoạn.
+   - "target_duration": Thời lượng cảnh (giây, cộng tổng các cảnh phải bằng đúng ${requestedDuration}).
+   - "action_description": Miêu tả hành động và diễn biến nghệ thuật.
+   - "narrative_plan":
+     * "visual_dna": Prompt tiếng Anh cực kỳ chi tiết cho Flux, đồng bộ phong cách ${userStyle}, khắc họa ánh sáng, bố cục, nhân vật.
+     * "optics": fov (30.0 - 55.0), plane_distance (1.8 - 2.8), overscan (1.2 - 1.5), mesh_grid (140 - 200).
+     * "camera_style": Tên kỹ thuật chuyển động (Dolly In, Pan Orbit, Crane Shot, Tracking, Tilt).
+     * "camera_trajectory": Mảng mốc nội suy Catmull-Rom tối thiểu 2 điểm: [{"t": 0.0, "cam": [x,y,z], "rot": [pitch,yaw,roll]}, {"t": 1.0, "cam": [x,y,z], "rot": [pitch,yaw,roll]}].
+     * "soundscape_blueprint": {"music": {"chords": [tần số Hz âm nhạc], "sub_bass": tần số Hz, "volume": 0.15 - 0.35}}.
+     * "cinematic_post": {"vignette": 0.15 - 0.35, "grain": 0.015 - 0.035}.
+   - "dialogue_cues": Mảng các câu thoại trong cảnh: [{"speaker": "Tên nhân vật", "startTimeSec": giây bắt đầu trong cảnh này, "text": "lời thoại tiếng Việt tự nhiên giàu cảm xúc"}].
+
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG KÈM GIẢI THÍCH):
+{
+  "title": "Tên bộ phim",
+  "total_duration": ${requestedDuration},
+  "overall_aspect_ratio": "${userAspectRatio}",
+  "overall_resolution": { "width": 1024, "height": 576 },
+  "overall_fps": 24,
+  "scenes": [
+    {
+      "scene_index": 1,
+      "title": "Khởi đầu",
+      "target_duration": 5,
+      "action_description": "...",
+      "narrative_plan": {
+        "visual_dna": "cinematic 8k masterpiece...",
+        "optics": { "fov": 36.0, "plane_distance": 2.2, "overscan": 1.35, "mesh_grid": 160 },
+        "camera_style": "Slow Push-In Dolly",
+        "camera_trajectory": [
+          { "t": 0.0, "cam": [0, 0, 2.2], "rot": [0, 0, 0] },
+          { "t": 1.0, "cam": [0, 0, 1.95], "rot": [0.2, -0.4, 0] }
+        ],
+        "soundscape_blueprint": { "music": { "chords": [146.83, 220.0], "sub_bass": 36.7, "volume": 0.25 } },
+        "cinematic_post": { "vignette": 0.25, "grain": 0.02 }
+      },
+      "dialogue_cues": [
+        { "speaker": "Nhân vật 1", "startTimeSec": 1.0, "text": "Câu thoại đầu tiên..." }
+      ]
+    }
+  ]
+}`;
+
+                let masterScript = null;
+                const scriptRes = await dispatchBackgroundTaskWithFallback({
+                    contents: [{ role: 'user', parts: [{ text: promptMasterDirector }] }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" }
+                });
+
+                if (scriptRes?.candidates?.[0]?.content?.parts?.[0]?.text) {
+                    masterScript = SearchIntelligenceEngine.robustJsonRepair(scriptRes.candidates[0].content.parts[0].text);
+                }
+
+                // Fallback nếu việc parse JSON từ LLM gặp sự cố cấu trúc
+                if (!masterScript || !Array.isArray(masterScript.scenes) || masterScript.scenes.length === 0) {
+                    let w = 1024, h = 576;
+                    if (userAspectRatio === '9:16') { w = 576; h = 1024; }
+                    else if (userAspectRatio === '1:1') { w = 768; h = 768; }
+                    else if (userAspectRatio === '21:9') { w = 1200; h = 512; }
+
+                    masterScript = {
+                        title: "Bản Hùng Ca Điện Ảnh",
+                        total_duration: requestedDuration,
+                        overall_aspect_ratio: userAspectRatio,
+                        overall_resolution: { width: w, height: h },
+                        overall_fps: userFps,
+                        base_seed: userSeed,
+                        voice_characters: userCharacters,
+                        scenes: [
+                            {
+                                scene_index: 1,
+                                title: "Cảnh 1",
+                                target_duration: requestedDuration,
+                                action_description: userPrompt,
+                                directImageDataUrl: directImageDataUrl,
+                                narrative_plan: {
+                                    visual_dna: userPrompt || "Cinematic 8k film scene",
+                                    optics: { fov: 36.0, plane_distance: 2.2, overscan: 1.35, mesh_grid: 160 },
+                                    camera_style: "Epic Floating Tracking",
+                                    camera_trajectory: [
+                                        { t: 0.0, cam: [0, 0, 2.2], rot: [0, 0, 0] },
+                                        { t: 1.0, cam: [0.06, -0.02, 2.05], rot: [0.3, -0.8, 0] }
+                                    ],
+                                    soundscape_blueprint: { "music": { "chords": [130.81, 196.0], "sub_bass": 32.7, "volume": 0.22 } },
+                                    cinematic_post: { vignette: 0.25, grain: 0.02 }
+                                },
+                                dialogue_cues: userCues.length > 0 ? userCues : []
+                            }
+                        ]
                     };
-                    
-                    
+                } else {
+                    masterScript.base_seed = userSeed;
+                    masterScript.voice_characters = userCharacters;
+                    if (directImageDataUrl && masterScript.scenes[0]) {
+                        masterScript.scenes[0].directImageDataUrl = directImageDataUrl;
+                    }
+                    if (userCues.length > 0 && masterScript.scenes[0]) {
+                        masterScript.scenes[0].dialogue_cues = userCues;
+                    }
+                }
+
+                // BƯỚC 2: VÒNG LẶP SẢN XUẤT PHIM ĐA PHÂN CẢNH VÀ HỘI ĐỒNG KIỂM DUYỆT 9.5/10
+                let productionAttempts = 0;
+                const MAX_PRODUCTION_ATTEMPTS = 3;
+                let finalResult = null;
+
+                while (productionAttempts < MAX_PRODUCTION_ATTEMPTS) {
+                    productionAttempts++;
+                    searchStatusText.value = productionAttempts > 1
+                        ? `Tái tối ưu chất lượng quang học đạt ngưỡng 9.5/10 (Lần ${productionAttempts})...`
+                        : "Xưởng phim đang tiến hành sản xuất đa phân cảnh khép kín...";
+
+                    const result = await AICinemaWorkerBridge.runProductionInWorker({
+                        masterScript,
+                        apiKey: healthyKey,
+                        geminiTTSApiKey: healthyKey
+                    }, (statusText, percent) => {
+                        searchStatusText.value = percent !== null ? `[${percent}%] ${statusText}` : statusText;
+                    });
+
+                    const audit = await SynapticNeuralMesh.NeuralCouncil.auditCommercialVideo(result.videoBlob, result.narrativePlan);
+                    if (audit.passed) {
+                        finalResult = result;
+                        break;
+                    } else {
+                        masterScript.base_seed = Math.floor(Math.random() * 899999) + 100000;
+                    }
+                }
+
+                if (!finalResult) throw new Error("Chất lượng thành phẩm chưa vượt qua hội đồng thẩm định tiêu chuẩn điện ảnh.");
+
+                const videoUrl = ObjectUrlRegistry.create(finalResult.videoBlob);
+                targetMsg.renderedVideoUrl = videoUrl;
+
+                const shotsDetail = (finalResult.shotsLog || []).map(s =>
+                    `- **Phân cảnh ${s.shot_id}: ${s.title} (${s.duration}s):** *${s.action || 'Diễn biến điện ảnh'}* [Góc máy: ${s.camera}]`
+                ).join('\n\n');
+
+                targetMsg.content = (targetMsg.content || '') +
+                    `\n\n🎬 **Tác Phẩm Điện Ảnh Đa Phân Cảnh: "${masterScript.title || 'Phim Nghệ Thuật'}"**\n` +
+                    `- **Độ phân giải:** ${finalResult.narrativePlan.resolution.width}x${finalResult.narrativePlan.resolution.height} (${userAspectRatio})\n` +
+                    `- **Tổng thời lượng:** ${finalResult.narrativePlan.total_duration}s | **Số phân cảnh:** ${finalResult.narrativePlan.total_scenes}\n\n` +
+                    `🎞️ **Nhật ký phân cảnh chi tiết do AI đạo diễn & quay dựng:**\n${shotsDetail}`;
+
+                targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                scheduleDbSave(targetMsg);
+                triggerGenerateFollowUps(targetMsg);
+                scrollToBottom(true);
+                notify("Đã hoàn tất kết xuất bộ phim điện ảnh nghệ thuật!");
+            } catch (err) {
+                notify(`Lỗi tạo phim điện ảnh: ${err.message}`, true);
+                targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi xưởng phim: ${err.message})*`;
+                targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                scheduleDbSave(targetMsg);
+            } finally {
+                isGenerating.value = false;
+                searchStatusText.value = "";
+                updateInputTokensDisplay();
+            }
+        };             
 
                     const animateCurrentLightboxImage = () => {
                         const currentUrl = lightbox.url;
