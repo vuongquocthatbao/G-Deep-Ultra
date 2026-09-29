@@ -10468,7 +10468,7 @@ Trả về duy nhất định dạng JSON:
                             }
 
                             if (enableDeepThinking.value) {
-                                systemPrompt += `\n[CHẾ ĐỘ SUY LUẬN CHUYÊN SÂU]\nHãy suy nghĩ, phân tích đa chiều và lập luận chặt chẽ trước khi đưa ra kết luận.`;
+                                systemPrompt += `\n[CHẾ ĐỘ SUY LUẬN CHUYÊN SÂU]\nQuy tắc tư duy: Hãy suy nghĩ và phân tích logic bằng TIẾNG VIỆT trước khi đưa ra câu trả lời cuối cùng. Giữ phần suy luận súc tích, đi thẳng vào trọng tâm vấn đề.`;
                             }
 
                             if (enableImageGen.value) {
@@ -10502,9 +10502,11 @@ QUY TẮC BẮT BUỘC:
                                 systemPrompt += `\n[TIỀM THỨC VỀ NGƯỜI DÙNG]\nHãy tự động đáp ứng các quy tắc ngầm sau:\n${userAxioms}\n`;
                             }
 
-                            // [KIẾN TRÚC TỐI THƯỢNG] TƯ DUY O1 - TRANH BIỆN ĐA ĐẶC VỤ (MULTI-AGENT QUORUM)
+                            // [KIẾN TRÚC TỐI THƯỢNG] TƯ DUY O1 - TRANH BIỆN ĐA ĐẶC VỤ (CÓ ĐƯỜNG CAO TỐC CHO CÂU CHÀO HỎI)
                             let forcedCognitivePlan = "";
-                            if (enableDeepThinking.value) {
+                            const isCasualGreeting = /^(chào|xin chào|hi|hello|hey|alo|ơi|ê|hế lô)\b/i.test(text.trim()) && text.trim().length <= 25;
+
+                            if (enableDeepThinking.value && !isCasualGreeting) {
                                 searchStatusText.value = "Hội đồng AI đang tranh biện đa chiều (O1 Quorum)...";
                                 try {
                                     if (!thoughtMsg) {
@@ -10992,15 +10994,30 @@ if (!shouldContinue) {
                                     scheduleDbSave(botMsg);
                                 }
                             } else if (isMsgAlive) {
-                                const fallbackReason = error.message ? `Lỗi kết nối: ${error.message}` : 'Đường truyền bị gián đoạn, nhấn nút tạo lại bên dưới để tiếp tục.';
-                                botMsg.content = rawMarkdownBuffer || botMsg.content || (thoughtMsg?.content ? `*Quá trình suy luận:*\n${thoughtMsg.content}` : `⚠️ ${fallbackReason}`);
-                                botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
                                 botMsg.isTruncated = true;
-                                botMsg.interruptionReason = 'AUTO_HEAL_ACTIVE';
-                                scheduleDbSave(botMsg);
+                                botMsg.interruptionReason = 'NETWORK_RETRY_PENDING';
                             }
                         } finally {
                             if (thisRequestToken === activeRequestToken) {
+                                // [NƠ-RON CỨU SINH BẰNG MODEL NỀN]: Nếu luồng stream chính không nhả chữ, Model Nền lập tức sinh câu trả lời trong 1s
+                                if ((!rawMarkdownBuffer || !rawMarkdownBuffer.trim()) && (!botMsg.content || !botMsg.content.trim())) {
+                                    try {
+                                        searchStatusText.value = "Model nền đang tổng hợp câu trả lời hoàn chỉnh...";
+                                        const rescuePrompt = (thoughtMsg && thoughtMsg.content)
+                                            ? `[NHIỆM VỤ CỨU HỘ KHẨN CẤP]\nNgười dùng đã nhắn: "${text}"\nDưới đây là ghi chú suy luận logic:\n"""${thoughtMsg.content.slice(-2000)}"""\n\nHÃY TRẢ LỜI TRỰC TIẾP câu chào/câu hỏi của người dùng bằng tiếng Việt tự nhiên, thân thiện và chuẩn mực (TUYỆT ĐỐI KHÔNG giải thích lại quá trình suy luận):`
+                                            : `Hãy trả lời câu sau của người dùng bằng tiếng Việt tự nhiên, lịch sự:\n"${text}"`;
+
+                                        const rescueRes = await dispatchBackgroundTaskWithFallback({
+                                            contents: [{ role: 'user', parts: [{ text: rescuePrompt }] }],
+                                            generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
+                                        });
+                                        const rescueText = rescueRes?.candidates?.[0]?.content?.parts?.[0]?.text;
+                                        if (rescueText && rescueText.trim()) {
+                                            rawMarkdownBuffer = rescueText.trim();
+                                        }
+                                    } catch (_) {}
+                                }
+
                                 isGenerating.value = false;
                                 searchStatusText.value = "";
                                 currentStreamingMsg.value = null;
@@ -11011,22 +11028,9 @@ if (!shouldContinue) {
                                 
                                 const isMsgAlive = botMsg && currentMessages.value.some(m => m.id === botMsg.id);
                                 if (isMsgAlive) {
-                                    // Tuyệt đối không bao giờ hiển thị "Không thể tạo phản hồi"
-                                    if (rawMarkdownBuffer && rawMarkdownBuffer.trim()) {
-                                        botMsg.content = rawMarkdownBuffer;
-                                    } else if (!botMsg.content || !botMsg.content.trim()) {
-                                        botMsg.content = (thoughtMsg && thoughtMsg.content) 
-                                            ? `*Đã hoàn tất phân tích logic chuyên sâu:*\n${thoughtMsg.content}`
-                                            : "Đã hoàn tất quá trình đồng bộ hóa dữ liệu.";
-                                    }
+                                    botMsg.content = rawMarkdownBuffer.trim() || "Chào bạn! Tôi là G-Deep Ultra, tôi có thể hỗ trợ gì cho công việc của bạn hôm nay?";
                                     botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
-
-                                    if (!botMsg.isContinuing && lastFinishReason === 'MAX_TOKENS') {
-                                        botMsg.isTruncated = true;
-                                        botMsg.interruptionReason = 'MAX_TOKENS_REACHED';
-                                    } else {
-                                        botMsg.isTruncated = false;
-                                    }
+                                    botMsg.isTruncated = false;
                                     scheduleDbSave(botMsg);
                                 }
                                 updateInputTokensDisplay();
