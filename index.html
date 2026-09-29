@@ -2402,7 +2402,7 @@ function createAudioBufferMultiTrack({ blueprint, durationSec, sampleRate, voice
     return { leftChannel: left, rightChannel: right, totalSamples, sampleRate };
 }
 
-// BỘ ĐIỀU PHỐI CHÍNH WORKER (HOÀN TOÀN ĐỘNG THEO THỊ GIÁC MÁY TÍNH)
+// BỘ ĐIỀU PHỐI CHÍNH WORKER (CHỐNG ĐÓNG BĂNG KHI CHUYỂN TAB)
 self.onmessage = async function(e) {
     const {
         userPrompt,
@@ -2416,6 +2416,11 @@ self.onmessage = async function(e) {
         directImageDataUrl,
         apiKey
     } = e.data;
+
+    // Nhịp tim nhân tạo: Phát tín hiệu liên tục để luồng CPU không bị hệ điều hành treo ngầm
+    const heartbeatTimer = setInterval(() => {
+        self.postMessage({ type: 'HEARTBEAT', ts: Date.now() });
+    }, 2000);
 
     const postStatus = (text) => self.postMessage({ type: 'STATUS', text });
 
@@ -2855,6 +2860,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         }
         imageBitmap.close();
 
+        clearInterval(heartbeatTimer);
         self.postMessage({
             type: 'SUCCESS',
             videoBlob: finalMp4Blob,
@@ -2869,6 +2875,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         });
 
     } catch (err) {
+        clearInterval(heartbeatTimer);
         self.postMessage({ type: 'ERROR', message: err.message || String(err) });
     }
 };
@@ -2985,17 +2992,24 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                         graphql: 'gql', gql: 'gql', proto: 'proto', plaintext: 'txt', txt: 'txt', text: 'txt', env: 'env'
                     })
                 },
+                // [NƠ-RON PHÂN LUỒNG Ý THỨC TOÀN DIỆN 2026]
                 classifyPart(part) {
                     if (!part || typeof part !== 'object') return { type: this.DataTypes.UNKNOWN, payload: null };
+                    
+                    // 1. Nhận diện luồng suy luận gốc (Native Reasoning / Thought)
                     if (part.thought === true || part.reasoning) {
                         return { type: this.DataTypes.THOUGHT, payload: String(part.text || part.reasoning || '') };
                     }
+                    
+                    // 2. Nhận diện cuộc gọi thực thi Python WASM
                     if (part.executableCode) {
                         return {
                             type: this.DataTypes.CODE_INPUT,
                             payload: { language: (part.executableCode.language || 'python').toLowerCase(), code: String(part.executableCode.code || '') }
                         };
                     }
+                    
+                    // 3. Nhận diện kết quả tính toán độc lập
                     if (part.codeExecutionResult) {
                         const ok = (part.codeExecutionResult.outcome === 'OUTCOME_OK' || part.codeExecutionResult.outcome === 'COMPLETED');
                         return {
@@ -3003,8 +3017,19 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                             payload: { output: String(part.codeExecutionResult.output || ''), outcome: ok ? 'COMPLETED' : 'ERROR' }
                         };
                     }
+                    
+                    // 4. Giải mã luồng văn bản: Tách thẻ <thought> nếu model vô tình nhúng vào text
                     if (part.text !== undefined && part.text !== null) {
-                        return { type: this.DataTypes.TEXT, payload: String(part.text) };
+                        const rawStr = String(part.text);
+                        const thoughtMatch = rawStr.match(/<thought>([\s\S]*?)<\/thought>/i);
+                        if (thoughtMatch) {
+                            return { 
+                                type: this.DataTypes.THOUGHT, 
+                                payload: thoughtMatch[1],
+                                remainingText: rawStr.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim()
+                            };
+                        }
+                        return { type: this.DataTypes.TEXT, payload: rawStr };
                     }
                     return { type: this.DataTypes.UNKNOWN, payload: null };
                 }
@@ -3241,37 +3266,36 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 styleEl.textContent = dynamicRules;
             },
 
-            // [HẠT NHÂN THÍCH ỨNG KHUNG HÌNH] Tự phình to giao diện nếu bảng/code quá lớn
+            // [HẠT NHÂN THÍCH ỨNG KHUNG HÌNH KHÔNG XUNG ĐỘT VUE DOM]
             _scanContentLayout() {
                 if (this.vision.isMobile) return;
+                const styleEl = document.getElementById('runtime-morph-css');
+                if (!styleEl) return;
+
                 const tables = document.querySelectorAll('.table-wrapper table');
                 const codes = document.querySelectorAll('.code-content-wrap pre');
-                
                 let needsExpansion = false;
                 
-                // Mắt thần phát hiện bảng có >= 6 cột hoặc code tràn lề nặng
                 for (let i = 0; i < tables.length; i++) {
                     const firstRow = tables[i].querySelector('tr');
                     if (firstRow && firstRow.children.length >= 6) { needsExpansion = true; break; }
                 }
                 if (!needsExpansion) {
                     for (let i = 0; i < codes.length; i++) {
-                        if (codes[i].scrollWidth > codes[i].clientWidth + 200) { needsExpansion = true; break; }
+                        if (codes[i].scrollWidth > codes[i].clientWidth + 180) { needsExpansion = true; break; }
                     }
                 }
 
-                // Sửa đổi trực tiếp class Tailwind để khung chat tự nở rộng từ 3xl (48rem) lên 5xl (64rem)
-                const chatContainers = document.querySelectorAll('.max-w-3xl, .max-w-5xl');
-                chatContainers.forEach(container => {
-                    if (needsExpansion) {
-                        container.classList.remove('max-w-3xl');
-                        container.classList.add('max-w-5xl');
-                        container.style.transition = 'max-width 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
-                    } else {
-                        container.classList.remove('max-w-5xl');
-                        container.classList.add('max-w-3xl');
+                // Tiêm đè trực tiếp CSS: Triệt tiêu 100% hiện tượng chớp giật layout
+                const expansionCss = `
+                    .max-w-3xl { 
+                        max-width: ${needsExpansion ? '64rem' : '48rem'} !important; 
+                        transition: max-width 0.5s cubic-bezier(0.16, 1, 0.3, 1) !important; 
                     }
-                });
+                `;
+                if (!styleEl.textContent.includes(expansionCss)) {
+                    styleEl.textContent = styleEl.textContent.replace(/\.max-w-3xl\s*\{[^}]*\}/g, '') + expansionCss;
+                }
             }
         };
         SynapticOcularMatrix.init();
@@ -8193,9 +8217,23 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }, 280);
                     };
 
+                    // [HẠT NHÂN ĐIỀU TIẾT ÁP SUẤT NGƯỢC]: Hủy bỏ các lệnh ghi trùng lặp trong hàng đợi
+                    const pendingSaveMap = new Map();
                     const scheduleDbSave = (msg) => {
                         if (!msg?.id || !msg?.threadId) return;
-                        dbWriteQueue.enqueue(async () => { await saveMsgToDbImmediate(msg); });
+                        
+                        // Nếu tin nhắn đang chờ ghi, chỉ cập nhật bản snapshot mới nhất thay vì tạo thêm task
+                        if (pendingSaveMap.has(msg.id)) {
+                            pendingSaveMap.set(msg.id, msg);
+                            return;
+                        }
+                        
+                        pendingSaveMap.set(msg.id, msg);
+                        dbWriteQueue.enqueue(async () => {
+                            const latestSnapshot = pendingSaveMap.get(msg.id) || msg;
+                            pendingSaveMap.delete(msg.id);
+                            await saveMsgToDbImmediate(latestSnapshot);
+                        }, { priority: 1 });
                     };
 
                     const flushAllPendingDbWrites = async () => {
@@ -9767,8 +9805,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             flushAllPendingDbWrites();
                             if (window.speechSynthesis && isSpeaking.value) window.speechSynthesis.pause();
                             
-                            // [KÍCH HOẠT TIỀM THỨC]: AI bắt đầu "Ngủ mơ" và tiến hóa khi người dùng rời đi
-                            requestIdleCallback(() => {
+                            // [KÍCH HOẠT TIỀM THỨC AN TOÀN VỚI POLYFILL ĐA THIẾT BỊ]
+                            const scheduleIdle = typeof window.requestIdleCallback === 'function' 
+                                ? window.requestIdleCallback 
+                                : (cb) => setTimeout(cb, 200);
+
+                            scheduleIdle(() => {
                                 EpistemicMemoryEngine.consolidateSubconscious(db, dispatchBackgroundTaskWithFallback);
                             });
                         } else if (document.visibilityState === 'visible') {
@@ -10642,30 +10684,22 @@ let isFirstContinuationChunk = false;
 
                             const processChunk = (chunkJson, isContinuation = false) => {
                                 if (chunkJson.promptFeedback?.blockReason) {
-                                    const reason = chunkJson.promptFeedback.blockReason;
-                                    if (reason === 'PROHIBITED_CONTENT' || reason === 'SAFETY' || reason === 'BLOCKLIST') {
-                                        rawMarkdownBuffer += `\n\n*[Nội dung bị giới hạn bởi bộ lọc an toàn]*`;
-                                        isGenerating.value = false;
-                                        abortController?.abort();
-                                        return;
-                                    }
+                                    rawMarkdownBuffer += `\n\n*[Nội dung bị giới hạn bởi chính sách an toàn: ${chunkJson.promptFeedback.blockReason}]*`;
+                                    isGenerating.value = false;
+                                    abortController?.abort();
+                                    return;
                                 }
 
                                 const candidate = chunkJson.candidates?.[0];
                                 if (!candidate) return;
-                                
-                                // Ghi nhận tín hiệu từ API, nhưng ta sẽ không hoàn toàn tin tưởng nó
-                                if (candidate.finishReason) {
-                                    lastFinishReason = candidate.finishReason;
-                                }
+                                if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
                                 const parts = candidate.content?.parts || [];
                                 for (const rawPart of parts) {
-                                    // ĐỊNH TUYẾN QUA GIAO THỨC GỐC: Tự động phân loại luồng an toàn tuyệt đối
-                                    const { type, payload } = GDeepDataProtocol.classifyPart(rawPart);
+                                    const routing = GDeepDataProtocol.classifyPart(rawPart);
 
-                                    // ĐÍCH ĐẾN 1: Luồng suy luận -> Hộp Thought
-                                    if (type === GDeepDataProtocol.DataTypes.THOUGHT) {
+                                    // ĐÍCH ĐẾN 1: Luồng suy luận (Đồng bộ với Hội đồng O1)
+                                    if (routing.type === GDeepDataProtocol.DataTypes.THOUGHT) {
                                         if (!thoughtMsg) {
                                             thoughtMsg = createMessageRecord({ threadId: targetThreadId, role: GDeepDataProtocol.Roles.THOUGHT, isThinking: true, userOpenedThought: true });
                                             thoughtMsg.createdAt = botMsg.createdAt - 2;
@@ -10674,7 +10708,17 @@ let isFirstContinuationChunk = false;
                                             else currentMessages.value.push(thoughtMsg);
                                         }
                                         thoughtMsg.isThinking = true;
-                                        thoughtMsg.content += payload;
+                                        // Phân tách mạch lạc giữa bản vẽ O1 và dòng tư duy trực tiếp
+                                        if (!thoughtMsg._hasStreamedThought && thoughtMsg.content.includes('*Hội đồng đã đàm phán')) {
+                                            thoughtMsg.content += '\n\n*--- Luồng suy luận chi tiết ---*\n';
+                                            thoughtMsg._hasStreamedThought = true;
+                                        }
+                                        thoughtMsg.content += routing.payload;
+                                        
+                                        // Nếu có văn bản đi kèm sau thẻ <thought>, điều tuyến tiếp vào Markdown
+                                        if (routing.remainingText) {
+                                            rawMarkdownBuffer += routing.remainingText;
+                                        }
                                     }
                                     // ĐÍCH ĐẾN 2: Luồng mã Python -> Hộp Execution & Máy ảo Pyodide
                                     else if (type === GDeepDataProtocol.DataTypes.CODE_INPUT) {
@@ -11050,15 +11094,14 @@ if (!shouldContinue) {
                             const streamRes = await fetchStreamWithFaultTolerance(continuationPayload, modelId, (chunk) => {
                                 const parts = chunk.candidates?.[0]?.content?.parts || [];
                                 for (const rawPart of parts) {
-                                    // ĐỒNG BỘ GIAO THỨC GỐC: Phân loại dữ liệu an toàn cho luồng nối tiếp
-                                    const { type, payload } = GDeepDataProtocol.classifyPart(rawPart);
-                                    if (type === GDeepDataProtocol.DataTypes.TEXT) {
-                                        let newText = payload;
+                                    const routing = GDeepDataProtocol.classifyPart(rawPart);
+                                    if (routing.type === GDeepDataProtocol.DataTypes.TEXT || routing.remainingText) {
+                                        let newText = routing.payload || routing.remainingText || '';
                                         if (isFirstManualChunk && newText) {
                                             newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
                                             if (newText.length > 0) isFirstManualChunk = false;
                                         }
-                                        rawMarkdownBuffer += (newText || '');
+                                        rawMarkdownBuffer += newText;
                                     }
                                 }
                             }, abortController.signal);
