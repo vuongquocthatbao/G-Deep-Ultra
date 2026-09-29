@@ -9847,28 +9847,41 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     const rawExecuteHistorySanitize = (rawHistory, ensureEndsWithUser = false) => {
                         if (!rawHistory?.length) return [];
-                        let filtered = rawHistory.filter(m => (m.role === 'user' || m.role === 'model') && Array.isArray(m.parts) && m.parts.length > 0);
-
+                        // 1. Chỉ giữ role user/model và loại bỏ sạch sẽ các part chứa suy luận ngầm (thought: true)
                         const alternating = [];
-                        for (let i = 0; i < filtered.length; i++) {
-                            const cur = filtered[i];
-                            // BẢO MẬT CẤU TRÚC: Cấm dùng .trim() ở đây, phải giữ lại chuỗi " " do TokenBudgetManager tạo ra để cứu luồng luân phiên
-                            const validParts = cur.parts.filter(p => (p.text !== undefined && String(p.text) !== '') || (p.inlineData && p.inlineData.data) || p.fileData);
-                            if (!validParts.length) continue;
+
+                        for (let i = 0; i < rawHistory.length; i++) {
+                            const cur = rawHistory[i];
+                            if (cur.role !== 'user' && cur.role !== 'model') continue;
+                            if (!Array.isArray(cur.parts) || !cur.parts.length) continue;
+
+                            // LỌC SẠCH 100%: Cấm tuyệt đối gửi lại thought part vào lịch sử Google API
+                            const cleanParts = cur.parts.filter(p => {
+                                if (p.thought === true) return false;
+                                if (p.text !== undefined && String(p.text).trim() !== '') return true;
+                                if (p.inlineData && p.inlineData.data) return true;
+                                if (p.fileData && p.fileData.fileUri) return true;
+                                return false;
+                            }).map(p => {
+                                if (p.text) return { text: String(p.text).replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim() };
+                                return p;
+                            }).filter(p => !p.text || p.text.length > 0);
+
+                            if (!cleanParts.length) continue;
 
                             if (!alternating.length) {
-                                alternating.push({ role: cur.role, parts: [...validParts] });
+                                alternating.push({ role: cur.role, parts: cleanParts });
                             } else {
                                 const prev = alternating[alternating.length - 1];
                                 if (prev.role === cur.role) {
-                                    prev.parts.push(...validParts);
+                                    prev.parts.push(...cleanParts);
                                 } else {
-                                    alternating.push({ role: cur.role, parts: [...validParts] });
+                                    alternating.push({ role: cur.role, parts: cleanParts });
                                 }
                             }
                         }
 
-                        // Đảm bảo lượt đầu tiên luôn là USER (bắt buộc theo chuẩn Gemini API)
+                        // Ép buộc lượt đầu tiên luôn là USER
                         while (alternating.length > 0 && alternating[0].role !== 'user') {
                             alternating.shift();
                         }
@@ -10157,7 +10170,7 @@ Trả về duy nhất định dạng JSON:
                         // Chuỗi mô hình dự phòng chuẩn 100% của Google
                         const candidateModels = Array.from(new Set([
                             activeModelId,
-                            ...(Array.isArray(GDeepMasterConfig.Models.FALLBACK_CHAIN) ? GDeepMasterConfig.Models.FALLBACK_CHAIN : ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
+                            ...(Array.isArray(GDeepMasterConfig.Models.FALLBACK_CHAIN) ? GDeepMasterConfig.Models.FALLBACK_CHAIN : ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
                         ])).filter(Boolean);
                         
                         let currentModelIdx = 0;
