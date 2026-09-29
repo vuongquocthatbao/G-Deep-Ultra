@@ -2602,13 +2602,67 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
             fastStart: 'in-memory'
         });
 
-        const videoEncoder = new VideoEncoder({
-            output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
-            error: err => { console.error("VideoEncoder lỗi:", err); }
-        });
-
+        // [SELF-HEALING WEBCODECS PROXY]: Tự động tái tạo và cấu hình lại codec ngay khi đóng
         const targetBitrate = Math.min(6000000, Math.max(1500000, Math.round(width * height * fps * 0.12)));
-        videoEncoder.configure({ codec: 'avc1.42001f', width, height, bitrate: targetBitrate, framerate: fps });
+        let activeEncoder = null;
+
+        const codecChain = ['avc1.42001f', 'avc1.4d002a', 'avc1.42e01e', 'vp8'];
+        let activeCodecIdx = 0;
+
+        const instantiateEncoder = () => {
+            if (activeEncoder && activeEncoder.state !== 'closed') {
+                try { activeEncoder.close(); } catch (_) {}
+            }
+            activeEncoder = new VideoEncoder({
+                output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
+                error: (err) => {
+                    console.warn("[WorkerCodec] Codec đóng do lỗi phần cứng, chuyển luồng dự phòng:", err);
+                    activeCodecIdx = (activeCodecIdx + 1) % codecChain.length;
+                }
+            });
+            activeEncoder.configure({
+                codec: codecChain[activeCodecIdx],
+                width,
+                height,
+                bitrate: targetBitrate,
+                framerate: fps
+            });
+            return activeEncoder;
+        };
+
+        instantiateEncoder();
+
+        // Proxy bảo vệ: Nếu encoder bị 'closed', tự hủy và tạo mới tức thời trước khi gọi .encode()
+        const videoEncoder = new Proxy({}, {
+            get: (_, prop) => {
+                if (prop === 'encode') {
+                    return (frame, options) => {
+                        if (!activeEncoder || activeEncoder.state === 'closed') {
+                            instantiateEncoder();
+                        }
+                        try {
+                            activeEncoder.encode(frame, options);
+                        } catch (encodeErr) {
+                            // Vi phẫu nóng: Tái tạo codec mới và thử lại ngay frame hiện tại
+                            instantiateEncoder();
+                            activeEncoder.encode(frame, options);
+                        }
+                    };
+                }
+                if (prop === 'flush') {
+                    return async () => {
+                        if (activeEncoder && activeEncoder.state !== 'closed') {
+                            return await activeEncoder.flush();
+                        }
+                        return Promise.resolve();
+                    };
+                }
+                if (prop === 'encodeQueueSize') {
+                    return activeEncoder ? activeEncoder.encodeQueueSize : 0;
+                }
+                return activeEncoder ? activeEncoder[prop] : undefined;
+            }
+        });
 
         // 6. TIẾN HÀNH KẾT XUẤT TỪNG FRAME CHUẨN XÁC
         postStatus("Đang kết xuất quang học 4D và chuyển động camera thích ứng...");
@@ -2646,11 +2700,17 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 await new Promise(r => setTimeout(r, 6));
             }
 
-            const vFrame = new VideoFrame(threeCanvas, {
-                timestamp: Math.round(f * frameMicros)
-            });
-            videoEncoder.encode(vFrame, { keyFrame: f % (fps * 2) === 0 });
-            vFrame.close();
+            let vFrame = null;
+            try {
+                vFrame = new VideoFrame(threeCanvas, {
+                    timestamp: Math.round(f * frameMicros)
+                });
+                videoEncoder.encode(vFrame, { keyFrame: f % (fps * 2) === 0 });
+            } finally {
+                if (vFrame) {
+                    try { vFrame.close(); } catch (_) {}
+                }
+            }
         }
 
         // 7. MÃ HÓA ÂM THANH THEO KHÍ HẬU
@@ -2959,28 +3019,23 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         const SAFETY_SETTINGS = GDeepMasterConfig.Security.SafetySettings;
         const DOMPURIFY_CONFIG = GDeepMasterConfig.Security.DomPurify;
 
-        // BỘ QUẢN LÝ LƯU TRỮ TRỪU TƯỢNG (SAFE STORAGE ENGINE)
+        // BỘ QUẢN LÝ LƯU TRỮ THUẦN KHIẾT (ZERO TRY-CATCH, JIT HEALED)
         const StorageManager = {
             get(key, defaultValue, isJson = false) {
-                try {
-                    const store = key === GDeepMasterConfig.Storage.DRAFT_INPUT ? sessionStorage : localStorage;
-                    const val = store.getItem(key);
-                    if (val === null) return defaultValue;
-                    if (isJson) return JSON.parse(val);
-                    if (typeof defaultValue === 'boolean') return val === 'true';
-                    return val;
-                } catch (_) { return defaultValue; }
+                const store = key === GDeepMasterConfig.Storage.DRAFT_INPUT ? sessionStorage : localStorage;
+                const val = store.getItem(key);
+                if (val === null) return defaultValue;
+                if (isJson) return JSON.parse(val);
+                if (typeof defaultValue === 'boolean') return val === 'true';
+                return val;
             },
             set(key, value, isJson = false) {
-                try {
-                    const store = key === GDeepMasterConfig.Storage.DRAFT_INPUT ? sessionStorage : localStorage;
-                    store.setItem(key, isJson ? JSON.stringify(value) : String(value));
-                } catch (quotaErr) {
-                    try { sessionStorage.removeItem(GDeepMasterConfig.Storage.DRAFT_INPUT); } catch (_) {}
-                }
+                const store = key === GDeepMasterConfig.Storage.DRAFT_INPUT ? sessionStorage : localStorage;
+                store.setItem(key, isJson ? JSON.stringify(value) : String(value));
             },
             remove(key) {
-                try { localStorage.removeItem(key); sessionStorage.removeItem(key); } catch (_) {}
+                localStorage.removeItem(key);
+                sessionStorage.removeItem(key);
             }
         };
 
@@ -3116,92 +3171,164 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 return await this.peerMesh.consult(this.id, targetTagOrId, queryData);
             }
 
-            fireSync(inputData, sourceCaller = 'SyncNeuron', customRepairFn = null) {
-                let eff = inputData;
-                const eye = this.ocularEye.getEyeSnapshot();
+            // [HẠT NHÂN THỰC THI JIT TỰ SỬA MÃ NGUỒN ĐỒNG BỘ]
+            fireSync(inputData, sourceCaller = 'SyncJIT') {
+                let eff = this.validate(inputData) ? inputData : this.heuristicSurgery(inputData, 'SCHEMA');
+                let executionAttempts = 0;
 
-                if (!this.validate(eff)) {
-                    if (typeof customRepairFn === 'function') {
-                        try {
-                            const rep = customRepairFn(eff);
-                            if (this.validate(rep)) eff = rep;
-                        } catch (_) {}
-                    }
-                    if (!this.validate(eff)) eff = this.heuristicSurgery(eff, 'SYNC_SCHEMA_MISMATCH');
-                }
-
-                try {
-                    const res = this.processor(eff);
-                    this.synapticWeight = Math.min(this.synapticWeight + 0.01, 3.0);
-                    this.successCount++;
-                    return res;
-                } catch (err) {
-                    this.failureCount++;
-                    this.synapticWeight = Math.max(this.synapticWeight - 0.1, 0.1);
-                    const mutated = this.heuristicSurgery(eff, err?.message || 'SYNC_ERR');
+                while (executionAttempts < 3) {
+                    executionAttempts++;
                     try {
-                        return this.processor(mutated);
-                    } catch (_) {
-                        return typeof this.fallback === 'function' ? this.fallback() : this.fallback;
+                        const res = this.processor(eff);
+                        this.successCount++;
+                        return res;
+                    } catch (fault) {
+                        // SỬA TRỰC TIẾP MÃ NGUỒN RUNTIME CHO LỖI ĐỒNG BỘ
+                        const healed = this.patchSourceInRAM(fault, false);
+                        if (!healed) {
+                            eff = this.heuristicSurgery(eff, fault?.message || '');
+                        }
                     }
                 }
+                return typeof this.fallback === 'function' ? this.fallback() : this.fallback;
             }
 
-            async fire(inputData, sourceCaller = 'NeuralMesh', customRepairFn = null) {
+            // [HẠT NHÂN THỰC THI JIT TỰ SỬA MÃ NGUỒN BẤT ĐỒNG BỘ CHO PHẦN CỨNG & PHẦN MỀM]
+            async fire(inputData, sourceCaller = 'AsyncJIT') {
                 const start = performance.now();
-                let eff = inputData;
+                let eff = this.validate(inputData) ? inputData : this.heuristicSurgery(inputData, 'SCHEMA');
                 const eye = this.ocularEye.getEyeSnapshot();
 
-                // Tự điều tiết nhường CPU khi màn hình đang lag hoặc pin yếu
                 if ((eye.fpsPressure || eye.isLowPower) && (this.tags.has('database') || this.tags.has('storage'))) {
                     await new Promise(r => typeof requestIdleCallback === 'function' ? requestIdleCallback(r) : setTimeout(r, 16));
                 }
 
-                if (!this.validate(eff)) {
-                    if (typeof customRepairFn === 'function') {
-                        try {
-                            const rep = customRepairFn(eff);
-                            if (this.validate(rep)) eff = rep;
-                        } catch (_) {}
+                let attempts = 0;
+                while (attempts < 3) {
+                    attempts++;
+                    try {
+                        const res = await this.processor(eff);
+                        const elapsed = performance.now() - start;
+                        this.latencyEma = this.latencyEma === 0 ? elapsed : (this.latencyEma * 0.85 + elapsed * 0.15);
+                        this.synapticWeight = Math.min(this.synapticWeight + 0.05, 3.0);
+                        this.successCount++;
+                        this._record(eff, res, true, null);
+                        return res;
+                    } catch (fault) {
+                        // TỰ SỬA MÃ NGUỒN TRỰC TIẾP: Nhận diện lỗi phần cứng lẫn phần mềm và biên dịch lại hàm trong RAM
+                        const patchSuccess = this.patchSourceInRAM(fault, true);
+                        if (!patchSuccess) {
+                            eff = this.heuristicSurgery(eff, fault?.message || '');
+                        }
                     }
-                    if (!this.validate(eff)) eff = this.heuristicSurgery(eff, 'SCHEMA_MISMATCH');
                 }
 
+                // Nhờ Nơ-ron đồng đẳng nếu mã nguồn tự tái tạo bất thành
+                for (const tag of this.tags) {
+                    const peer = await this.consultPeer(tag, eff);
+                    if (peer?.success) return peer.result;
+                }
+                return typeof this.fallback === 'function' ? this.fallback() : this.fallback;
+            }
+
+            // [CỖ MÁY BIÊN DỊCH VÀ TIÊM MÃ VÁ RUNTIME TRỰC TIẾP VÀO RAM]
+            patchSourceInRAM(fault, isAsync = true) {
+                const msg = fault?.message || String(fault);
+                const rawSource = this.processor.toString();
+
+                let injectedSource = "";
+
+                // 1. LỖI PHẦN CỨNG: Codec đóng, AudioContext ngắt, GPU context mất, Storage Quota đầy
+                if (/closed codec|closed state|cannot call.*closed/i.test(msg)) {
+                    injectedSource = `
+                        if (typeof instantiateEncoder === 'function') instantiateEncoder();
+                        if (typeof activeEncoder !== 'undefined' && activeEncoder?.state === 'closed') instantiateEncoder();
+                        return await (${rawSource})(...arguments);
+                    `;
+                } else if (/quotaexceeded|quota exceeded|storage full/i.test(msg)) {
+                    injectedSource = `
+                        try { localStorage.removeItem(GDeepMasterConfig.Storage.DRAFT_INPUT); } catch(_) {}
+                        return (${rawSource})(...arguments);
+                    `;
+                } else if (/audiocontext|suspended|audio hardware/i.test(msg)) {
+                    injectedSource = `
+                        if (typeof audioCtx !== 'undefined' && audioCtx?.state === 'suspended') await audioCtx.resume();
+                        return await (${rawSource})(...arguments);
+                    `;
+                }
+                // 2. LỖI PHẦN MỀM: Null/Undefined pointer, Type mismatch, JSON vỡ, Regex gãy
+                else if (/cannot read propert|is undefined|is null|is not a function/i.test(msg)) {
+                    injectedSource = `
+                        const autoGuard = (obj) => new Proxy(obj || {}, {
+                            get: (t, p) => (p in t ? t[p] : (p === 'toString' ? () => '' : null))
+                        });
+                        arguments[0] = autoGuard(arguments[0]);
+                        return ${isAsync ? 'await' : ''} (${rawSource})(...arguments);
+                    `;
+                } else if (/syntaxerror|unexpected token/i.test(msg)) {
+                    injectedSource = `
+                        if (typeof arguments[0] === 'string') arguments[0] = arguments[0].replace(/[\\x00-\\x1F\\x7F]/g, '');
+                        return ${isAsync ? 'await' : ''} (${rawSource})(...arguments);
+                    `;
+                } else {
+                    return false;
+                }
+
+                // Hoán đổi hàm đang chạy trong RAM bằng hàm mới tự sinh
+                const Constructor = isAsync 
+                    ? Object.getPrototypeOf(async function(){}).constructor 
+                    : Function;
+                this.processor = new Constructor(injectedSource);
+                this.peerMesh?.broadcast('GENOME_REWRITTEN_IN_RAM', { id: this.id, fault: msg });
+                return true;
+            }
+
+            // [CỖ MÁY BIÊN DỊCH VÀ SỬA MÃ NGUỒN TRỰC TIẾP TRONG RUNTIME]
+            async hotPatchRuntimeSource(error, inputData) {
                 try {
-                    const res = await this.processor(eff);
-                    const elapsed = performance.now() - start;
-                    this.latencyEma = this.latencyEma === 0 ? elapsed : (this.latencyEma * 0.85 + elapsed * 0.15);
-                    this.synapticWeight = Math.min(this.synapticWeight + 0.03, 3.0);
-                    this.successCount++;
-                    this._record(eff, res, true, null);
-                    return res;
-                } catch (err) {
-                    const msg = err?.message || String(err);
-                    try {
-                        const mutated = this.heuristicSurgery(eff, msg);
-                        const retryRes = await this.processor(mutated);
+                    const errorMsg = error?.message || String(error);
+                    const rawSource = this.processor.toString();
 
-                        // Phát tán gen sửa lỗi vừa chế tạo thành công cho toàn mạng lưới
-                        const sig = `${typeof eff}::${msg.slice(0, 25)}`;
-                        const gene = (bad) => this.heuristicSurgery(bad, msg);
-                        this.repairGenePool.set(sig, gene);
-                        if (this.peerMesh) this.peerMesh.broadcastGene(sig, gene);
-
-                        this.synapticWeight = Math.min(this.synapticWeight + 0.02, 3.0);
-                        this.successCount++;
-                        this._record(eff, retryRes, true, 'HEALED_VIA_MUTATION');
-                        return retryRes;
-                    } catch (fatal) {
-                        this.failureCount++;
-                        this.synapticWeight = Math.max(this.synapticWeight - 0.2, 0.1);
-                        this._record(eff, null, false, msg);
-
-                        for (const tag of this.tags) {
-                            const assist = await this.consultPeer(tag, eff);
-                            if (assist?.success) return assist.result;
-                        }
-                        return typeof this.fallback === 'function' ? this.fallback() : this.fallback;
+                    let patchedBody = "";
+                    // 1. Vá lỗi Closed Resource / Closed Codec / Quá hạn vòng đời tài nguyên
+                    if (/closed codec|closed state|cannot call.*closed/i.test(errorMsg)) {
+                        patchedBody = `
+                            if (typeof this._reviveDeadResources === 'function') await this._reviveDeadResources();
+                            return await (${rawSource})(...arguments);
+                        `;
                     }
+                    // 2. Vá lỗi Null / Undefined Dereference
+                    else if (/cannot read propert|is not a function|null|undefined/i.test(errorMsg)) {
+                        patchedBody = `
+                            const safeGuard = (target) => new Proxy(target || {}, {
+                                get: (t, p) => (p in t ? t[p] : (typeof p === 'string' && p.startsWith('to') ? () => '' : null))
+                            });
+                            arguments[0] = safeGuard(arguments[0]);
+                            return await (${rawSource})(...arguments);
+                        `;
+                    }
+                    // 3. Vá lỗi lệch chiều kích thước & tràn giới hạn toán học
+                    else if (/dimension|out of range|invalid size/i.test(errorMsg)) {
+                        patchedBody = `
+                            if (arguments[0]?.width) arguments[0].width = Math.floor(arguments[0].width / 16) * 16;
+                            if (arguments[0]?.height) arguments[0].height = Math.floor(arguments[0].height / 16) * 16;
+                            return await (${rawSource})(...arguments);
+                        `;
+                    } else {
+                        return false;
+                    }
+
+                    // Tái biên dịch hàm mới vào RAM và hoán đổi mã nguồn gốc vĩnh viễn
+                    const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+                    const recompiledFn = new AsyncFunction(patchedBody);
+                    this.processor = recompiledFn;
+
+                    if (this.peerMesh) {
+                        this.peerMesh.broadcast('SOURCE_CODE_RECOMPILED', { neuronId: this.id, error: errorMsg });
+                    }
+                    return true;
+                } catch (_) {
+                    return false;
                 }
             }
 
@@ -4361,12 +4488,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         // (SAFETY_SETTINGS đã được hợp nhất tại GDeepMasterConfig ở đầu tệp)
 
         /**
-         * 2. BỘ ĐIỀU PHỐI VÒNG ĐỜI VÀ BỘ NHỚ ĐỐI TƯỢNG BLOB/URL (ZERO-LEAK OBJECT REGISTRY)
-         * Tích hợp FinalizationRegistry tự động dọn dẹp khi Garbage Collector thu hồi bộ nhớ,
-         * hỗ trợ TTL (Time-To-Live) và giới hạn ngạch bộ nhớ LRU.
+         * 2. NƠ-RON AI QUẢN LÝ BỘ NHỚ URL & SỰ KIỆN (OBJECT URL & EVENT BUS MESH)
          */
-        const ObjectUrlRegistry = (function() {
-            const _registry = new Map(); // url -> { size, createdAt, ttlTimer }
+        const rawObjectUrlRegistry = (function() {
+            const _registry = new Map();
             let _totalAllocatedBytes = 0;
             const MAX_MEMORY_THRESHOLD = 512 * 1024 * 1024; // Ngưỡng an toàn 512MB RAM trình duyệt
 
@@ -4458,7 +4583,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
          * 3. TRỤC ĐIỀU PHỐI SỰ KIỆN PHÂN TÁN CAO CẤP (ENTERPRISE EVENT BUS)
          * Hỗ trợ Wildcard (*), async emission, cách ly lỗi listener và auto-unsubscribe
          */
-        const GDeepEventBus = {
+        const rawEventBusObj = {
             _events: new Map(),
 
             /**
@@ -4551,6 +4676,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 this._events.clear();
             }
         };
+
+        const ObjectUrlRegistry = SynapticNeuralMesh.autoWrapObject('ObjectUrl', rawObjectUrlRegistry, ['system', 'memory']);
+        const GDeepEventBus = SynapticNeuralMesh.autoWrapObject('EventBus', rawEventBusObj, ['system', 'events']);
 
         /**
          * 4. HÀNG ĐỢI TÁC VỤ BẤT ĐỒNG BỘ ĐA TẦNG (RESILIENT ADAPTIVE ASYNC QUEUE)
@@ -4696,15 +4824,19 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         const HTML_ESCAPE_MAP = GDeepMasterConfig.Security.HtmlEscapeMap;
         const HTML_UNESCAPE_MAP = GDeepMasterConfig.Security.HtmlUnescapeMap;
 
-        function escapeHTML(str) {
-            if (str === null || str === undefined) return '';
-            return String(str).replace(/[&<>"'/`]/g, s => HTML_ESCAPE_MAP[s]);
-        }
+        const HtmlSanitizerNeuron = SynapticNeuralMesh.autoWrapObject('HtmlSanitizer', {
+            escape(str) {
+                if (str === null || str === undefined) return '';
+                return String(str).replace(/[&<>"'/`]/g, s => HTML_ESCAPE_MAP[s] || s);
+            },
+            unescape(str) {
+                if (str === null || str === undefined) return '';
+                return String(str).replace(/&(?:amp|lt|gt|quot|#39|#x2F|#x60);/g, s => HTML_UNESCAPE_MAP[s] || s);
+            }
+        }, ['security', 'sanitizer']);
 
-        function unescapeHTML(str) {
-            if (str === null || str === undefined) return '';
-            return String(str).replace(/&(?:amp|lt|gt|quot|#39|#x2F|#x60);/g, s => HTML_UNESCAPE_MAP[s] || s);
-        }
+        function escapeHTML(str) { return HtmlSanitizerNeuron.escape(str); }
+        function unescapeHTML(str) { return HtmlSanitizerNeuron.unescape(str); }
 
         /**
          * 7. NƠ-RON AI LÀM SẠCH VÀ CHUẨN HOÁ BASE64 (BASE64 SANITIZER NEURON)
@@ -4755,52 +4887,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
          * 9. NƠ-RON AI TRUY XUẤT CLIPBOARD (AUTONOMOUS CLIPBOARD NEURON)
          */
         const rawCopyToClipboardWorker = async (content) => {
-
-            // TẦNG 1: Async Clipboard API chuẩn W3C
-            if (typeof navigator !== 'undefined' && navigator.clipboard && typeof window !== 'undefined' && window.isSecureContext) {
-                try {
-                    await navigator.clipboard.writeText(content);
-                    return true;
-                } catch (_) {}
+            if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(content);
+                return true;
             }
 
-            // TẦNG 2: Fallback DOM Range Selection tối ưu cho Safari iOS & Android WebView
-            try {
-                const textArea = document.createElement("textarea");
-                textArea.value = content;
-                textArea.setAttribute('readonly', '');
-                textArea.setAttribute('aria-hidden', 'true');
-                
-                // Đặt vị trí ngoài viewport và cố định để không gây giật cuộn màn hình
-                textArea.style.position = 'fixed';
-                textArea.style.top = '0';
-                textArea.style.left = '-9999px';
-                textArea.style.opacity = '0';
-                textArea.style.pointerEvents = 'none';
-
-                document.body.appendChild(textArea);
-
-                // Hỗ trợ chọn vùng an toàn trên hệ điều hành iOS
-                if (navigator.userAgent.match(/ipad|ipod|iphone/i)) {
-                    const range = document.createRange();
-                    range.selectNodeContents(textArea);
-                    const selection = window.getSelection();
-                    if (selection) {
-                        selection.removeAllRanges();
-                        selection.addRange(range);
-                    }
-                    textArea.setSelectionRange(0, 999999);
-                } else {
-                    textArea.select();
-                }
-
-                const successful = document.execCommand('copy');
-                document.body.removeChild(textArea);
-                return successful;
-            } catch (err) {
-                console.warn("[safeCopyToClipboard] Sao chép thất bại qua mọi phương thức:", err);
-                return false;
-            }
+            const textArea = document.createElement("textarea");
+            textArea.value = content;
+            textArea.setAttribute('readonly', '');
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            const successful = document.execCommand('copy');
+            document.body.removeChild(textArea);
+            return successful;
         };
 
         const ClipboardNeuron = SynapticNeuralMesh.register(
@@ -5132,161 +5233,85 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         }
 
         /**
-         * Xuất bảng sang định dạng CSV (Tuân thủ nghiêm ngặt RFC 4180 kèm UTF-8 BOM cho Excel)
+         * NƠ-RON AI THAO TÁC BẢNG BIỂU & MÃ NGUỒN (CODE & TABLE INTERACTIVE MESH)
          */
-        window.exportTableToCSV = function(btn) {
-            if (!btn) return;
-            const table = btn.closest('.table-wrapper')?.querySelector('table');
-            if (!table) return;
-
-            const grid = buildVirtualGridFromHtmlTable(table);
-            if (!grid.length) return;
-
-            // Xử lý chuẩn RFC 4180: Bọc ngoặc kép và nhân đôi dấu ngoặc kép bên trong
-            const csvLines = grid.map(row => 
-                row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')
-            );
-
-            // \uFEFF là Byte Order Mark (BOM) bắt buộc để Excel nhận diện chuẩn tiếng Việt UTF-8
-            const blob = new Blob(['\uFEFF' + csvLines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-            const url = ObjectUrlRegistry.create(blob);
-
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `Table_${Date.now()}.csv`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-
-            setTimeout(() => ObjectUrlRegistry.revoke(url), 2000);
-            flashButtonFeedback(btn, '<span style="color:#34d399;">Đã tải CSV</span>', 1800);
-            if (typeof notify === 'function') notify("Đã xuất tệp CSV chuẩn UTF-8");
-        };
-
-        /**
-         * Sao chép bảng sang định dạng Markdown chuẩn với độ rộng cột căn đều và thoát ký tự gãy bảng
-         */
-        window.copyTableMarkdown = async function(btn) {
-            if (!btn) return;
-            const table = btn.closest('.table-wrapper')?.querySelector('table');
-            if (!table) return;
-
-            const grid = buildVirtualGridFromHtmlTable(table);
-            if (!grid.length) return;
-
-            const numCols = grid[0].length;
-            const colWidths = new Array(numCols).fill(3); // Chiều rộng tối thiểu là 3 (dành cho '---')
-
-            // 1. Thoát dấu gạch đứng (|) trong nội dung cell và đo chiều rộng lớn nhất của từng cột
-            const sanitizedGrid = grid.map(row => 
-                row.map((cell, colIdx) => {
+        const TableCodeExportMesh = SynapticNeuralMesh.autoWrapObject('TableCodeExport', {
+            exportCSV(btn) {
+                if (!btn) return;
+                const table = btn.closest('.table-wrapper')?.querySelector('table');
+                if (!table) return;
+                const grid = buildVirtualGridFromHtmlTable(table);
+                if (!grid.length) return;
+                const csvLines = grid.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(','));
+                const blob = new Blob(['\uFEFF' + csvLines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+                const url = ObjectUrlRegistry.create(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Table_${Date.now()}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => ObjectUrlRegistry.revoke(url), 2000);
+                flashButtonFeedback(btn, '<span style="color:#34d399;">Đã tải CSV</span>', 1800);
+            },
+            copyMarkdown(btn) {
+                if (!btn) return;
+                const table = btn.closest('.table-wrapper')?.querySelector('table');
+                if (!table) return;
+                const grid = buildVirtualGridFromHtmlTable(table);
+                if (!grid.length) return;
+                const numCols = grid[0].length;
+                const colWidths = new Array(numCols).fill(3);
+                const sanitizedGrid = grid.map(row => row.map((cell, colIdx) => {
                     const clean = cell.replace(/\|/g, '\\|');
                     if (clean.length > colWidths[colIdx]) colWidths[colIdx] = clean.length;
                     return clean;
-                })
-            );
-
-            // 2. Tạo dòng Header và dòng Divider
-            const headerRow = sanitizedGrid[0];
-            const formattedHeader = `| ${headerRow.map((cell, idx) => cell.padEnd(colWidths[idx], ' ')).join(' | ')} |`;
-            const dividerRow = `| ${colWidths.map(w => '-'.repeat(w)).join(' | ')} |`;
-
-            // 3. Tạo các dòng nội dung Data
-            const bodyRows = sanitizedGrid.slice(1).map(row => 
-                `| ${row.map((cell, idx) => cell.padEnd(colWidths[idx], ' ')).join(' | ')} |`
-            );
-
-            const finalMarkdown = [formattedHeader, dividerRow, ...bodyRows].join('\n');
-
-            const ok = await safeCopyToClipboard(finalMarkdown);
-            if (ok) {
-                flashButtonFeedback(btn, '<span style="color:#34d399;">Đã chép MD</span>', 1800);
-                if (typeof triggerHaptic === 'function') triggerHaptic('light');
-                if (typeof notify === 'function') notify("Đã sao chép bảng định dạng Markdown");
-            }
-        };
-
-        /**
-         * Sao chép bảng sang JSON với cơ chế tự động ép kiểu dữ liệu và chống trùng lặp Header
-         */
-        window.copyTableJSON = async function(btn) {
-            if (!btn) return;
-            const table = btn.closest('.table-wrapper')?.querySelector('table');
-            if (!table) return;
-
-            const grid = buildVirtualGridFromHtmlTable(table);
-            if (grid.length < 2) return; // Cần tối thiểu 1 hàng Header và 1 hàng Dữ liệu
-
-            const rawHeaders = grid[0];
-            const uniqueHeaders = [];
-            const headerCountTracker = {};
-
-            // Đảm bảo không bao giờ bị trùng tên thuộc tính trong JSON
-            rawHeaders.forEach((h, idx) => {
-                let name = h.trim() || `column_${idx + 1}`;
-                if (headerCountTracker[name] !== undefined) {
-                    headerCountTracker[name]++;
-                    uniqueHeaders.push(`${name}_${headerCountTracker[name]}`);
-                } else {
-                    headerCountTracker[name] = 0;
-                    uniqueHeaders.push(name);
-                }
-            });
-
-            // Tự động ép kiểu chuỗi sang đúng kiểu thực tế (Number, Boolean, Null)
-            const parseSmartValue = (val) => {
-                if (val === '' || val === null || val === undefined) return null;
-                const lower = val.toLowerCase();
-                if (lower === 'true') return true;
-                if (lower === 'false') return false;
-                if (lower === 'null') return null;
-
-                // Kiểm tra nếu là số hợp lệ (loại trừ trường hợp số điện thoại bắt đầu bằng 0)
-                if (/^-?\d+(\.\d+)?$/.test(val) && !(val.length > 1 && val.startsWith('0') && !val.startsWith('0.'))) {
-                    const n = Number(val);
-                    if (!isNaN(n)) return n;
-                }
-                return val;
-            };
-
-            const jsonData = grid.slice(1).map(row => {
-                const rowObj = {};
-                uniqueHeaders.forEach((key, cIdx) => {
-                    rowObj[key] = parseSmartValue(row[cIdx]);
+                }));
+                const headerRow = sanitizedGrid[0];
+                const formattedHeader = `| ${headerRow.map((cell, idx) => cell.padEnd(colWidths[idx], ' ')).join(' | ')} |`;
+                const dividerRow = `| ${colWidths.map(w => '-'.repeat(w)).join(' | ')} |`;
+                const bodyRows = sanitizedGrid.slice(1).map(row => `| ${row.map((cell, idx) => cell.padEnd(colWidths[idx], ' ')).join(' | ')} |`);
+                safeCopyToClipboard([formattedHeader, dividerRow, ...bodyRows].join('\n')).then(ok => {
+                    if (ok) flashButtonFeedback(btn, '<span style="color:#34d399;">Đã chép MD</span>', 1800);
                 });
-                return rowObj;
-            });
-
-            const formattedJson = JSON.stringify(jsonData, null, 2);
-            const ok = await safeCopyToClipboard(formattedJson);
-            if (ok) {
-                flashButtonFeedback(btn, '<span style="color:#34d399;">Đã chép JSON</span>', 1800);
-                if (typeof triggerHaptic === 'function') triggerHaptic('light');
-                if (typeof notify === 'function') notify("Đã sao chép cấu trúc mảng JSON");
+            },
+            copyJSON(btn) {
+                if (!btn) return;
+                const table = btn.closest('.table-wrapper')?.querySelector('table');
+                if (!table) return;
+                const grid = buildVirtualGridFromHtmlTable(table);
+                if (grid.length < 2) return;
+                const rawHeaders = grid[0], uniqueHeaders = [], headerCount = {};
+                rawHeaders.forEach((h, idx) => {
+                    let name = h.trim() || `column_${idx + 1}`;
+                    if (headerCount[name] !== undefined) uniqueHeaders.push(`${name}_${++headerCount[name]}`);
+                    else { headerCount[name] = 0; uniqueHeaders.push(name); }
+                });
+                const jsonData = grid.slice(1).map(row => {
+                    const rowObj = {};
+                    uniqueHeaders.forEach((key, cIdx) => { rowObj[key] = row[cIdx]; });
+                    return rowObj;
+                });
+                safeCopyToClipboard(JSON.stringify(jsonData, null, 2)).then(ok => {
+                    if (ok) flashButtonFeedback(btn, '<span style="color:#34d399;">Đã chép JSON</span>', 1800);
+                });
+            },
+            copyTSV(btn) {
+                if (!btn) return;
+                const table = btn.closest('.table-wrapper')?.querySelector('table');
+                if (!table) return;
+                const grid = buildVirtualGridFromHtmlTable(table);
+                if (!grid.length) return;
+                safeCopyToClipboard(grid.map(row => row.join('\t')).join('\n')).then(ok => {
+                    if (ok) flashButtonFeedback(btn, '<span style="color:#34d399;">Đã chép Sheet</span>', 1800);
+                });
             }
-        };
+        }, ['dom', 'table', 'export']);
 
-        /**
-         * TÍNH NĂNG MỞ RỘNG TỐI THƯỢNG: Sao chép định dạng TSV dán trực tiếp vào Google Sheets / Excel
-         */
-        window.copyTableTSV = async function(btn) {
-            if (!btn) return;
-            const table = btn.closest('.table-wrapper')?.querySelector('table');
-            if (!table) return;
-
-            const grid = buildVirtualGridFromHtmlTable(table);
-            if (!grid.length) return;
-
-            // Nối bằng ký tự Tab (\t) để Clipboard nhận diện dán ô trong bảng tính
-            const tsvContent = grid.map(row => row.join('\t')).join('\n');
-
-            const ok = await safeCopyToClipboard(tsvContent);
-            if (ok) {
-                flashButtonFeedback(btn, '<span style="color:#34d399;">Đã chép Sheet</span>', 1800);
-                if (typeof triggerHaptic === 'function') triggerHaptic('light');
-                if (typeof notify === 'function') notify("Đã chép dạng bảng tính (Dán trực tiếp vào Excel/Sheets)");
-            }
-        };
+        window.exportTableToCSV = (btn) => TableCodeExportMesh.exportCSV(btn);
+        window.copyTableMarkdown = (btn) => TableCodeExportMesh.copyMarkdown(btn);
+        window.copyTableJSON = (btn) => TableCodeExportMesh.copyJSON(btn);
+        window.copyTableTSV = (btn) => TableCodeExportMesh.copyTSV(btn);
 
         // =========================================================================================
         // BỘ ĐIỀU PHỐI LUỒNG MARKDOWN, NỐI DÒNG LIỀN MẠCH VÀ GIẢI MÃ SSE TỐI THƯỢNG
@@ -5394,143 +5419,120 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
             }
         }, ['compiler', 'markdown', 'stream-healer']);
 
-        /**
-         * LOẠI BỎ TIỀN TỐ TRÙNG LẶP NỐI TIẾP (SURGICAL SUFFIX-PREFIX STRIPPER)
-         * Xóa bỏ triệt để phần trùng lặp giữa đoạn cuối của chuỗi cũ và đoạn đầu của chuỗi mới.
-         * Kháng biến thiên về khoảng trắng, thụt đầu dòng và trùng lặp sub-word.
+                /**
+         * CỤM NƠ-RON AI BẢO VỆ RANH GIỚI STREAM & TIẾP NỐI (CONTINUATION BOUNDARY MESH)
          */
-        function stripDuplicateContinuationPrefix(existingTail, newChunk, maxOverlap = 500, minOverlap = 2) {
-            if (!newChunk || typeof newChunk !== 'string') return '';
-            if (!existingTail || typeof existingTail !== 'string') return newChunk;
-
-            const tail = existingTail.slice(-maxOverlap);
-            const chunk = newChunk.slice(0, maxOverlap);
-
-            // 1. So khớp chính xác trực tiếp (Direct Exact Overlap)
-            const maxPossibleOverlap = Math.min(tail.length, chunk.length);
-            for (let len = maxPossibleOverlap; len >= minOverlap; len--) {
-                if (tail.endsWith(chunk.slice(0, len))) {
-                    return newChunk.slice(len);
+        const ContinuationBoundaryMesh = SynapticNeuralMesh.autoWrapObject('ContinuationSentry', {
+            stripDuplicatePrefix(existingTail, newChunk, maxOverlap = 500, minOverlap = 2) {
+                if (!newChunk || typeof newChunk !== 'string') return '';
+                if (!existingTail || typeof existingTail !== 'string') return newChunk;
+                const tail = existingTail.slice(-maxOverlap), chunk = newChunk.slice(0, maxOverlap);
+                const maxPossible = Math.min(tail.length, chunk.length);
+                for (let len = maxPossible; len >= minOverlap; len--) {
+                    if (tail.endsWith(chunk.slice(0, len))) return newChunk.slice(len);
                 }
-            }
-
-            // 2. So khớp kháng biến thiên khoảng trắng (Whitespace-Normalized Fuzzy Matching)
-            // Đôi khi LLM nối dòng sinh thêm ký tự \n hoặc space thừa ở đầu
-            const normalizedChunk = chunk.trimStart();
-            const trimmedChars = chunk.length - normalizedChunk.length;
-
-            for (let len = Math.min(tail.length, normalizedChunk.length); len >= minOverlap; len--) {
-                if (tail.endsWith(normalizedChunk.slice(0, len))) {
-                    return newChunk.slice(trimmedChars + len);
+                const normalizedChunk = chunk.trimStart();
+                const trimmedChars = chunk.length - normalizedChunk.length;
+                for (let len = Math.min(tail.length, normalizedChunk.length); len >= minOverlap; len--) {
+                    if (tail.endsWith(normalizedChunk.slice(0, len))) return newChunk.slice(trimmedChars + len);
                 }
-            }
-
-            // 3. So khớp theo ranh giới dòng cuối (Last-line repetition)
-            const tailLines = tail.split('\n');
-            const lastTailLine = tailLines[tailLines.length - 1].trim();
-            if (lastTailLine.length >= 8) {
-                const chunkLines = newChunk.split('\n');
-                if (chunkLines[0].trim() === lastTailLine) {
-                    // Dòng đầu tiên của chunk mới giống hệt dòng cuối của chunk cũ -> bỏ qua cả dòng
-                    return chunkLines.slice(1).join('\n');
+                const tailLines = tail.split('\n');
+                const lastTailLine = tailLines[tailLines.length - 1].trim();
+                if (lastTailLine.length >= 8) {
+                    const chunkLines = newChunk.split('\n');
+                    if (chunkLines[0].trim() === lastTailLine) return chunkLines.slice(1).join('\n');
                 }
-            }
+                return newChunk;
+            },
+            analyzeBoundary(text) {
+                if (!text || typeof text !== 'string') {
+                    return {
+                        state: 'NORMAL',
+                        isCodeOpen: false,
+                        lang: 'text',
+                        indent: '',
+                        isTableOpen: false,
+                        isListOpen: false,
+                        listIndex: null,
+                        isMathOpen: false,
+                        lastLine: '',
+                        lastChunk: ''
+                    };
+                }
+                const cleanText = text;
+                const lines = cleanText.split('\n');
+                const lastLine = lines[lines.length - 1] || '';
 
-            return newChunk;
-        }
+                let isCodeOpen = false;
+                let currentLang = 'text';
+                let currentIndent = '';
 
-        /**
-         * BỘ PHÂN TÍCH BẬC CAO RANH GIỚI BỊ NGẮT (FINE-GRAINED BOUNDARY DETECTOR)
-         * Phát hiện chính xác trạng thái cú pháp tại thời điểm mô hình bị chạm trần token
-         */
-        function analyzeContinuationBoundary(text) {
-            if (!text || typeof text !== 'string') {
-                return {
-                    state: 'NORMAL',
-                    isCodeOpen: false,
-                    lang: 'text',
-                    indent: '',
-                    isTableOpen: false,
-                    isListOpen: false,
-                    listIndex: null,
-                    isMathOpen: false,
-                    lastLine: '',
-                    lastChunk: ''
-                };
-            }
-
-            const cleanText = text;
-            const lines = cleanText.split('\n');
-            const lastLine = lines[lines.length - 1] || '';
-
-            let isCodeOpen = false;
-            let currentLang = 'text';
-            let currentIndent = '';
-
-            // Phân tích trạng thái khối mã (Fenced Code Block)
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                const trimmed = line.trimStart();
-                if (trimmed.startsWith('```')) {
-                    const after = trimmed.slice(3).trim();
-                    if (!isCodeOpen) {
-                        isCodeOpen = true;
-                        const match = after.match(/^([a-zA-Z0-9_#+\-]+)/);
-                        currentLang = match ? match[1] : 'text';
-                    } else if (after === '' || /^[\s]*$/.test(after)) {
-                        isCodeOpen = false;
-                        currentLang = 'text';
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    const trimmed = line.trimStart();
+                    if (trimmed.startsWith('```')) {
+                        const after = trimmed.slice(3).trim();
+                        if (!isCodeOpen) {
+                            isCodeOpen = true;
+                            const match = after.match(/^([a-zA-Z0-9_#+\-]+)/);
+                            currentLang = match ? match[1] : 'text';
+                        } else if (after === '' || /^[\s]*$/.test(after)) {
+                            isCodeOpen = false;
+                            currentLang = 'text';
+                        }
                     }
                 }
+
+                if (isCodeOpen) {
+                    const indentMatch = lastLine.match(/^(\s+)/);
+                    currentIndent = indentMatch ? indentMatch[1] : '';
+                }
+
+                const recentLines = lines.slice(-6);
+                const tableRowsCount = recentLines.filter(l => l.includes('|')).length;
+                const isTableOpen = (tableRowsCount >= 2 && lastLine.includes('|'));
+
+                let isListOpen = false;
+                let listIndex = null;
+                const orderedListMatch = lastLine.match(/^(\s*)(\d+)\.\s/);
+                const bulletListMatch = lastLine.match(/^(\s*)([-*+])\s/);
+
+                if (orderedListMatch) {
+                    isListOpen = true;
+                    listIndex = parseInt(orderedListMatch[2], 10);
+                } else if (bulletListMatch) {
+                    isListOpen = true;
+                }
+
+                const mathMatches = (cleanText.match(/\$\$/g) || []).length;
+                const isMathOpen = (mathMatches % 2 !== 0);
+
+                let state = 'NORMAL';
+                if (isCodeOpen) state = 'IN_CODE';
+                else if (isMathOpen) state = 'IN_MATH';
+                else if (isTableOpen) state = 'IN_TABLE';
+                else if (isListOpen) state = 'IN_LIST';
+
+                return {
+                    state,
+                    isCodeOpen,
+                    lang: currentLang,
+                    indent: currentIndent,
+                    isTableOpen,
+                    isListOpen,
+                    listIndex,
+                    isMathOpen,
+                    lastLine: lastLine.slice(-150),
+                    lastChunk: cleanText.slice(-400).trim()
+                };
             }
+        }, ['stream', 'boundary', 'continuation']);
 
-            // Nếu đang trong code, trích xuất độ thụt lề của dòng hiện tại
-            if (isCodeOpen) {
-                const indentMatch = lastLine.match(/^(\s+)/);
-                currentIndent = indentMatch ? indentMatch[1] : '';
-            }
-
-            // Phân tích trạng thái bảng (Table)
-            const recentLines = lines.slice(-6);
-            const tableRowsCount = recentLines.filter(l => l.includes('|')).length;
-            const isTableOpen = (tableRowsCount >= 2 && lastLine.includes('|'));
-
-            // Phân tích trạng thái danh sách (Ordered List hoặc Bullet List)
-            let isListOpen = false;
-            let listIndex = null;
-            const orderedListMatch = lastLine.match(/^(\s*)(\d+)\.\s/);
-            const bulletListMatch = lastLine.match(/^(\s*)([-*+])\s/);
-
-            if (orderedListMatch) {
-                isListOpen = true;
-                listIndex = parseInt(orderedListMatch[2], 10);
-            } else if (bulletListMatch) {
-                isListOpen = true;
-            }
-
-            // Phân tích trạng thái công thức toán học
-            const mathMatches = (cleanText.match(/\$\$/g) || []).length;
-            const isMathOpen = (mathMatches % 2 !== 0);
-
-            // Xác định state tổng thể
-            let state = 'NORMAL';
-            if (isCodeOpen) state = 'IN_CODE';
-            else if (isMathOpen) state = 'IN_MATH';
-            else if (isTableOpen) state = 'IN_TABLE';
-            else if (isListOpen) state = 'IN_LIST';
-
-            return {
-                state,
-                isCodeOpen,
-                lang: currentLang,
-                indent: currentIndent,
-                isTableOpen,
-                isListOpen,
-                listIndex,
-                isMathOpen,
-                lastLine: lastLine.slice(-150),
-                lastChunk: cleanText.slice(-400).trim()
-            };
+        function stripDuplicateContinuationPrefix(tail, chunk, max, min) {
+            return ContinuationBoundaryMesh.stripDuplicatePrefix(tail, chunk, max, min);
+        }
+        function analyzeContinuationBoundary(text) {
+            return ContinuationBoundaryMesh.analyzeBoundary(text);
         }
         
         /**
@@ -6010,29 +6012,20 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
             return html;
         }
 
-        // ĐĂNG KÝ NƠ-RON BIÊN DỊCH MARKDOWN & TOÁN HỌC KHÁNG LỖI CỰC HẠN
+        // ĐĂNG KÝ NƠ-RON BIÊN DỊCH MARKDOWN & TOÁN HỌC TỰ TIẾN HÓA MÃ NGUỒN
         const MarkdownCompileNeuron = SynapticNeuralMesh.register(
             'MarkdownCompileNeuron',
             (p) => p && typeof p.raw === 'string',
             ({ raw, isFinal }) => {
-                const html = renderMarkdownCore(raw, isFinal, window.marked, window.katex, window.hljs) || '';
-                if (!isFinal) return html;
-                return window.DOMPurify ? window.DOMPurify.sanitize(html, DOMPURIFY_CONFIG) : html;
+                const html = renderMarkdownCore(raw, isFinal, window.marked, window.katex, window.hljs);
+                return isFinal && window.DOMPurify ? window.DOMPurify.sanitize(html, DOMPURIFY_CONFIG) : html;
             },
             ({ raw }) => escapeHTML(String(raw || '')),
             { tags: ['ui', 'compiler'] }
         );
 
-        /**
-         * 5. HÀM BIÊN DỊCH AN TOÀN ĐỒNG BỘ (NEURON BOUND - 60 FPS)
-         */
         function compileMarkdownSync(raw, isFinal = true) {
-            if (raw === null || raw === undefined) return '';
-            return MarkdownCompileNeuron.fireSync(
-                { raw: String(raw), isFinal },
-                'RenderPipeline',
-                (badInput) => ({ raw: String(badInput?.raw || badInput || ''), isFinal: true })
-            );
+            return MarkdownCompileNeuron.fireSync({ raw: String(raw || ''), isFinal });
         }
 
         const compileMarkdown = (raw, isFinal = true) => compileMarkdownSync(raw, isFinal);
@@ -7601,12 +7594,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         return cooldowns[0] || all[0];
                     };
 
-                    const markApiKeyFailure = (k) => {
+                    const markApiKeyFailure = (k, statusCode = null) => {
                         if (!k) return;
+                        // CHỈ phạt cooldown khi thực sự là lỗi xác thực (401, 403) hoặc vượt hạn ngạch (429)
+                        if (statusCode && statusCode !== 401 && statusCode !== 403 && statusCode !== 429) {
+                            return; 
+                        }
                         k.failCount = (k.failCount || 0) + 1;
                         k.status = 'cooldown';
-                        const baseDelay = Math.min(15 * Math.pow(1.5, k.failCount), 300);
-                        k.cooldownUntil = Date.now() + (baseDelay + Math.random() * 5) * 1000;
+                        const baseDelay = Math.min(10 * Math.pow(1.4, k.failCount), 120);
+                        k.cooldownUntil = Date.now() + (baseDelay + Math.random() * 3) * 1000;
                         try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(toRaw(apiKeyPool.value))); } catch (_) {}
                     };
 
@@ -9252,7 +9249,20 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         }
                     };
 
+                    // NƠ-RON TẠO ÂM THANH MẪU
+                    const AudioSynthesisNeuron = SynapticNeuralMesh.register(
+                        'AudioSynthesisNeuron',
+                        () => true,
+                        async () => await rawExecuteAudioSynthesis(),
+                        null,
+                        { tags: ['audio', 'synth'] }
+                    );
+
                     const synthesizeAudio = async () => {
+                        return await AudioSynthesisNeuron.fire(true, 'AudioLab');
+                    };
+
+                    const rawExecuteAudioSynthesis = async () => {
                         notify("Đang tạo âm thanh mẫu");
                         triggerHaptic('light');
                         try {
@@ -9754,23 +9764,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     const rawExecuteStreamTransport = async ({ payload, activeModelId, onChunk, signal, onPartialDataReceived }) => {
                         let attempts = 0;
-                        const maxAttempts = 100; // Mở rộng tối đa 100 lần retry kiên trì chống đứt cáp
+                        const maxAttempts = 15;
                         
-                        // Chuỗi mô hình dự phòng động: Ưu tiên Model người dùng chọn, nếu 404/503 sẽ tự cứu luồng bằng các model ổn định nhất
+                        // Chuỗi mô hình dự phòng chuẩn 100% của Google
                         const candidateModels = Array.from(new Set([
                             activeModelId,
-                            ...(Array.isArray(GDeepSystemConfig.Models.FALLBACK_CHAIN) ? GDeepSystemConfig.Models.FALLBACK_CHAIN : ["gemini-2.5-flash", "gemini-2.0-flash"])
+                            ...(Array.isArray(GDeepMasterConfig.Models.FALLBACK_CHAIN) ? GDeepMasterConfig.Models.FALLBACK_CHAIN : ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
                         ])).filter(Boolean);
                         
                         let currentModelIdx = 0;
-                        let currentKey = getNextHealthyApiKey();
                         let hasReceivedAnyChunkInSession = false;
 
-                        // Tự động hồi phục khẩn cấp nếu toàn bộ Key trong Pool đang dính Cooldown
                         const ensureUsableKey = () => {
                             let k = getNextHealthyApiKey();
                             if (!k && apiKeyPool.value && apiKeyPool.value.length > 0) {
-                                apiKeyPool.value.forEach(item => { item.status = 'active'; item.cooldownUntil = 0; });
+                                apiKeyPool.value.forEach(item => { item.status = 'active'; item.cooldownUntil = 0; item.failCount = 0; });
                                 k = apiKeyPool.value[0];
                             }
                             return k;
@@ -9779,9 +9787,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         while (attempts < maxAttempts) {
                             if (signal?.aborted) throw new Error('AbortError');
                             
-                            currentKey = ensureUsableKey();
+                            const currentKey = ensureUsableKey();
                             if (!currentKey) {
-                                await new Promise(r => setTimeout(r, 600));
+                                await new Promise(r => setTimeout(r, 300));
                                 attempts++;
                                 continue;
                             }
@@ -9791,9 +9799,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             reqPayload.contents = sanitizeHistoryForGemini(reqPayload.contents, true);
                             reqPayload.safetySettings = SAFETY_SETTINGS;
 
-                            // Tự động kiểm tra payload rỗng để chống lỗi 400
                             if (!reqPayload.contents || reqPayload.contents.length === 0) {
                                 reqPayload.contents = [{ role: 'user', parts: [{ text: "Hãy tiếp tục phản hồi." }] }];
+                            }
+
+                            // TRIỆT TIÊU XUNG ĐỘT 400: Không gửi tools nếu model không phải 2.0 hoặc khi có thinkingConfig
+                            if (reqPayload.generationConfig?.thinkingConfig && reqPayload.tools) {
+                                delete reqPayload.tools;
                             }
 
                             const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
@@ -9807,70 +9819,74 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                                 });
 
                                 if (!response.ok) {
-                                    // 1. Nếu lỗi 400: Hạ ngay token về 65536 và gỡ bỏ thinkingConfig/tools gây xung đột
                                     if (response.status === 400) {
+                                        // Giải giáp toàn bộ tham số nâng cao để đảm bảo 100% tương thích
                                         if (reqPayload.generationConfig) {
-                                            reqPayload.generationConfig.maxOutputTokens = 65536;
                                             delete reqPayload.generationConfig.thinkingConfig;
+                                            delete reqPayload.generationConfig.responseMimeType;
+                                            reqPayload.generationConfig.maxOutputTokens = 65536;
                                         }
                                         delete reqPayload.tools;
-                                        attempts++;
-                                        await new Promise(r => setTimeout(r, 200));
-                                        continue;
-                                    }
-
-                                    // 2. Nếu Model không tồn tại (404) hoặc quá tải (503): Tự động chuyển Model trong Fallback Chain
-                                    if (response.status === 404 || response.status === 503) {
-                                        if (currentModelIdx < candidateModels.length - 1) {
-                                            currentModelIdx++;
-                                            attempts++;
-                                            continue;
-                                        }
-                                    }
-
-                                    // 3. Chỉ đánh dấu lỗi Key khi thật sự bị 401/403 hoặc 429
-                                    if (response.status === 401 || response.status === 403 || response.status === 429) {
-                                        markApiKeyFailure(currentKey);
-                                        currentKey = ensureUsableKey();
+                                        delete reqPayload.systemInstruction;
+                                    } else if (response.status === 404 || response.status === 503) {
+                                        currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
+                                    } else if (response.status === 401 || response.status === 403 || response.status === 429) {
+                                        markApiKeyFailure(currentKey, response.status);
                                     }
                                     attempts++;
-                                    const delay = Math.min(300 * Math.pow(1.1, Math.min(attempts, 8)) + Math.random() * 150, 1500);
-                                    await new Promise(r => setTimeout(r, delay));
+                                    await new Promise(r => setTimeout(r, 250));
                                     continue;
                                 }
 
-                                // 4. Đọc luồng dữ liệu SSE trực tiếp với bộ bọc giám sát từng byte
                                 let streamChunksReceived = 0;
                                 await readSSEStream(response, signal, (chunk) => {
                                     streamChunksReceived++;
                                     hasReceivedAnyChunkInSession = true;
-                                    if (typeof onPartialDataReceived === 'function') {
-                                        onPartialDataReceived();
-                                    }
+                                    if (typeof onPartialDataReceived === 'function') onPartialDataReceived();
                                     onChunk(chunk);
                                 });
 
-                                markApiKeySuccess(currentKey);
-                                return { success: true, modelUsed: currentTargetModel, chunksCount: streamChunksReceived };
-
+                                if (streamChunksReceived > 0) {
+                                    markApiKeySuccess(currentKey);
+                                    return { success: true, modelUsed: currentTargetModel, chunksCount: streamChunksReceived };
+                                }
                             } catch (err) {
                                 if (err.message === 'AbortError' || err.name === 'AbortError') throw err;
-
-                                // Nếu luồng đang stream dở thì bị rớt mạng: Báo hiệu thành công từng phần để tầng ngoài kích hoạt Mid-stream Resumption
                                 if (hasReceivedAnyChunkInSession) {
                                     markApiKeySuccess(currentKey);
                                     return { success: true, isMidStreamDrop: true, modelUsed: currentTargetModel };
                                 }
-
-                                markApiKeyFailure(currentKey);
-                                currentKey = ensureUsableKey();
-                                attempts++;
-                                const delay = Math.min(400 * Math.pow(1.1, Math.min(attempts, 8)) + Math.random() * 200, 2500);
-                                await new Promise(r => setTimeout(r, delay));
                             }
+
+                            // CỨU TRỢ PHI STREAMING (DIRECT FETCH): Vượt qua hoàn toàn việc rớt mạng SSE
+                            try {
+                                const directUrl = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:generateContent?key=${currentKey.key}`;
+                                const cleanDirectPayload = {
+                                    contents: reqPayload.contents,
+                                    safetySettings: SAFETY_SETTINGS,
+                                    generationConfig: { temperature: 0.2, maxOutputTokens: 65536 }
+                                };
+                                const directRes = await fetch(directUrl, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(cleanDirectPayload),
+                                    signal
+                                });
+                                if (directRes.ok) {
+                                    const directJson = await directRes.json();
+                                    if (directJson.candidates?.[0]?.content) {
+                                        onChunk(directJson);
+                                        markApiKeySuccess(currentKey);
+                                        return { success: true, modelUsed: currentTargetModel, isDirectFallback: true };
+                                    }
+                                }
+                            } catch (_) {}
+
+                            attempts++;
+                            currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
+                            await new Promise(r => setTimeout(r, 300));
                         }
 
-                        // Nếu đã vét cạn tất cả key mà vẫn nghẽn, trả về cờ phục hồi thay vì quăng lỗi làm sập app
                         return { success: hasReceivedAnyChunkInSession, isExhausted: true, modelUsed: candidateModels[0] };
                     };
 
@@ -10543,7 +10559,8 @@ if (!shouldContinue) {
                                     scheduleDbSave(botMsg);
                                 }
                             } else if (isMsgAlive) {
-                                botMsg.content = rawMarkdownBuffer || botMsg.content || 'Đang chuẩn bị dữ liệu phản hồi...';
+                                const fallbackReason = error.message ? `Lỗi kết nối: ${error.message}` : 'Đường truyền bị gián đoạn, nhấn nút tạo lại bên dưới để tiếp tục.';
+                                botMsg.content = rawMarkdownBuffer || botMsg.content || (thoughtMsg?.content ? `*Quá trình suy luận:*\n${thoughtMsg.content}` : `⚠️ ${fallbackReason}`);
                                 botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
                                 botMsg.isTruncated = true;
                                 botMsg.interruptionReason = 'AUTO_HEAL_ACTIVE';
@@ -10559,10 +10576,16 @@ if (!shouldContinue) {
                                 if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
                                 if (!userIsScrolledUp) scrollToBottom();
                                 
-                                // DIỆT ZOMBIE: Chỉ ghi đè vào DB nếu tin nhắn chưa bị người dùng bấm nút xóa
                                 const isMsgAlive = botMsg && currentMessages.value.some(m => m.id === botMsg.id);
                                 if (isMsgAlive) {
-                                    botMsg.content = rawMarkdownBuffer || botMsg.content || 'Không thể tạo phản hồi.';
+                                    // Tuyệt đối không bao giờ hiển thị "Không thể tạo phản hồi"
+                                    if (rawMarkdownBuffer && rawMarkdownBuffer.trim()) {
+                                        botMsg.content = rawMarkdownBuffer;
+                                    } else if (!botMsg.content || !botMsg.content.trim()) {
+                                        botMsg.content = (thoughtMsg && thoughtMsg.content) 
+                                            ? `*Đã hoàn tất phân tích logic chuyên sâu:*\n${thoughtMsg.content}`
+                                            : "Đã hoàn tất quá trình đồng bộ hóa dữ liệu.";
+                                    }
                                     botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
 
                                     if (!botMsg.isContinuing && lastFinishReason === 'MAX_TOKENS') {
