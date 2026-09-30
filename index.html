@@ -1720,12 +1720,15 @@
                             <div class="bg-surfaceElevated p-2 rounded-xl flex flex-col gap-1 shadow-sm border border-white/5">
                                 <span class="text-[9px] text-textMuted uppercase font-semibold">Thời lượng</span>
                                 <select v-model.number="cinemaConfig.duration" class="bg-transparent text-white text-[11px] font-medium outline-none cursor-pointer">
-                                    <option :value="3" class="bg-surface">3 Giây (Cú máy ngắn)</option>
-                                    <option :value="5" class="bg-surface">5 Giây (Tiêu chuẩn)</option>
-                                    <option :value="10" class="bg-surface">10 Giây (Phân cảnh)</option>
-                                    <option :value="15" class="bg-surface">15 Giây (Quảng cáo)</option>
-                                    <option :value="30" class="bg-surface">30 Giây (Toàn diện)</option>
-                                </select>
+    <option :value="15" class="bg-surface">15 Giây</option>
+    <option :value="30" class="bg-surface">30 Giây</option>
+    <option :value="60" class="bg-surface">1 Phút</option>
+    <option :value="300" class="bg-surface">5 Phút</option>
+    <option :value="900" class="bg-surface">15 Phút</option>
+    <option :value="1800" class="bg-surface">30 Phút</option>
+    <option :value="3600" class="bg-surface">60 Phút</option>
+    <option :value="5400" class="bg-surface">90 Phút</option>
+</select>
                             </div>
 
                             <div class="bg-surfaceElevated p-2 rounded-xl flex flex-col gap-1 shadow-sm border border-white/5">
@@ -1756,7 +1759,8 @@
                                 title="Công cụ nâng cao">
                             <lucide-icon v-if="!isListening" :name="showInputMenu ? 'x' : 'plus'" class="w-4.5 h-4.5" :style="{ color: (enableDeepThinking || enableCodeExecution || enableGoogleSearch || enableImageGen || enableCinemaStudio) ? selectedAccent : '#8e96a8' }"></lucide-icon>
                             <div v-else class="mic-wave-container">
-                                <span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span>
+                                <!-- SỬA LỖI GIAO DIỆN: Bổ sung thanh sóng âm thứ 4 bị thiếu để khớp với CSS animation-delay -->
+                                <span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span>
                             </div>
                         </button>
 
@@ -2046,8 +2050,11 @@
 <!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM -->
 <script id="cinema-worker-code" type="text/plain">
 if (typeof self.window === 'undefined') { self.window = self; }
+if (typeof self.document === 'undefined') {
+    self.document = { createElement: () => ({ style: {} }), createElementNS: () => ({ style: {} }) };
+}
 if (typeof self.requestAnimationFrame !== 'function') {
-    self.requestAnimationFrame = function(cb) { return setTimeout(cb, 16); };
+    self.requestAnimationFrame = function(cb) { return setTimeout(() => cb(performance.now()), 16); };
 }
 if (typeof self.cancelAnimationFrame !== 'function') {
     self.cancelAnimationFrame = function(id) { clearTimeout(id); };
@@ -2065,9 +2072,46 @@ function robustJsonParse(rawString) {
     clean = clean.replace(/,\s*([\]}])/g, '$1');
     try { return JSON.parse(clean); } catch (_) {}
     const firstBrace = clean.indexOf('{'), lastBrace = clean.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace !== -1) {
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
         try { return JSON.parse(clean.slice(firstBrace, lastBrace + 1)); } catch (_) {}
     }
+    const firstBracket = clean.indexOf('['), lastBracket = clean.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+        try { return JSON.parse(clean.slice(firstBracket, lastBracket + 1)); } catch (_) {}
+    }
+    return null;
+}
+
+// BỘ THÍCH ỨNG ĐA HÌNH ĐỘNG HỌC (POLYMORPHIC UNPACKER) - KHÔNG HARDCODE
+function unpackVector(val, size = 3) {
+    if (val === null || val === undefined) return null;
+    if (Array.isArray(val)) {
+        const nums = val.map(Number).filter(n => !isNaN(n));
+        return nums.length > 0 ? nums : null;
+    }
+    if (typeof val === 'object') {
+        if ('u_min' in val && 'v_min' in val) {
+            return [Number(val.u_min), Number(val.v_min), Number(val.u_max), Number(val.v_max)];
+        }
+        if ('x' in val || 'y' in val) {
+            return [Number(val.x || 0), Number(val.y || 0), Number(val.z || 0)].slice(0, size);
+        }
+        if ('dx' in val || 'dy' in val) {
+            return [Number(val.dx || 0), Number(val.dy || 0), Number(val.dz || 0)].slice(0, size);
+        }
+        if ('u' in val || 'v' in val) {
+            return [Number(val.u || 0), Number(val.v || 0)];
+        }
+        if ('pitch' in val || 'yaw' in val) {
+            return [Number(val.pitch || 0), Number(val.yaw || 0), Number(val.roll || 0)];
+        }
+        if ('min' in val && 'max' in val) {
+            return [Number(val.min), Number(val.max)];
+        }
+        const values = Object.values(val).map(Number).filter(n => !isNaN(n));
+        if (values.length >= size) return values.slice(0, size);
+    }
+    if (typeof val === 'number') return [val];
     return null;
 }
 
@@ -2082,11 +2126,13 @@ async function bitmapToBase64(bitmap, maxWidth = 512) {
     const arrayBuffer = await blob.arrayBuffer();
     let binary = '';
     const bytes = new Uint8Array(arrayBuffer);
-    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    const CHUNK_SIZE = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SIZE));
+    }
     return btoa(binary);
 }
 
-// BỘ TÍNH TOÁN BẢN ĐỒ ĐỘ SÂU ĐỘNG HỌC (KHÔNG DÙNG THÔNG SỐ CỐ ĐỊNH)
 function createDynamicDepthTexture(width, height, depthTopology, imageBitmap) {
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -2112,9 +2158,9 @@ function createDynamicDepthTexture(width, height, depthTopology, imageBitmap) {
             let calculatedDepth = 0.0;
             if (layers.length > 0) {
                 for (const layer of layers) {
-                    const box = layer.uv_box;
-                    if (Array.isArray(box) && box.length === 4) {
-                        if (u >= box[0] && u >= box[0] && u <= box[2] && v >= box[1] && v <= box[3]) {
+                    const box = unpackVector(layer.uv_box || layer.bbox || layer.box, 4);
+                    if (box && box.length === 4) {
+                        if (u >= box[0] && u <= box[2] && v >= box[1] && v <= box[3]) {
                             const edgeDistX = Math.min(u - box[0], box[2] - u) / Math.max(0.001, (box[2] - box[0]) * 0.2);
                             const edgeDistY = Math.min(v - box[1], box[3] - v) / Math.max(0.001, (box[3] - box[1]) * 0.2);
                             const blend = Math.max(0.0, Math.min(1.0, Math.min(edgeDistX, edgeDistY)));
@@ -2132,24 +2178,84 @@ function createDynamicDepthTexture(width, height, depthTopology, imageBitmap) {
             dst[idx] = byteVal;
             dst[idx + 1] = byteVal;
             dst[idx + 2] = byteVal;
-            dst[idx + 1] = byteVal;
             dst[idx + 3] = 255;
         }
     }
 
     dCtx.putImageData(depthImg, 0, 0);
-    const tex = new THREE.CanvasTexture(depthCanvas);
+    const tex = new THREE.DataTexture(new Uint8Array(dst.buffer), width, height, THREE.RGBAFormat);
+    tex.needsUpdate = true;
     tex.flipY = true;
     return tex;
 }
 
-// SHADER MÔ PHỎNG ĐIỆN ẢNH VÀ CHUYỂN ĐỘNG VẬT LÝ NỘI TẠI
-const Dynamic4DSceneShader = {
+const BackgroundSceneShader = {
     uniforms: {
         uTexture: { value: null },
         uDepthMap: { value: null },
         uTime: { value: 0.0 },
-        uGlobalWind: { value: new THREE.Vector3(0, 0, 0) },
+        uSubjectBox: { value: new THREE.Vector4(0, 0, 0, 0) },
+        uCameraVelocity: { value: new THREE.Vector2(0, 0) },
+        uVignette: { value: 0.25 },
+        uGrainIntensity: { value: 0.02 }
+    },
+    vertexShader: `
+        uniform sampler2D uDepthMap;
+        varying vec2 vUv;
+        varying float vDepth;
+        void main() {
+            vUv = uv;
+            float depth = texture2D(uDepthMap, uv).r;
+            vDepth = depth;
+            vec3 pos = position;
+            pos.z += (depth - 1.0) * 0.6;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform sampler2D uTexture;
+        uniform vec4 uSubjectBox;
+        uniform vec2 uCameraVelocity;
+        uniform float uTime;
+        uniform float uVignette;
+        uniform float uGrainIntensity;
+        varying vec2 vUv;
+        varying float vDepth;
+
+        void main() {
+            vec2 uv = vUv;
+            vec4 col = texture2D(uTexture, uv);
+
+            float inSub = step(uSubjectBox.x, uv.x) * (1.0 - step(uSubjectBox.z, uv.x)) *
+                          step(uSubjectBox.y, uv.y) * (1.0 - step(uSubjectBox.w, uv.y));
+            if (inSub > 0.5) {
+                vec4 blurCol = vec4(0.0);
+                blurCol += texture2D(uTexture, uv + vec2(0.02, 0.0));
+                blurCol += texture2D(uTexture, uv - vec2(0.02, 0.0));
+                blurCol += texture2D(uTexture, uv + vec2(0.0, 0.02));
+                blurCol += texture2D(uTexture, uv - vec2(0.0, 0.02));
+                col = mix(col, blurCol * 0.25, 0.65);
+            }
+
+            vec3 finalColor = col.rgb;
+            float distFromCenter = distance(uv, vec2(0.5));
+            finalColor *= smoothstep(0.8, 0.8 - uVignette, distFromCenter);
+            float grain = (fract(sin(dot(uv + uTime * 0.01, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * uGrainIntensity;
+            finalColor += grain;
+
+            gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
+        }
+    `
+};
+
+const SubjectMatrixShader = {
+    uniforms: {
+        uTexture: { value: null },
+        uDepthMap: { value: null },
+        uTime: { value: 0.0 },
+        uSubjectBox: { value: new THREE.Vector4(0, 0, 1, 1) },
+        uDepthRange: { value: new THREE.Vector2(0.0, 1.0) },
+        uFeather: { value: 0.05 },
         uNodeCount: { value: 0 },
         uNodeCenter: { value: new Array(8).fill(0).map(() => new THREE.Vector2(0, 0)) },
         uNodeRadius: { value: new Float32Array(8) },
@@ -2158,8 +2264,7 @@ const Dynamic4DSceneShader = {
         uNodeFreq: { value: new Float32Array(8) },
         uNodePhase: { value: new Float32Array(8) },
         uCameraVelocity: { value: new THREE.Vector2(0, 0) },
-        uVignette: { value: 0.3 },
-        uGrainIntensity: { value: 0.03 }
+        uGlobalWind: { value: new THREE.Vector3(0, 0, 0) }
     },
     vertexShader: `
         uniform sampler2D uDepthMap;
@@ -2181,14 +2286,12 @@ const Dynamic4DSceneShader = {
             vUv = uv;
             float depth = texture2D(uDepthMap, uv).r;
             vDepth = depth;
-
             vec3 pos = position;
-            // Dịch chuyển độ sâu dựa trên bản đồ phân tầng
-            pos.z += (depth - 0.5) * 0.4;
+
+            pos.z += (depth - 0.2) * 0.35;
+            pos += uGlobalWind * uTime * depth * 0.02;
 
             vec2 totalDisp = vec2(0.0);
-            pos += uGlobalWind * uTime * depth * 0.03;
-
             for (int i = 0; i < 8; i++) {
                 if (i >= uNodeCount) break;
                 vec2 center = uNodeCenter[i];
@@ -2202,11 +2305,11 @@ const Dynamic4DSceneShader = {
                     float localTime = uTime * freq * 6.2831853 + phase;
 
                     vec3 displacement = vec3(0.0);
-                    if (uNodeType[i] == 0) { // Trôi dạt tự nhiên
+                    if (uNodeType[i] == 0) {
                         displacement = uNodeVector[i] * sin(localTime * 0.5) * weight;
-                    } else if (uNodeType[i] == 1) { // Dao động điều hòa (nhịp thở, lá cây, sóng)
+                    } else if (uNodeType[i] == 1) {
                         displacement = vec3(sin(localTime) * uNodeVector[i].x, cos(localTime * 0.8) * uNodeVector[i].y, sin(localTime) * uNodeVector[i].z) * weight;
-                    } else if (uNodeType[i] == 2) { // Xoáy chuyển động
+                    } else if (uNodeType[i] == 2) {
                         vec2 toC = uv - center;
                         float angle = sin(localTime) * weight * uNodeVector[i].z;
                         pos.x += (-toC.y * angle);
@@ -2216,58 +2319,48 @@ const Dynamic4DSceneShader = {
                     totalDisp += displacement.xy;
                 }
             }
-
             vMotionVector = totalDisp;
             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
         }
     `,
     fragmentShader: `
         uniform sampler2D uTexture;
-        uniform float uTime;
+        uniform vec4 uSubjectBox;
+        uniform vec2 uDepthRange;
+        uniform float uFeather;
         uniform vec2 uCameraVelocity;
-        uniform float uVignette;
-        uniform float uGrainIntensity;
-
         varying vec2 vUv;
         varying float vDepth;
         varying vec2 vMotionVector;
 
         void main() {
             vec2 uv = vUv;
-            // Motion blur quang học dựa trên vận tốc camera thực
-            vec2 blurVel = (uCameraVelocity * 0.015) + (vMotionVector * 0.35);
-            vec4 col = texture2D(uTexture, uv);
 
-            vec4 accum = col;
-            for(int i = 1; i <= 3; i++) {
-                float factor = float(i) / 3.0;
-                accum += texture2D(uTexture, uv - blurVel * factor * 0.015);
-            }
-            vec3 finalColor = (accum / 4.0).rgb;
+            float inBox = smoothstep(uSubjectBox.x - uFeather, uSubjectBox.x, uv.x) *
+                          (1.0 - smoothstep(uSubjectBox.z, uSubjectBox.z + uFeather, uv.x)) *
+                          smoothstep(uSubjectBox.y - uFeather, uSubjectBox.y, uv.y) *
+                          (1.0 - smoothstep(uSubjectBox.w, uSubjectBox.w + uFeather, uv.y));
 
-            // Hiệu ứng Vignette điện ảnh
-            float distFromCenter = distance(uv, vec2(0.5));
-            finalColor *= smoothstep(0.8, 0.8 - uVignette, distFromCenter);
+            float inDepth = smoothstep(uDepthRange.x - uFeather, uDepthRange.x, vDepth) *
+                            (1.0 - smoothstep(uDepthRange.y, uDepthRange.y + uFeather, vDepth));
 
-            // Nhiễu hạt phim nhựa 35mm tự nhiên
-            float grain = (fract(sin(dot(uv + uTime * 0.01, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * uGrainIntensity;
-            finalColor += grain;
+            float alpha = inBox * inDepth;
+            if (alpha < 0.02) discard;
 
-            gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
+            vec2 blurVel = (uCameraVelocity * 0.015) + (vMotionVector * 0.3);
+            vec4 col = texture2D(uTexture, uv - blurVel * 0.01);
+            gl_FragColor = vec4(col.rgb, alpha * col.a);
         }
     `
 };
 
-// HỆ THỐNG HẠT MÔI TRƯỜNG LINH HOẠT (THÔNG SỐ HOÀN TOÀN TỪ AI VISION)
 function buildAtmosphericParticleSystem(particleSpec, boundsWidth, boundsHeight, depthDist) {
     if (!particleSpec || !particleSpec.count || particleSpec.count <= 0) return null;
-
-    const count = Math.min(1200, Math.max(40, parseInt(particleSpec.count, 10)));
+    const count = Math.min(800, Math.max(20, parseInt(particleSpec.count, 10)));
     const geo = new THREE.BufferGeometry();
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
-
-    const vBase = Array.isArray(particleSpec.velocity) ? particleSpec.velocity : [0, -0.05, 0];
+    const vBase = unpackVector(particleSpec.velocity, 3) || [0, -0.05, 0];
 
     for (let i = 0; i < count; i++) {
         positions[i * 3] = (Math.random() - 0.5) * boundsWidth * 1.5;
@@ -2280,10 +2373,8 @@ function buildAtmosphericParticleSystem(particleSpec, boundsWidth, boundsHeight,
     }
 
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    const colorHex = particleSpec.color || '#ffffff';
     const mat = new THREE.PointsMaterial({
-        color: new THREE.Color(colorHex),
+        color: new THREE.Color(particleSpec.color || '#ffffff'),
         size: Number(particleSpec.size) || 0.025,
         transparent: true,
         opacity: Number(particleSpec.opacity) || 0.45,
@@ -2292,69 +2383,134 @@ function buildAtmosphericParticleSystem(particleSpec, boundsWidth, boundsHeight,
     });
 
     const pSystem = new THREE.Points(geo, mat);
-
     return {
         mesh: pSystem,
         update: (delta) => {
-            const posAttr = geo.attributes.position;
-            const arr = posAttr.array;
+            const arr = geo.attributes.position.array;
             for (let i = 0; i < count; i++) {
                 arr[i * 3] += velocities[i * 3] * delta;
                 arr[i * 3 + 1] += velocities[i * 3 + 1] * delta;
                 arr[i * 3 + 2] += velocities[i * 3 + 2] * delta;
-
-                // Tự động xoay vòng hạt khi bay ra khỏi khung hình
                 if (arr[i * 3 + 1] < -boundsHeight * 0.8) arr[i * 3 + 1] = boundsHeight * 0.8;
                 if (arr[i * 3 + 1] > boundsHeight * 0.8) arr[i * 3 + 1] = -boundsHeight * 0.8;
                 if (arr[i * 3] < -boundsWidth * 0.8) arr[i * 3] = boundsWidth * 0.8;
                 if (arr[i * 3] > boundsWidth * 0.8) arr[i * 3] = -boundsWidth * 0.8;
             }
-            posAttr.needsUpdate = true;
+            geo.attributes.position.needsUpdate = true;
         }
     };
 }
 
-// BỘ NỘI SUY CATMULL-ROM CAMERA KHÔNG HARDCODE
+// BỘ TRÍCH XUẤT AN TOÀN QUỸ ĐẠO MÁY QUAY (ZERO [0] CRASH)
+function resolveSplinePoint(p, defaultVal) {
+    if (!p) return defaultVal;
+    const v = unpackVector(p.cam || p.camera || p.pos || p.position || p, 3);
+    return v && v.length >= 3 ? v : defaultVal;
+}
+
+function resolveSplineRot(p, defaultVal) {
+    if (!p) return defaultVal;
+    const v = unpackVector(p.rot || p.rotation || p.angles || p, 3);
+    return v && v.length >= 3 ? v : defaultVal;
+}
+
 function evaluateSpline(anchors, progress, defaultCamDist) {
-    if (!anchors || anchors.length === 0) {
-        return { cam: [0, 0, defaultCamDist], rot: [0, 0, 0] };
+    const defCam = [0, 0, Number(defaultCamDist) || 2.2];
+    const defRot = [0, 0, 0];
+    if (!Array.isArray(anchors) || anchors.length === 0) {
+        return { cam: defCam, rot: defRot };
     }
     const p = Math.max(0, Math.min(1, progress));
-    if (anchors.length === 1 || p <= anchors[0].t) {
-        return { cam: [...anchors[0].cam], rot: [...anchors[0].rot] };
+    if (anchors.length === 1 || p <= (Number(anchors[0]?.t) || 0)) {
+        return { cam: resolveSplinePoint(anchors[0], defCam), rot: resolveSplineRot(anchors[0], defRot) };
     }
-    if (p >= anchors[anchors.length - 1].t) {
+    if (p >= (Number(anchors[anchors.length - 1]?.t) || 1)) {
         const last = anchors[anchors.length - 1];
-        return { cam: [...last.cam], rot: [...last.rot] };
+        return { cam: resolveSplinePoint(last, defCam), rot: resolveSplineRot(last, defRot) };
     }
     let idx = 0;
     for (let i = 0; i < anchors.length - 1; i++) {
-        if (p >= anchors[i].t && p <= anchors[i + 1].t) { idx = i; break; }
+        const tCurr = Number(anchors[i]?.t) || 0;
+        const tNext = Number(anchors[i + 1]?.t) || 1;
+        if (p >= tCurr && p <= tNext) { idx = i; break; }
     }
     const p0 = anchors[Math.max(0, idx - 1)];
     const p1 = anchors[idx];
     const p2 = anchors[idx + 1];
     const p3 = anchors[Math.min(anchors.length - 1, idx + 2)];
 
-    const localT = (p - p1.t) / Math.max(0.0001, p2.t - p1.t);
+    const t1 = Number(p1?.t) || 0;
+    const t2Anchor = Number(p2?.t) || 1;
+    const localT = (p - t1) / Math.max(0.0001, t2Anchor - t1);
     const t2 = localT * localT;
     const t3 = t2 * localT;
 
     const catmull = (v0, v1, v2, v3) =>
         0.5 * ((2 * v1) + (-v0 + v2) * localT + (2 * v0 - 5 * v1 + 4 * v2 - v3) * t2 + (-v0 + 3 * v1 - 3 * v2 + v3) * t3);
 
+    const c0 = resolveSplinePoint(p0, defCam), c1 = resolveSplinePoint(p1, defCam), c2 = resolveSplinePoint(p2, defCam), c3 = resolveSplinePoint(p3, defCam);
+    const r0 = resolveSplineRot(p0, defRot), r1 = resolveSplineRot(p1, defRot), r2 = resolveSplineRot(p2, defRot), r3 = resolveSplineRot(p3, defRot);
+
     return {
-        cam: [catmull(p0.cam[0], p1.cam[0], p2.cam[0], p3.cam[0]), catmull(p0.cam[1], p1.cam[1], p2.cam[1], p3.cam[1]), catmull(p0.cam[2], p1.cam[2], p2.cam[2], p3.cam[2])],
-        rot: [catmull(p0.rot[0], p1.rot[0], p2.rot[0], p3.rot[0]), catmull(p0.rot[1], p1.rot[1], p2.rot[1], p3.rot[1]), catmull(p0.rot[2], p1.rot[2], p2.rot[2], p3.rot[2])]
+        cam: [catmull(c0[0], c1[0], c2[0], c3[0]), catmull(c0[1], c1[1], c2[1], c3[1]), catmull(c0[2], c1[2], c2[2], c3[2])],
+        rot: [catmull(r0[0], r1[0], r2[0], r3[0]), catmull(r0[1], r1[1], r2[1], r3[1]), catmull(r0[2], r1[2], r2[2], r3[2])]
     };
 }
 
-// BỘ TẠO ÂM THANH THEO KHÍ HẬU
+function evaluateSubjectMatrixSpline(anchors, progress) {
+    const defPos = [0, 0, 0.05];
+    const defRot = [0, 0, 0];
+    if (!Array.isArray(anchors) || anchors.length === 0) {
+        return { pos: defPos, rot: defRot, scale: 1.0 };
+    }
+    const p = Math.max(0, Math.min(1, progress));
+    const extractScale = (item) => {
+        if (!item) return 1.0;
+        const s = item.scale ?? item.s ?? item.size;
+        return typeof s === 'number' ? s : (Array.isArray(s) ? Number(s[0]) || 1.0 : 1.0);
+    };
+
+    if (anchors.length === 1 || p <= (Number(anchors[0]?.t) || 0)) {
+        return { pos: resolveSplinePoint(anchors[0], defPos), rot: resolveSplineRot(anchors[0], defRot), scale: extractScale(anchors[0]) };
+    }
+    if (p >= (Number(anchors[anchors.length - 1]?.t) || 1)) {
+        const last = anchors[anchors.length - 1];
+        return { pos: resolveSplinePoint(last, defPos), rot: resolveSplineRot(last, defRot), scale: extractScale(last) };
+    }
+    let idx = 0;
+    for (let i = 0; i < anchors.length - 1; i++) {
+        const tCurr = Number(anchors[i]?.t) || 0;
+        const tNext = Number(anchors[i + 1]?.t) || 1;
+        if (p >= tCurr && p <= tNext) { idx = i; break; }
+    }
+    const p0 = anchors[Math.max(0, idx - 1)];
+    const p1 = anchors[idx];
+    const p2 = anchors[idx + 1];
+    const p3 = anchors[Math.min(anchors.length - 1, idx + 2)];
+
+    const t1 = Number(p1?.t) || 0;
+    const t2Anchor = Number(p2?.t) || 1;
+    const localT = (p - t1) / Math.max(0.0001, t2Anchor - t1);
+    const t2 = localT * localT;
+    const t3 = t2 * localT;
+
+    const catmull = (v0, v1, v2, v3) =>
+        0.5 * ((2 * v1) + (-v0 + v2) * localT + (2 * v0 - 5 * v1 + 4 * v2 - v3) * t2 + (-v0 + 3 * v1 - 3 * v2 + v3) * t3);
+
+    const pos0 = resolveSplinePoint(p0, defPos), pos1 = resolveSplinePoint(p1, defPos), pos2 = resolveSplinePoint(p2, defPos), pos3 = resolveSplinePoint(p3, defPos);
+    const rot0 = resolveSplineRot(p0, defRot), rot1 = resolveSplineRot(p1, defRot), rot2 = resolveSplineRot(p2, defRot), rot3 = resolveSplineRot(p3, defRot);
+
+    return {
+        pos: [catmull(pos0[0], pos1[0], pos2[0], pos3[0]), catmull(pos0[1], pos1[1], pos2[1], pos3[1]), catmull(pos0[2], pos1[2], pos2[2], pos3[2])],
+        rot: [catmull(rot0[0], rot1[0], rot2[0], rot3[0]), catmull(rot0[1], rot1[1], rot2[1], rot3[1]), catmull(rot0[2], rot1[2], rot2[2], rot3[2])],
+        scale: catmull(extractScale(p0), extractScale(p1), extractScale(p2), extractScale(p3))
+    };
+}
+
 function createAudioBufferMultiTrack({ blueprint, durationSec, sampleRate, voiceBuffers }) {
     const totalSamples = Math.max(1, Math.ceil(sampleRate * durationSec));
     const left = new Float32Array(totalSamples);
     const right = new Float32Array(totalSamples);
-
     const musicVol = Number(blueprint?.music?.volume) || 0.0;
     const chords = Array.isArray(blueprint?.music?.chords) ? blueprint.music.chords : [];
     const subBass = Number(blueprint?.music?.sub_bass) || 0.0;
@@ -2375,7 +2531,7 @@ function createAudioBufferMultiTrack({ blueprint, durationSec, sampleRate, voice
 
     if (voiceBuffers && voiceBuffers.length) {
         for (const vb of voiceBuffers) {
-            const start = Math.floor(vb.startTimeSec * sampleRate);
+            const start = Math.floor((Number(vb.startTimeSec) || 0) * sampleRate);
             const pcm = vb.samples;
             const ratio = (vb.sampleRate || 24000) / sampleRate;
             const targetLen = Math.floor(pcm.length / ratio);
@@ -2388,7 +2544,6 @@ function createAudioBufferMultiTrack({ blueprint, durationSec, sampleRate, voice
                 const i1 = Math.min(pcm.length - 1, i0 + 1);
                 const frac = srcIdx - i0;
                 const sampleVal = (pcm[i0] * (1 - frac) + pcm[i1] * frac);
-
                 left[idx] += sampleVal;
                 right[idx] += sampleVal;
             }
@@ -2399,343 +2554,346 @@ function createAudioBufferMultiTrack({ blueprint, durationSec, sampleRate, voice
         left[i] = Math.tanh(left[i]);
         right[i] = Math.tanh(right[i]);
     }
-
     return { leftChannel: left, rightChannel: right, totalSamples, sampleRate };
 }
 
-// BỘ ĐIỀU PHỐI CHÍNH WORKER (CHỐNG ĐÓNG BĂNG KHI CHUYỂN TAB)
 self.onmessage = async function(e) {
-    const {
-        masterScript, // Mới: Kịch bản phim dài tập từ AI
-        apiKey,
-        geminiTTSApiKey // Mới: API Key cho Gemini TTS
-    } = e.data;
-
-    // Nhịp tim nhân tạo: Phát tín hiệu liên tục để luồng CPU không bị hệ điều hành treo ngầm
+    const { masterScript, apiKey, geminiTTSApiKey } = e.data;
     const heartbeatTimer = setInterval(() => {
         self.postMessage({ type: 'HEARTBEAT', ts: Date.now() });
     }, 2000);
 
-    const postStatus = (text) => self.postMessage({ type: 'STATUS', text });
+    const postStatus = (text, percent = null) => self.postMessage({ type: 'STATUS', text, percent });
+
+    let sharedRenderer = null;
+    let sharedCanvas = null;
+    let rawMuxer = null;
+    let opfsFileHandle = null;
+    let opfsWritable = null;
+    let isUsingOpfs = false;
 
     try {
-        const overallDuration = masterScript.total_duration;
-        const overallAspectRatio = masterScript.overall_aspect_ratio;
-        const overallResolution = masterScript.overall_resolution; // { width, height }
-        const voiceCharacters = masterScript.voice_characters;
-        const fps = Number(masterScript.overall_fps || 24); // Lấy FPS từ script hoặc mặc định
-        const shotSampleRate = 48000; // Sample rate cố định cho audio muxer
+        const overallDuration = Number(masterScript.total_duration) || 15;
+        const overallAspectRatio = masterScript.overall_aspect_ratio || "16:9";
+        const voiceCharacters = masterScript.voice_characters || [];
+        const fps = Number(masterScript.overall_fps || 24);
+        const shotSampleRate = 48000;
 
-        // Hàm gọi Gemini TTS (định nghĩa trong Worker)
-        const callGeminiTTS = async (text, voiceName, apiKey) => {
-            if (!text || !apiKey || !voiceName) return null;
+        let width = Math.floor((masterScript.overall_resolution?.width || 1024) / 2) * 2;
+        let height = Math.floor((masterScript.overall_resolution?.height || 576) / 2) * 2;
+
+        const callGeminiTTS = async (text, voiceName, ttsApiKey) => {
+            if (!text || !ttsApiKey || !voiceName) return null;
             try {
-                const res = await fetch(`https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${apiKey}`, {
+                const res = await fetch(`https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${ttsApiKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         input: { text: text },
-                        voice: { languageCode: 'vi-VN', name: `vi-VN-Standard-${voiceName}` }, // Giả định voice name chuẩn
+                        voice: { languageCode: 'vi-VN', name: `vi-VN-Standard-${voiceName}` },
                         audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 }
                     })
                 });
-                if (!res.ok) {
-                    console.warn(`Gemini TTS API error for voice ${voiceName}: ${res.status} ${res.statusText}`);
-                    return null;
-                }
+                if (!res.ok) return null;
                 const data = await res.json();
                 if (data.audioContent) {
                     const audioBytes = Uint8Array.from(atob(data.audioContent), c => c.charCodeAt(0));
-                    // Giải mã PCM LINEAR16 thành Float32Array
-                    const pcm16 = new Int16Array(audioBytes.buffer);
-                    const float32 = new Float32Array(pcm16.length);
-                    for (let i = 0; i < pcm16.length; i++) {
-                        float32[i] = pcm16[i] / 32768; // Chuyển đổi từ 16-bit signed int sang float [-1, 1]
+                    const dataView = new DataView(audioBytes.buffer);
+                    const numSamples = audioBytes.length / 2;
+                    const float32 = new Float32Array(numSamples);
+                    for (let i = 0; i < numSamples; i++) {
+                        float32[i] = dataView.getInt16(i * 2, true) / 32768.0;
                     }
-                    return { samples: float32, sampleRate: 24000, duration: float32.length / 24000 };
+                    return { samples: float32, sampleRate: 24000, duration: numSamples / 24000 };
                 }
-            } catch (err) {
-                console.error("Lỗi gọi Gemini TTS:", err);
-            }
+            } catch (_) {}
             return null;
         };
 
-        // Hàm tạo keyframe (có thể dùng Flux hoặc directImageDataUrl nếu có)
-        const generateKeyframe = async (visualDna, width, height, seed, directImageDataUrl) => {
+        const generateKeyframeFromImageEngine = async (imagePlan, w, h, seed, directImageDataUrl) => {
+            // 1. Nếu có ảnh trực tiếp do bạn chọn hoặc tải lên
             if (directImageDataUrl) {
-                let blob = null;
                 if (directImageDataUrl.startsWith('data:') || directImageDataUrl.startsWith('blob:')) {
-                    const res = await fetch(directImageDataUrl);
-                    blob = await res.blob();
-                } else {
                     try {
                         const res = await fetch(directImageDataUrl);
-                        if (res.ok) blob = await res.blob();
-                    } catch (_) {}
-                    if (!blob) {
-                        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`;
-                        const res = await fetch(proxyUrl);
-                        blob = await res.blob();
-                    }
-                }
-                return await createImageBitmap(blob);
-            } else {
-                const cleanPrompt = encodeURIComponent(visualDna.slice(0, 300).replace(/[()[\]{}]/g, ' ').trim());
-                const modelsToTry = ['flux', 'flux-realism', 'turbo'];
-                let imgBlob = null;
-
-                for (const m of modelsToTry) {
-                    try {
-                        const fluxUrl = `https://image.pollinations.ai/prompt/${cleanPrompt}?width=${width}&height=${height}&model=${m}&seed=${seed}&nologo=true`;
-                        const imgRes = await fetch(fluxUrl);
-                        if (imgRes.ok) {
-                            const b = await imgRes.blob();
-                            if (b.size > 1500) { imgBlob = b; break; }
-                        }
+                        const b = await res.blob();
+                        return await createImageBitmap(b);
                     } catch (_) {}
                 }
-                if (!imgBlob) throw new Error("Máy chủ tạo ảnh tạm thời bận, vui lòng thử lại.");
-                return await createImageBitmap(imgBlob);
             }
-        };
 
-        // Hàm phân tích vật lý (sử dụng Gemini Vision)
-        const analyzePhysicalMatrix = async (imageBitmap, prompt, apiKey) => {
-            const base64Keyframe = await bitmapToBase64(imageBitmap, 512); // Helper function already exists
-            const dispatchBg = async (payload) => {
-                const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.0-flash"];
-                for (const m of candidateModels) {
+            // 2. BẢO VỆ ĐƯỜNG DẪN: Tuyệt đối xóa các ký tự phá vỡ URL (/, ?, #, &, %, \)
+            const rawPrompt = (imagePlan?.prompt || 'cinematic film masterpiece 8k atmospheric lighting')
+                .replace(/[/\\?#&%]/g, ' ')
+                .replace(/[()[\]{}<>"'`\r\n\t]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            // Giữ độ dài vàng 220 ký tự súc tích nhất để máy chủ kết xuất chuẩn xác
+            const cleanPrompt = rawPrompt.slice(0, 220);
+            const encodedPrompt = encodeURIComponent(cleanPrompt);
+
+            const reqW = Math.min(1024, Math.max(512, Math.round(w / 16) * 16));
+            const reqH = Math.min(1024, Math.max(512, Math.round(h / 16) * 16));
+
+            // CHUẨN HÓA MODEL GỐC HỢP LỆ: Máy chủ chỉ chấp nhận 'flux' hoặc 'turbo'
+            // Toàn bộ phong cách (anime, 3D, cinematic) đã được nhúng vào cleanPrompt bên trên
+            const primaryModel = (imagePlan?.model === 'turbo') ? 'turbo' : 'flux';
+            const modelsToTry = [primaryModel, 'turbo'];
+
+            const fetchRealImageBlob = async (targetUrl) => {
+                const endpoints = [
+                    targetUrl, // Thử tải trực tiếp
+                    `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
+                    `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+                ];
+                for (const ep of endpoints) {
                     try {
-                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
+                        const ctrl = new AbortController();
+                        // Nâng thời gian chờ lên 35 giây để Flux đủ thời gian vẽ xong ảnh chất lượng cao
+                        const tid = setTimeout(() => ctrl.abort(), 35000);
+                        const res = await fetch(ep, {
+                            signal: ctrl.signal,
+                            mode: 'cors',
+                            headers: { 'Accept': 'image/jpeg,image/png,image/webp,image/*;q=0.9' }
                         });
-                        if (res.ok) return await res.json();
+                        clearTimeout(tid);
+                        if (res.ok) {
+                            const blob = await res.blob();
+                            // Chỉ nhận file ảnh thật, không nhận trang web lỗi HTML
+                            if (blob && blob.size > 3000 && (blob.type.startsWith('image/') || blob.type.includes('octet-stream'))) {
+                                return blob;
+                            }
+                        }
                     } catch (_) {}
                 }
                 return null;
             };
 
-            const promptVisionDynamicPhysics = `[PHÂN TÍCH VẬT LÝ VÀ KHÍ HẬU MÔI TRƯỜNG ĐỘC LẬP TỪ THỊ GIÁ]
-Hãy quan sát bức ảnh thực tế đính kèm và kịch bản: "${prompt}".
-Đo đạc chính xác các thuộc tính vật lý của bức ảnh này:
-1. "depth_topology": Xác định các vùng phân tầng không gian [u_min, v_min, u_max, v_max] và depth_val (0.0 đến 1.0) cho tiền cảnh, chủ thể, hậu cảnh.
-2. "global_wind": Véc-tơ gió quyển thực tế [x, y, z] phù hợp với bối cảnh ảnh.
-3. "kinematic_nodes": Tối đa 6 vùng chuyển động tự nhiên thực sự có trong ảnh (tóc, nước, vải áo, tán lá, khói...).
-   - "target": Tên đối tượng.
-   - "center": Tọa độ UV [u, v].
-   - "radius": Bán kính ảnh hưởng (0.05 đến 0.35).
-   - "type": 0 (trôi), 1 (dao động), 2 (xoáy).
-   - "vector": Véc-tơ dịch chuyển [dx, dy, dz].
-   - "freq": Tần số Hz (0.5 đến 2.5).
-   - "phase": Pha ban đầu.
-4. "atmospheric_particles": Nhận diện loại hạt tự nhiên phù hợp nhất với cảnh này (nếu là ngoài trời bụi/nắng -> dust; mưa -> rain; lửa/chiến trận -> embers; đêm/sao -> motes; nếu cảnh hoàn toàn tĩnh sạch -> count: 0):
-   - "type": Tên loại hạt.
-   - "count": Số lượng hạt (0 đến 600).
-   - "color": Mã màu hex của hạt (ví dụ: #fed7aa cho đốm lửa, #ffffff cho bụi sáng, #7dd3fc cho mưa).
-   - "size": Kích thước hạt (0.015 đến 0.04).
-   - "opacity": Độ trong suốt (0.2 đến 0.7).
-   - "velocity": Véc-tơ rơi/bay [vx, vy, vz].
+            // LẶP QUA CÁC MODEL CHÍNH ĐỂ LẤY BẰNG ĐƯỢC ẢNH AI THẬT
+            for (const mName of modelsToTry) {
+                postStatus(`Đang kết xuất ảnh AI thật từ máy chủ (Model: ${mName})...`);
+                const targetUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${reqW}&height=${reqH}&model=${mName}&seed=${seed}&nologo=true`;
+                
+                const imgBlob = await fetchRealImageBlob(targetUrl);
+                if (imgBlob) {
+                    try {
+                        return await createImageBitmap(imgBlob);
+                    } catch (_) {}
+                }
+            }
 
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
-{
-  "depth_topology": { "layers": [{ "name": "chủ thể", "depth_val": 0.65, "uv_box": [0.2, 0.2, 0.8, 0.9] }] },
-  "global_wind": [0.005, 0.0, 0.002],
-  "kinematic_nodes": [],
-  "atmospheric_particles": { "type": "dust", "count": 250, "color": "#ffffff", "size": 0.02, "opacity": 0.4, "velocity": [0.002, -0.01, 0.0] }
-}`;
-            let physicalMatrix = null;
-            if (apiKey) {
+            // ĐÃ XÓA SẠCH CANVAS GIẢ MẠO: Nếu máy chủ ảnh lỗi, báo thẳng lỗi ra ngoài để người dùng biết, tuyệt đối không đưa hình tròn tím rác thải vào phim!
+            throw new Error(`Máy chủ không thể kết xuất ảnh AI thật cho cảnh này (Prompt: "${cleanPrompt}"). Vui lòng kiểm tra kết nối mạng và thử lại!`);
+        };
+
+        const requestGeminiMicroMotionPlanning = async (imageBitmap, sceneSpec, sceneDuration, keyPool) => {
+            let currentKeyIdx = 0;
+            const getKey = () => keyPool[currentKeyIdx % keyPool.length];
+            const rotateKey = () => { currentKeyIdx++; };
+
+            const visionModels = [
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash",
+                "gemini-2.5-flash-lite",
+                "gemini-1.5-pro"
+            ];
+
+            // VÔ HIỆU HÓA TOÀN BỘ BỘ LỌC AN TOÀN TRÁNH BỊ CHẶN NHẦM ẢNH ĐIỆN ẢNH
+            const safetySettings = [
+                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+            ];
+
+            const sceneAction = sceneSpec.action_description || sceneSpec.title || "Phân cảnh điện ảnh";
+            const base64Keyframe = await bitmapToBase64(imageBitmap, 480);
+
+            const promptVisionDynamics = `[BỘ NÃO THỊ GIÁC ĐIỆN ẢNH: TÁCH LỚP CHỦ THỂ & MA TRẬN 3D CHUYỂN ĐỘNG TỰ DO]
+Quan sát ảnh đính kèm và hành động phân cảnh: "${sceneAction}" (Thời lượng: ${sceneDuration}s).
+Phân tích không gian và tính toán chính xác JSON tham số:
+1. "subject_segmentation": Tách riêng chủ thể chính để dịch chuyển tự do trong không gian 3D:
+   - "name": Tên chủ thể (người, phi thuyền, sinh vật, xe...).
+   - "uv_box": [u_min, v_min, u_max, v_max] (tọa độ 0.0 - 1.0 đóng khung chủ thể).
+   - "depth_range": [min_depth, max_depth] (ngưỡng độ sâu bóc tách chủ thể 0.0 đến 1.0).
+   - "feather": 0.04 - 0.08.
+2. "subject_trajectory": Ma trận dịch chuyển điểm ảnh của chủ thể trong không gian 3D (3 đến 5 mốc Catmull-Rom):
+   - [{"t": 0.0 -> 1.0, "pos": [dx, dy, dz], "rot": [pitch, yaw, roll], "scale": 1.0}] (pos biểu diễn độ dịch chuyển 3D tự do: dx trái-phải, dy lên-xuống, dz tiến-lùi).
+3. "camera_trajectory": Quỹ đạo chuyển động riêng của máy quay: [{"t": 0.0 -> 1.0, "cam": [x,y,z], "rot": [p,y,r]}].
+4. "depth_topology": {"layers": [{"name": "hậu cảnh", "depth_val": 0.0 - 1.0, "uv_box": [u_min, v_min, u_max, v_max]}]}.
+5. "optics": {"fov": 30.0 - 55.0, "plane_distance": 2.0 - 2.8, "overscan": 1.35 - 1.5, "mesh_grid": 100 - 140}.
+6. "global_wind": [x, y, z].
+7. "micro_motions": Tối đa 6 nút vi chuyển động làm biến dạng da thịt/vải/tóc/chi tiết của chủ thể:
+   [{"center": [u, v], "radius": 0.05 - 0.25, "type": 0|1|2, "vector": [dx, dy, dz], "freq": 0.5 - 2.5, "phase": 0.0}].
+8. "atmospheric_particles": {"type": "tên hạt", "count": 20 - 400, "color": "#hex", "size": 0.02, "opacity": 0.35, "velocity": [vx, vy, vz]}.
+9. "soundscape_blueprint": {"music": {"chords": [tần số Hz], "sub_bass": tần số Hz, "volume": 0.15 - 0.3}}.
+10. "cinematic_post": {"vignette": 0.25, "grain": 0.02}.
+
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG GIẢI THÍCH):`;
+
+            // TẦNG 1: GỬI KEYFRAME ẢNH LÊN GEMINI VISION (HỖ TRỢ THỬ LẠI & ĐỔI KEY KHI 429)
+            for (const m of visionModels) {
+                for (let retry = 0; retry < 2; retry++) {
+                    try {
+                        const activeKey = getKey();
+                        const reqBody = {
+                            contents: [{
+                                role: 'user',
+                                parts: [
+                                    { text: promptVisionDynamics },
+                                    { inlineData: { mimeType: "image/jpeg", data: base64Keyframe } }
+                                ]
+                            }],
+                            safetySettings,
+                            generationConfig: {
+                                temperature: 0.1,
+                                maxOutputTokens: 3000,
+                                responseMimeType: retry === 0 ? "application/json" : undefined
+                            }
+                        };
+
+                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(reqBody)
+                        });
+
+                        if (res.ok) {
+                            const data = await res.json();
+                            const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                            const parsed = robustJsonParse(rawText);
+                            if (parsed && (parsed.subject_segmentation || parsed.camera_trajectory)) {
+                                return parsed;
+                            }
+                        } else if (res.status === 429) {
+                            rotateKey();
+                            await new Promise(r => setTimeout(r, 1200));
+                        } else if (res.status === 400) {
+                            // Bỏ responseMimeType ở vòng lặp retry tiếp theo
+                            continue;
+                        }
+                    } catch (_) {}
+                }
+            }
+
+            // TẦNG 2: NẾU BĂNG THÔNG VISION BỊ MÁY CHỦ TỪ CHỐI, CHUYỂN SANG BỘ NÃO TƯ DUY GEMINI COGNITIVE
+            // (VẪN 100% DO CHÍNH GEMINI TÍNH TOÁN DỰA THEO PHÂN CẢNH, TUYỆT ĐỐI KHÔNG CÓ THAM SỐ GÁN CỨNG)
+            postStatus(`Gemini đang chuyển sang chế độ tính toán ma trận không gian suy luận...`);
+            const promptCognitiveDynamics = `[BỘ NÃO TƯ DUY ĐIỆN ẢNH: TÍNH TOÁN MA TRẬN 3D & BÓC TÁCH CHỦ THỂ]
+Bối cảnh phân cảnh: "${sceneAction}".
+Mô tả thị giác Keyframe: "${sceneSpec.image_plan?.prompt || sceneAction}".
+Thời lượng: ${sceneDuration}s.
+Hãy vận dụng kiến thức vật lý quang học và đạo diễn điện ảnh để tính toán toàn bộ thông số kỹ thuật 3D cho phân cảnh này:
+1. "subject_segmentation": Bóc tách chủ thể trọng tâm trong bối cảnh:
+   - "name": Tên đối tượng.
+   - "uv_box": [u_min, v_min, u_max, v_max] ước lượng vị trí đối tượng trong khung hình.
+   - "depth_range": [0.2, 0.95].
+   - "feather": 0.05.
+2. "subject_trajectory": Ma trận dịch chuyển 3D của chủ thể phù hợp với hành động "${sceneAction}":
+   - 3 đến 5 mốc Catmull-Rom [{"t": 0.0 -> 1.0, "pos": [dx, dy, dz], "rot": [p, y, r], "scale": 1.0}].
+3. "camera_trajectory": Quỹ đạo chuyển động máy quay tạo kịch tính cho cảnh: [{"t": 0.0 -> 1.0, "cam": [x,y,z], "rot": [p,y,r]}].
+4. "depth_topology": {"layers": [{"name": "hậu cảnh", "depth_val": 0.8, "uv_box": [0,0,1,1]}]}.
+5. "optics": {"fov": 38.0, "plane_distance": 2.2, "overscan": 1.35, "mesh_grid": 100}.
+6. "global_wind": [0.002, 0.0, 0.001].
+7. "micro_motions": 4 đến 6 nút vi chuyển động làm sống động khung hình.
+8. "atmospheric_particles": Thông số hạt không gian tương ứng.
+9. "soundscape_blueprint": Thiết kế âm thanh tần số phù hợp cảm xúc.
+10. "cinematic_post": {"vignette": 0.25, "grain": 0.02}.
+
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:`;
+
+            for (const m of visionModels) {
                 try {
-                    const visionRes = await dispatchBg({
-                        contents: [{
-                            role: 'user',
-                            parts: [
-                                { text: promptVisionDynamicPhysics },
-                                { inlineData: { mimeType: "image/jpeg", data: base64Keyframe } }
-                            ]
-                        }],
-                        generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
+                    const activeKey = getKey();
+                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{ role: 'user', parts: [{ text: promptCognitiveDynamics }] }],
+                            safetySettings,
+                            generationConfig: { temperature: 0.1, maxOutputTokens: 3000, responseMimeType: "application/json" }
+                        })
                     });
-                    physicalMatrix = robustJsonParse(visionRes?.candidates?.[0]?.content?.parts?.[0]?.text);
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                        const parsed = robustJsonParse(rawText);
+                        if (parsed) return parsed;
+                    } else if (res.status === 429) {
+                        rotateKey();
+                        await new Promise(r => setTimeout(r, 1200));
+                    }
                 } catch (_) {}
             }
-            if (!physicalMatrix) {
-                physicalMatrix = {
-                    depth_topology: { layers: [] },
-                    global_wind: [0.003, 0.0, 0.001],
-                    kinematic_nodes: [],
-                    atmospheric_particles: { type: "motes", count: 100, color: "#ffffff", size: 0.02, opacity: 0.3, velocity: [0, -0.005, 0] }
-                };
-            }
-            return physicalMatrix;
+
+            throw new Error("Không thể kết nối đến máy chủ Gemini để tính toán ma trận 3D.");
         };
 
-        // Hàm mới: renderShotToFramesAndAudio
-        const renderShotToFramesAndAudio = async ({
-            imageBitmap,
-            physicalMatrix,
-            narrativePlan,
-            overallResolution,
-            overallAspectRatio,
-            fps,
-            shotAudioBuffers,
-            shotSampleRate
-        }) => {
-            const width = overallResolution.width;
-            const height = overallResolution.height;
-            const shotDuration = Number(narrativePlan.target_duration) || 5;
-            const totalFrames = shotDuration * fps;
-            const frameMicros = 1000000 / fps;
-            const deltaSec = 1 / fps;
+        if (typeof VideoEncoder === 'undefined') {
+            throw new Error("Trình duyệt không hỗ trợ WebCodecs API.");
+        }
 
-            const threeCanvas = new OffscreenCanvas(width, height);
-            const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, alpha: false });
-            renderer.setSize(width, height, false);
+        // CHUẨN HÓA MẢNG PHÂN CẢNH TỪ DỮ LIỆU ĐA HÌNH CỦA GEMINI (CẤM [0] CRASH)
+        const rawScenesList = Array.isArray(masterScript.scenes) 
+            ? masterScript.scenes 
+            : (Array.isArray(masterScript) ? masterScript : (Object.values(masterScript).find(v => Array.isArray(v)) || []));
 
-            const scene = new THREE.Scene();
-            const camera = new THREE.PerspectiveCamera(Number(narrativePlan.optics.fov), width / height, 0.01, 100);
-            camera.position.set(0, 0, Number(narrativePlan.optics.plane_distance));
+        const totalScenes = rawScenesList.length;
+        if (totalScenes === 0) {
+            throw new Error("Gemini không tạo được phân cảnh nào cho tác phẩm.");
+        }
 
-            const visibleHeight = 2 * Math.tan((Number(narrativePlan.optics.fov) * Math.PI) / 180 / 2) * Number(narrativePlan.optics.plane_distance);
-            const visibleWidth = visibleHeight * (width / height);
-            const planeWidth = visibleWidth * Number(narrativePlan.optics.overscan);
-            const planeHeight = visibleHeight * Number(narrativePlan.optics.overscan);
+        postStatus(`Khởi tạo dây chuyền 3D Dual-Mesh Gemini (${totalScenes} phân cảnh)...`, 0);
 
-            const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, Number(narrativePlan.optics.mesh_grid), Number(narrativePlan.optics.mesh_grid));
-            const shaderMat = new THREE.ShaderMaterial({
-                side: THREE.DoubleSide,
-                uniforms: THREE.UniformsUtils.clone(Dynamic4DSceneShader.uniforms),
-                vertexShader: Dynamic4DSceneShader.vertexShader,
-                fragmentShader: Dynamic4DSceneShader.fragmentShader
-            });
-
-            const shotTexture = new THREE.CanvasTexture(imageBitmap);
-            shotTexture.flipY = true;
-            shaderMat.uniforms.uTexture.value = shotTexture;
-
-            const depthTexture = createDynamicDepthTexture(width, height, physicalMatrix.depth_topology, imageBitmap);
-            shaderMat.uniforms.uDepthMap.value = depthTexture;
-
-            const gWind = Array.isArray(physicalMatrix.global_wind) ? physicalMatrix.global_wind : [0, 0, 0];
-            shaderMat.uniforms.uGlobalWind.value.set(gWind[0] || 0, gWind[1] || 0, gWind[2] || 0);
-
-            const postConf = narrativePlan.cinematic_post || {};
-            shaderMat.uniforms.uVignette.value = Number(postConf.vignette) || 0.25;
-            shaderMat.uniforms.uGrainIntensity.value = Number(postConf.grain) || 0.02;
-
-            const nodes = Array.isArray(physicalMatrix.kinematic_nodes) ? physicalMatrix.kinematic_nodes.slice(0, 8) : [];
-            shaderMat.uniforms.uNodeCount.value = nodes.length;
-            for (let i = 0; i < nodes.length; i++) {
-                const n = nodes[i];
-                const c = Array.isArray(n.center) ? n.center : [0.5, 0.5];
-                const v = Array.isArray(n.vector) ? n.vector : [0, 0, 0];
-                shaderMat.uniforms.uNodeCenter.value[i].set(c[0] || 0, c[1] || 0);
-                shaderMat.uniforms.uNodeRadius.value[i] = Number(n.radius) || 0.1;
-                shaderMat.uniforms.uNodeType.value[i] = Number(n.type) || 0;
-                shaderMat.uniforms.uNodeVector.value[i].set(v[0] || 0, v[1] || 0, v[2] || 0);
-                shaderMat.uniforms.uNodeFreq.value[i] = Number(n.freq) || 1.0;
-                shaderMat.uniforms.uNodePhase.value[i] = Number(n.phase) || 0.0;
-            }
-
-            const mesh = new THREE.Mesh(planeGeo, shaderMat);
-            scene.add(mesh);
-
-            const particleSystem = buildAtmosphericParticleSystem(physicalMatrix.atmospheric_particles, planeWidth, planeHeight, Number(narrativePlan.optics.plane_distance));
-            if (particleSystem) scene.add(particleSystem.mesh);
-
-            let prevCamPos = new THREE.Vector3(0, 0, Number(narrativePlan.optics.plane_distance));
-
-            const yieldFrame = async (frameIndex) => {
-                const currentSecond = frameIndex / fps;
-                const progress = frameIndex / Math.max(1, totalFrames - 1);
-
-                const camState = evaluateSpline(narrativePlan.camera_trajectory, progress, Number(narrativePlan.optics.plane_distance));
-                camera.position.set(camState.cam[0], camState.cam[1], camState.cam[2]);
-                camera.rotation.set(
-                    (camState.rot[0] * Math.PI) / 180,
-                    (camState.rot[1] * Math.PI) / 180,
-                    (camState.rot[2] * Math.PI) / 180
-                );
-
-                const velX = (camera.position.x - prevCamPos.x) * fps;
-                const velY = (camera.position.y - prevCamPos.y) * fps;
-                shaderMat.uniforms.uCameraVelocity.value.set(velX, velY);
-                prevCamPos.copy(camera.position);
-
-                shaderMat.uniforms.uTime.value = currentSecond;
-
-                if (particleSystem) particleSystem.update(deltaSec);
-
-                renderer.render(scene, camera);
-                return threeCanvas;
-            };
-
-            const cleanupShot = () => {
-                try { renderer.dispose(); } catch (_) {}
-                try { planeGeo.dispose(); } catch (_) {}
-                try { shaderMat.dispose(); } catch (_) {}
-                try { if (shotTexture) shotTexture.dispose(); } catch (_) {}
-                try { if (depthTexture) depthTexture.dispose(); } catch (_) {}
-                if (particleSystem) {
-                    try { particleSystem.mesh.geometry.dispose(); } catch (_) {}
-                    try { particleSystem.mesh.material.dispose(); } catch (_) {}
+        try {
+            if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
+                const root = await navigator.storage.getDirectory();
+                opfsFileHandle = await root.getFileHandle(`gdeep_render_${Date.now()}.mp4`, { create: true });
+                if (opfsFileHandle.createWritable && (self.Mp4Muxer?.FileSystemWritableFileStreamTarget || self.FileSystemWritableFileStreamTarget)) {
+                    opfsWritable = await opfsFileHandle.createWritable();
+                    const TargetClass = self.Mp4Muxer?.FileSystemWritableFileStreamTarget || self.FileSystemWritableFileStreamTarget;
+                    muxerTarget = new TargetClass(opfsWritable);
+                    isUsingOpfs = true;
                 }
-            };
+            }
+        } catch (_) {}
 
-            const shotAudio = createAudioBufferMultiTrack({
-                blueprint: narrativePlan.soundscape_blueprint,
-                durationSec: shotDuration,
-                sampleRate: shotSampleRate,
-                voiceBuffers: shotAudioBuffers
-            });
-
-            return {
-                totalFrames,
-                shotDuration,
-                yieldFrame,
-                cleanupShot,
-                shotAudio
-            };
-        };
-
-        // BẮT ĐẦU DÂY CHUYỀN SẢN XUẤT PHIM ĐA PHÂN CẢNH TỰ ĐỘNG
-        const totalScenes = masterScript.scenes.length;
-        const width = overallResolution.width;
-        const height = overallResolution.height;
-
-        postStatus(`Khởi tạo dây chuyền sản xuất phim dài tập (${totalScenes} phân cảnh)...`);
-
-        const MuxerClass = self.Mp4Muxer?.Muxer || self.Muxer;
-        const TargetClass = self.Mp4Muxer?.ArrayBufferTarget || self.ArrayBufferTarget;
+        const FallbackTargetClass = self.Mp4Muxer?.ArrayBufferTarget || self.ArrayBufferTarget;
+        if (!muxerTarget) {
+            muxerTarget = new FallbackTargetClass();
+            isUsingOpfs = false;
+        }
 
         let supportsAudio = (typeof AudioEncoder !== 'undefined');
         let audioEngine = null;
+
+        const MuxerClass = self.Mp4Muxer?.Muxer || self.Muxer;
+        rawMuxer = new MuxerClass({
+            target: muxerTarget,
+            video: { codec: 'avc', width, height },
+            audio: supportsAudio ? { codec: 'aac', numberOfChannels: 2, sampleRate: shotSampleRate } : undefined,
+            fastStart: isUsingOpfs ? false : 'in-memory'
+        });
 
         if (supportsAudio) {
             try {
                 audioEngine = new AudioEncoder({
                     output: (chunk, meta) => rawMuxer && rawMuxer.addAudioChunk(chunk, meta),
-                    error: err => { console.warn("[MasterAudio] Cảnh báo mã hóa:", err); }
+                    error: err => console.warn("[AudioEncoder]", err)
                 });
-                audioEngine.configure({ codec: 'mp4a.40.2', numberOfChannels: 2, sampleRate: shotSampleRate, bitrate: 192000 });
+                audioEngine.configure({ codec: 'mp4a.40.2', numberOfChannels: 2, sampleRate: shotSampleRate, bitrate: 128000 });
             } catch (_) {
                 supportsAudio = false;
                 audioEngine = null;
             }
         }
 
-        const rawMuxer = new MuxerClass({
-            target: new TargetClass(),
-            video: { codec: 'avc', width, height },
-            audio: (supportsAudio && audioEngine) ? { codec: 'aac', numberOfChannels: 2, sampleRate: shotSampleRate } : undefined,
-            fastStart: 'in-memory'
-        });
-
-        const targetBitrate = Math.min(8000000, Math.max(2000000, Math.round(width * height * fps * 0.14)));
+        const targetBitrate = Math.min(6000000, Math.max(1800000, Math.round(width * height * fps * 0.12)));
         let activeEncoder = null;
-        const codecChain = ['avc1.42001f', 'avc1.4d002a', 'avc1.42e01e', 'vp8'];
+        const codecChain = ['avc1.42001f', 'avc1.4d002a', 'avc1.640028'];
         let activeCodecIdx = 0;
 
         const instantiateEncoder = () => {
@@ -2744,10 +2902,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
             }
             activeEncoder = new VideoEncoder({
                 output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
-                error: (err) => {
-                    console.warn("[MasterCodec] Đổi codec dự phòng:", err);
-                    activeCodecIdx = (activeCodecIdx + 1) % codecChain.length;
-                }
+                error: () => { activeCodecIdx = (activeCodecIdx + 1) % codecChain.length; }
             });
             activeEncoder.configure({
                 codec: codecChain[activeCodecIdx],
@@ -2758,45 +2913,28 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
             });
             return activeEncoder;
         };
-
         instantiateEncoder();
 
-        const videoEncoder = new Proxy({}, {
-            get: (_, prop) => {
-                if (prop === 'encode') {
-                    return (frame, options) => {
-                        if (!activeEncoder || activeEncoder.state === 'closed') instantiateEncoder();
-                        try {
-                            activeEncoder.encode(frame, options);
-                        } catch (_) {
-                            instantiateEncoder();
-                            activeEncoder.encode(frame, options);
-                        }
-                    };
-                }
-                if (prop === 'flush') {
-                    return async () => {
-                        if (activeEncoder && activeEncoder.state !== 'closed') return await activeEncoder.flush();
-                        return Promise.resolve();
-                    };
-                }
-                if (prop === 'encodeQueueSize') return activeEncoder ? activeEncoder.encodeQueueSize : 0;
-                return activeEncoder ? activeEncoder[prop] : undefined;
-            }
+        sharedCanvas = new OffscreenCanvas(width, height);
+        sharedRenderer = new THREE.WebGLRenderer({
+            canvas: sharedCanvas,
+            antialias: false,
+            powerPreference: "high-performance",
+            depth: true
         });
+        sharedRenderer.setSize(width, height, false);
 
         let cumulativeGlobalFrameCount = 0;
         let cumulativeAudioOffsetSamples = 0;
         const shotsLog = [];
 
-        // DUYỆT TỪNG PHÂN CẢNH ĐIỆN ẢNH VÀ THỰC THI PIPELINE VÔ HẠN
         for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
-            const sceneSpec = masterScript.scenes[sIdx];
+            const sceneSpec = rawScenesList[sIdx] || {};
             const currentSceneNum = sIdx + 1;
+            const progressBase = Math.round((sIdx / totalScenes) * 100);
 
-            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang tổng hợp giọng thoại nhân vật...`);
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Thu âm giọng thoại Gemini TTS...`, progressBase);
 
-            // 1. Thu âm toàn bộ thoại của phân cảnh bằng Gemini TTS
             const shotAudioBuffers = [];
             if (geminiTTSApiKey && Array.isArray(sceneSpec.dialogue_cues)) {
                 for (const cue of sceneSpec.dialogue_cues) {
@@ -2813,74 +2951,180 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 }
             }
 
-            // 2. Khởi tạo Keyframe hình ảnh thông qua Flux / Direct URL
-            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang kết xuất bố cục thị giác nghệ thuật...`);
-            const shotBitmap = await generateKeyframe(
-                sceneSpec.narrative_plan.visual_dna,
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Kết xuất Keyframe nghệ thuật (${sceneSpec.image_plan?.model || 'flux'})...`, progressBase);
+            const shotBitmap = await generateKeyframeFromImageEngine(
+                sceneSpec.image_plan,
                 width,
                 height,
                 sceneSpec.seed || (masterScript.base_seed + sIdx),
                 sceneSpec.directImageDataUrl || null
             );
 
-            // 3. Phân tích chiều sâu & động học vật lý quang học từ Gemini Vision
-            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang phân tầng chiều sâu và trường vectơ 4D...`);
-            const physicalMatrix = await analyzePhysicalMatrix(shotBitmap, sceneSpec.action_description, apiKey);
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Gemini đang bóc tách chủ thể và tính ma trận 3D...`, progressBase);
+            const { apiKeys } = e.data;
+            const validKeyPool = (Array.isArray(apiKeys) && apiKeys.length > 0) ? apiKeys : [apiKey];
+            const geminiBlueprint = await requestGeminiMicroMotionPlanning(
+                shotBitmap,
+                sceneSpec,
+                sceneSpec.target_duration || 5,
+                validKeyPool
+            );
 
-            // 4. Khởi tạo pipeline render phân cảnh
-            postStatus(`[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang quay cú máy điện ảnh...`);
-            const shotInstance = await renderShotToFramesAndAudio({
-                imageBitmap: shotBitmap,
-                physicalMatrix,
-                narrativePlan: sceneSpec.narrative_plan,
-                overallResolution,
-                overallAspectRatio,
-                fps,
-                shotAudioBuffers,
-                shotSampleRate
-            });
-
-            // 5. Kết xuất frame theo luồng liên tục sang MP4 Muxer
+            const shotDuration = Number(sceneSpec.target_duration) || 5;
+            const totalFrames = Math.round(shotDuration * fps);
             const frameMicros = 1000000 / fps;
-            for (let f = 0; f < shotInstance.totalFrames; f++) {
-                const canvasSource = await shotInstance.yieldFrame(f);
+            const deltaSec = 1 / fps;
 
-                while (videoEncoder.encodeQueueSize > 30) {
+            const scene = new THREE.Scene();
+            const optics = geminiBlueprint.optics || {};
+            const fovVal = Number(optics.fov) || 36.0;
+            const planeDistVal = Number(optics.plane_distance) || 2.2;
+            const overscanVal = Number(optics.overscan) || 1.35;
+            const meshGridVal = Number(optics.mesh_grid) || 100;
+
+            const camera = new THREE.PerspectiveCamera(fovVal, width / height, 0.01, 100);
+            camera.position.set(0, 0, planeDistVal);
+
+            const visibleHeight = 2 * Math.tan((fovVal * Math.PI) / 180 / 2) * planeDistVal;
+            const visibleWidth = visibleHeight * (width / height);
+            const planeWidth = visibleWidth * overscanVal;
+            const planeHeight = visibleHeight * overscanVal;
+
+            const shotTexture = new THREE.Texture(shotBitmap);
+            shotTexture.needsUpdate = true;
+            shotTexture.flipY = true;
+
+            const depthTexture = createDynamicDepthTexture(width, height, geminiBlueprint.depth_topology, shotBitmap);
+
+            // BÓC TÁCH AN TOÀN CHỦ THỂ (CHỐNG [0] TUYỆT ĐỐI)
+            const rawSeg = geminiBlueprint.subject_segmentation;
+            const subSeg = Array.isArray(rawSeg) ? (rawSeg[0] || {}) : (rawSeg || {});
+            const rawBox = unpackVector(subSeg.uv_box || subSeg.bbox || subSeg.box || subSeg.coordinates || subSeg.rect, 4) || [0.05, 0.05, 0.95, 0.95];
+            const rawDepth = unpackVector(subSeg.depth_range || subSeg.depth || subSeg.depthRange, 2) || [0.1, 0.95];
+
+            const uvBox = new THREE.Vector4(rawBox[0], rawBox[1], rawBox[2], rawBox[3]);
+            const depthRange = new THREE.Vector2(rawDepth[0], rawDepth[1]);
+
+            // LỚP 1: HẬU CẢNH (BACKGROUND MESH)
+            const bgGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, 60, 60);
+            const bgShaderMat = new THREE.ShaderMaterial({
+                side: THREE.DoubleSide,
+                uniforms: THREE.UniformsUtils.clone(BackgroundSceneShader.uniforms),
+                vertexShader: BackgroundSceneShader.vertexShader,
+                fragmentShader: BackgroundSceneShader.fragmentShader
+            });
+            bgShaderMat.uniforms.uTexture.value = shotTexture;
+            bgShaderMat.uniforms.uDepthMap.value = depthTexture;
+            bgShaderMat.uniforms.uSubjectBox.value = uvBox;
+            const bgMesh = new THREE.Mesh(bgGeo, bgShaderMat);
+            bgMesh.position.set(0, 0, -0.2);
+            scene.add(bgMesh);
+
+            // LỚP 2: CHỦ THỂ ĐỘC LẬP (SUBJECT 3D MESH)
+            const subGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, meshGridVal, meshGridVal);
+            const subShaderMat = new THREE.ShaderMaterial({
+                side: THREE.DoubleSide,
+                transparent: true,
+                depthWrite: true,
+                uniforms: THREE.UniformsUtils.clone(SubjectMatrixShader.uniforms),
+                vertexShader: SubjectMatrixShader.vertexShader,
+                fragmentShader: SubjectMatrixShader.fragmentShader
+            });
+            subShaderMat.uniforms.uTexture.value = shotTexture;
+            subShaderMat.uniforms.uDepthMap.value = depthTexture;
+            subShaderMat.uniforms.uSubjectBox.value = uvBox;
+            subShaderMat.uniforms.uDepthRange.value = depthRange;
+            subShaderMat.uniforms.uFeather.value = Number(subSeg.feather) || 0.05;
+
+            const gWind = unpackVector(geminiBlueprint.global_wind, 3) || [0, 0, 0];
+            subShaderMat.uniforms.uGlobalWind.value.set(gWind[0], gWind[1], gWind[2]);
+
+            const rawNodes = geminiBlueprint.micro_motions || geminiBlueprint.kinematic_nodes;
+            const nodes = Array.isArray(rawNodes) ? rawNodes.slice(0, 8) : [];
+            subShaderMat.uniforms.uNodeCount.value = nodes.length;
+            for (let i = 0; i < nodes.length; i++) {
+                const n = nodes[i];
+                const c = unpackVector(n.center || n.coords || n.uv, 2) || [0.5, 0.5];
+                const v = unpackVector(n.vector || n.dir || n.disp, 3) || [0, 0, 0];
+                subShaderMat.uniforms.uNodeCenter.value[i].set(c[0], c[1]);
+                subShaderMat.uniforms.uNodeVector.value[i].set(v[0], v[1], v[2]);
+                subShaderMat.uniforms.uNodeRadius.value[i] = Number(n.radius) || 0.1;
+                subShaderMat.uniforms.uNodeType.value[i] = Number(n.type) || 0;
+                subShaderMat.uniforms.uNodeFreq.value[i] = Number(n.freq) || 1.0;
+                subShaderMat.uniforms.uNodePhase.value[i] = Number(n.phase) || 0.0;
+            }
+
+            const subjectMesh = new THREE.Mesh(subGeo, subShaderMat);
+            scene.add(subjectMesh);
+
+            const particleSystem = buildAtmosphericParticleSystem(geminiBlueprint.atmospheric_particles, planeWidth, planeHeight, planeDistVal);
+            if (particleSystem) scene.add(particleSystem.mesh);
+
+            let prevCamPos = new THREE.Vector3(0, 0, planeDistVal);
+
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang thực thi chuyển vị ma trận 3D chủ thể...`, progressBase);
+
+            for (let f = 0; f < totalFrames; f++) {
+                const currentSecond = f / fps;
+                const progress = f / Math.max(1, totalFrames - 1);
+
+                const camState = evaluateSpline(geminiBlueprint.camera_trajectory, progress, planeDistVal);
+                camera.position.set(camState.cam[0], camState.cam[1], camState.cam[2]);
+                camera.rotation.set((camState.rot[0] * Math.PI) / 180, (camState.rot[1] * Math.PI) / 180, (camState.rot[2] * Math.PI) / 180);
+
+                const subState = evaluateSubjectMatrixSpline(geminiBlueprint.subject_trajectory, progress);
+                subjectMesh.position.set(subState.pos[0], subState.pos[1], subState.pos[2]);
+                subjectMesh.rotation.set(
+                    (subState.rot[0] * Math.PI) / 180,
+                    (subState.rot[1] * Math.PI) / 180,
+                    (subState.rot[2] * Math.PI) / 180
+                );
+                subjectMesh.scale.set(subState.scale, subState.scale, subState.scale);
+
+                const camVel = new THREE.Vector2((camera.position.x - prevCamPos.x) * fps, (camera.position.y - prevCamPos.y) * fps);
+                bgShaderMat.uniforms.uCameraVelocity.value = camVel;
+                subShaderMat.uniforms.uCameraVelocity.value = camVel;
+                prevCamPos.copy(camera.position);
+
+                bgShaderMat.uniforms.uTime.value = currentSecond;
+                subShaderMat.uniforms.uTime.value = currentSecond;
+
+                if (particleSystem) particleSystem.update(deltaSec);
+                sharedRenderer.render(scene, camera);
+
+                while (activeEncoder && activeEncoder.encodeQueueSize > 15) {
                     await new Promise(r => setTimeout(r, 6));
                 }
 
-                let vFrame = null;
-                try {
-                    vFrame = new VideoFrame(canvasSource, {
-                        timestamp: Math.round(cumulativeGlobalFrameCount * frameMicros)
-                    });
-                    videoEncoder.encode(vFrame, { keyFrame: cumulativeGlobalFrameCount % (fps * 2) === 0 });
-                    cumulativeGlobalFrameCount++;
-                } finally {
-                    if (vFrame) {
-                        try { vFrame.close(); } catch (_) {}
-                    }
-                }
+                const vFrame = new VideoFrame(sharedCanvas, {
+                    timestamp: Math.round(cumulativeGlobalFrameCount * frameMicros)
+                });
+                activeEncoder.encode(vFrame, { keyFrame: cumulativeGlobalFrameCount % (fps * 2) === 0 });
+                vFrame.close();
+                cumulativeGlobalFrameCount++;
 
-                if (f % 12 === 0) {
-                    const percent = Math.round(((cumulativeGlobalFrameCount) / (overallDuration * fps)) * 100);
-                    self.postMessage({
-                        type: 'STATUS',
-                        text: `[Phân cảnh ${currentSceneNum}/${totalScenes}] Đang mã hóa quang học: ${percent}%`,
-                        percent
-                    });
+                if (f % 24 === 0) {
+                    const totalEstimatedFrames = overallDuration * fps;
+                    const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / totalEstimatedFrames) * 100));
+                    postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Mã hóa quang học 3D: ${percent}%`, percent);
                 }
             }
 
-            // 6. Hòa âm và nối dải sóng âm thanh phân cảnh vào dòng thời gian chính
+            const shotAudio = createAudioBufferMultiTrack({
+                blueprint: geminiBlueprint.soundscape_blueprint,
+                durationSec: shotDuration,
+                sampleRate: shotSampleRate,
+                voiceBuffers: shotAudioBuffers
+            });
+
             if (supportsAudio && audioEngine) {
                 const aacFrameSize = 1024;
-                const left = shotInstance.shotAudio.leftChannel;
-                const right = shotInstance.shotAudio.rightChannel;
-                const totalSamples = shotInstance.shotAudio.totalSamples;
+                const left = shotAudio.leftChannel;
+                const right = shotAudio.rightChannel;
+                const totalSamples = shotAudio.totalSamples;
 
                 for (let offset = 0; offset < totalSamples; offset += aacFrameSize) {
-                    while (audioEngine.encodeQueueSize > 40) {
+                    while (audioEngine.encodeQueueSize > 25) {
                         await new Promise(r => setTimeout(r, 6));
                     }
                     const samplesInChunk = Math.min(aacFrameSize, totalSamples - offset);
@@ -2903,35 +3147,53 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                 cumulativeAudioOffsetSamples += totalSamples;
             }
 
-            // Giải phóng bộ nhớ đệm phân cảnh tức thì để không bao giờ tràn RAM tab
-            shotInstance.cleanupShot();
+            bgGeo.dispose();
+            bgShaderMat.dispose();
+            subGeo.dispose();
+            subShaderMat.dispose();
+            shotTexture.dispose();
+            depthTexture.dispose();
+            if (particleSystem) {
+                particleSystem.mesh.geometry.dispose();
+                particleSystem.mesh.material.dispose();
+            }
             shotBitmap.close();
 
             shotsLog.push({
                 shot_id: currentSceneNum,
                 title: sceneSpec.title || `Cảnh ${currentSceneNum}`,
-                duration: sceneSpec.narrative_plan.target_duration,
-                action: sceneSpec.action_description,
-                camera: sceneSpec.narrative_plan.camera_style || "Catmull-Rom Trajectory Dynamic",
-                particles_generated: physicalMatrix.atmospheric_particles?.type || "None"
+                duration: shotDuration
             });
         }
 
-        postStatus("Đang hoàn tất đóng gói bộ phim điện ảnh...");
-        if (supportsAudio && audioEngine) {
-            await audioEngine.flush();
+        postStatus("Hoàn tất đóng gói video OPFS...", 100);
+
+        if (supportsAudio && audioEngine && audioEngine.state !== 'closed') {
+            try { await audioEngine.flush(); } catch (_) {}
         }
-        await videoEncoder.flush();
+        if (activeEncoder && activeEncoder.state !== 'closed') {
+            await activeEncoder.flush();
+        }
         rawMuxer.finalize();
 
-        const finalMp4Blob = new Blob([rawMuxer.target.buffer], { type: 'video/mp4' });
+        let finalMp4Blob = null;
+        if (isUsingOpfs && opfsWritable) {
+            try {
+                await opfsWritable.close();
+                finalMp4Blob = await opfsFileHandle.getFile();
+            } catch (_) {}
+        }
+
+        if (!finalMp4Blob) {
+            finalMp4Blob = new Blob([rawMuxer.target.buffer], { type: 'video/mp4' });
+        }
 
         clearInterval(heartbeatTimer);
         self.postMessage({
             type: 'SUCCESS',
             videoBlob: finalMp4Blob,
             narrativePlan: {
-                resolution: overallResolution,
+                resolution: { width, height },
                 total_duration: overallDuration,
                 aspect_ratio: overallAspectRatio,
                 total_scenes: totalScenes
@@ -2941,7 +3203,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
 
     } catch (err) {
         clearInterval(heartbeatTimer);
+        if (opfsWritable) { try { await opfsWritable.close(); } catch (_) {} }
         self.postMessage({ type: 'ERROR', message: err.message || String(err) });
+    } finally {
+        if (sharedRenderer) {
+            try { sharedRenderer.dispose(); sharedRenderer.forceContextLoss(); } catch (_) {}
+        }
     }
 };
 </script>
@@ -3484,7 +3751,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                         this._record(eff, res, true, null);
                         return res;
                     } catch (fault) {
-                        // TỰ SỬA MÃ NGUỒN TRỰC TIẾP: Nhận diện lỗi phần cứng lẫn phần mềm và biên dịch lại hàm trong RAM
+                        // NHẬN DIỆN THAO TÁC HỦY HỢP LỆ CỦA NGƯỜI DÙNG: TUYỆT ĐỐI KHÔNG VÁ MÃ TRONG RAM
+                        const isAbort = fault?.name === 'AbortError' || 
+                                        fault?.code === 20 || 
+                                        String(fault?.message || '').toLowerCase().includes('aborted');
+                        if (isAbort) {
+                            return typeof this.fallback === 'function' ? this.fallback() : this.fallback;
+                        }
+
+                        // TỰ SỬA MÃ NGUỒN TRỰC TIẾP KHI GẶP LỖI HỆ THỐNG THỰC SỰ
                         const patchSuccess = this.patchSourceInRAM(fault, true);
                         if (!patchSuccess) {
                             eff = this.heuristicSurgery(eff, fault?.message || '');
@@ -3492,7 +3767,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                     }
                 }
 
-                // Nhờ Nơ-ron đồng đẳng nếu mã nguồn tự tái tạo bất thành
                 for (const tag of this.tags) {
                     const peer = await this.consultPeer(tag, eff);
                     if (peer?.success) return peer.result;
@@ -3503,11 +3777,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
             // [CỖ MÁY BIÊN DỊCH VÀ TIÊM MÃ VÁ RUNTIME TRỰC TIẾP VÀO RAM]
             patchSourceInRAM(fault, isAsync = true) {
                 const msg = fault?.message || String(fault);
-                const rawSource = this.processor.toString();
+                if (fault?.name === 'AbortError' || msg.includes('aborted')) return false;
 
+                const rawSource = this.processor.toString();
                 let injectedSource = "";
 
-                // 1. LỖI PHẦN CỨNG: Codec đóng, AudioContext ngắt, GPU context mất, Storage Quota đầy
                 if (/closed codec|closed state|cannot call.*closed/i.test(msg)) {
                     injectedSource = `
                         if (typeof instantiateEncoder === 'function') instantiateEncoder();
@@ -3524,9 +3798,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                         if (typeof audioCtx !== 'undefined' && audioCtx?.state === 'suspended') await audioCtx.resume();
                         return await (${rawSource})(...arguments);
                     `;
-                }
-                // 2. LỖI PHẦN MỀM: Null/Undefined pointer, Type mismatch, JSON vỡ, Regex gãy
-                else if (/cannot read propert|is undefined|is null|is not a function/i.test(msg)) {
+                } else if (/cannot read propert|is undefined|is null|is not a function/i.test(msg)) {
                     injectedSource = `
                         const autoGuard = (obj) => new Proxy(obj || {}, {
                             get: (t, p) => (p in t ? t[p] : (p === 'toString' ? () => '' : null))
@@ -3543,13 +3815,18 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                     return false;
                 }
 
-                // Hoán đổi hàm đang chạy trong RAM bằng hàm mới tự sinh
-                const Constructor = isAsync 
-                    ? Object.getPrototypeOf(async function(){}).constructor 
-                    : Function;
-                this.processor = new Constructor(injectedSource);
-                this.peerMesh?.broadcast('GENOME_REWRITTEN_IN_RAM', { id: this.id, fault: msg });
-                return true;
+                try {
+                    const Constructor = isAsync 
+                        ? Object.getPrototypeOf(async function(){}).constructor 
+                        : Function;
+                    this.processor = new Constructor(injectedSource);
+                    if (this.peerMesh && typeof this.peerMesh.broadcast === 'function') {
+                        this.peerMesh.broadcast('GENOME_REWRITTEN_IN_RAM', { id: this.id, fault: msg });
+                    }
+                    return true;
+                } catch (_) {
+                    return false;
+                }
             }
 
             // [CỖ MÁY BIÊN DỊCH VÀ SỬA MÃ NGUỒN TRỰC TIẾP TRONG RUNTIME]
@@ -3620,7 +3897,26 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
         const SynapticNeuralMesh = {
             neurons: new Map(),
             subscribers: new Map(),
-            sharedGenes: new Map(), // Ngân hàng gen đột biến chia sẻ toàn mạng
+            sharedGenes: new Map(),
+
+            // PHƯƠNG THỨC PHÁT TÍN HIỆU TOÀN MẠNG NƠ-RON
+            broadcast(event, payload) {
+                if (this.subscribers && this.subscribers.has(event)) {
+                    for (const cb of this.subscribers.get(event)) {
+                        try { cb(payload); } catch (_) {}
+                    }
+                }
+                if (typeof GDeepEventBus !== 'undefined' && GDeepEventBus && typeof GDeepEventBus.emit === 'function') {
+                    try { GDeepEventBus.emit(`mesh:${event}`, payload); } catch (_) {}
+                }
+            },
+
+            subscribe(event, cb) {
+                if (!this.subscribers) this.subscribers = new Map();
+                if (!this.subscribers.has(event)) this.subscribers.set(event, new Set());
+                this.subscribers.get(event).add(cb);
+                return () => this.subscribers.get(event)?.delete(cb);
+            },
 
             register(id, schemaContract, processorFn, defaultFallback, options = {}) {
                 const neuron = new CognitiveNeuron(id, schemaContract, processorFn, defaultFallback, options);
@@ -4281,6 +4577,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                             let audioCtx = null;
                             if (AudioContextClass) {
                                 audioCtx = new AudioContextClass();
+                                // SỬA LỖI MẤT ÂM THANH: Trình duyệt luôn block AudioContext, bắt buộc gọi resume()
+                                if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
                                 const sourceNode = audioCtx.createMediaElementSource(video);
                                 const destNode = audioCtx.createMediaStreamDestination();
                                 sourceNode.connect(destNode); // Chỉ gửi vào bộ thu, không xuất ra loa
@@ -4830,8 +5128,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
                     try {
                         const size = blobOrFile.size || 0;
                         
-                        // Kiểm tra nếu vượt ngưỡng ngạch bộ nhớ, giải phóng các URL cũ nhất (LRU Eviction)
-                        if (_totalAllocatedBytes + size > MAX_MEMORY_THRESHOLD && _registry.size > 0) {
+                        // SỬA LỖI TRÀN RAM (QUOTA EXCEEDED): Đổi if thành while để giải phóng liên tục ĐỦ bộ nhớ khi người dùng nạp tệp dung lượng lớn
+                        while (_totalAllocatedBytes + size > MAX_MEMORY_THRESHOLD && _registry.size > 0) {
                             const oldestUrl = _registry.keys().next().value;
                             this.revoke(oldestUrl);
                         }
@@ -5206,8 +5504,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
          */
         const rawCopyToClipboardWorker = async (content) => {
             if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(content);
-                return true;
+                try {
+                    // SỬA LỖI UNCAUGHT EXCEPTION: Bắt lỗi nếu tab mất focus đột ngột khiến Clipboard API bị từ chối quyền
+                    await navigator.clipboard.writeText(content);
+                    return true;
+                } catch (e) {
+                    // Chuyển quyền xử lý xuống cơ chế Fallback <textarea> bên dưới
+                }
             }
 
             const textArea = document.createElement("textarea");
@@ -5921,40 +6224,56 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
  * NƠ-RON AI GIẢI MÃ LUỒNG SERVER-SENT EVENTS (SSE STREAM NEURON)
  */
 const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
-    if (!response || !response.body) {
-        throw new Error('[readSSEStream] Phản hồi không chứa luồng dữ liệu.');
-    }
+    if (!response || !response.body) throw new Error('[readSSEStream] Phản hồi rỗng hoặc không tồn tại.');
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
     let buffer = '';
+    
+    // [WATCHDOG TỐI THƯỢNG] Chống kẹt luồng TCP ảo (Silent TCP Drop)
+    let lastActivityTime = Date.now();
+    const STALL_TIMEOUT = 18000; // 18s không nhận được cắn byte nào -> Ép hủy để nối dòng
+    const stallInterval = setInterval(() => {
+        if (Date.now() - lastActivityTime > STALL_TIMEOUT) {
+            clearInterval(stallInterval);
+            try { reader.cancel('STALL_TIMEOUT'); } catch (_) {}
+        }
+    }, 2000);
 
     try {
         while (true) {
             if (signal?.aborted) {
-                await reader.cancel().catch(() => {});
-                const abortErr = new Error('AbortError');
-                abortErr.name = 'AbortError';
-                throw abortErr;
+                const abortErr = new Error('AbortError'); abortErr.name = 'AbortError'; throw abortErr;
             }
 
-            const { done, value } = await reader.read();
-            if (done) break;
+            let done, value;
+            try {
+                ({ done, value } = await reader.read());
+                lastActivityTime = Date.now(); // Làm mới Watchdog
+            } catch (readErr) {
+                if (readErr.message === 'STALL_TIMEOUT') throw new Error('NETWORK_STALLED_TIMEOUT');
+                throw readErr;
+            }
 
-            buffer += decoder.decode(value, { stream: true });
+            if (value) buffer += decoder.decode(value, { stream: true });
             
-            // Chuẩn W3C SSE: Các sự kiện được phân tách bởi 2 dấu xuống dòng liên tiếp (\n\n hoặc \r\n\r\n)
+            // Xử lý vét máng khi stream báo DONE nhưng vẫn còn kẹt trong buffer
+            if (done) {
+                buffer += decoder.decode(); // Decode nốt các byte rác cuối
+                if (buffer.trim() && !buffer.endsWith('\n\n')) buffer += '\n\n'; 
+            }
+
             let eventBoundary;
             while ((eventBoundary = buffer.indexOf('\n\n')) !== -1 || (eventBoundary = buffer.indexOf('\r\n\r\n')) !== -1) {
                 const delimiterLength = buffer.startsWith('\r\n\r\n', eventBoundary) ? 4 : 2;
                 const rawEvent = buffer.slice(0, eventBoundary).trim();
+                const chunkWithBoundary = buffer.slice(0, eventBoundary + delimiterLength); // Giữ lại nguyên gốc để hoàn nguyên nếu lỗi
                 buffer = buffer.slice(eventBoundary + delimiterLength);
 
-                if (!rawEvent || rawEvent.startsWith(':')) continue; // Bỏ qua ping/comment
+                if (!rawEvent || rawEvent.startsWith(':')) continue;
 
-                const lines = rawEvent.split(/\r?\n/);
                 let dataPayload = '';
-
+                const lines = rawEvent.split(/\r?\n/);
                 for (const line of lines) {
                     if (line.startsWith('data:')) {
                         dataPayload += (dataPayload ? '\n' : '') + line.slice(5).trim();
@@ -5966,20 +6285,26 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
                 try {
                     const parsed = JSON.parse(dataPayload);
                     if (parsed.error) {
-                        const err = new Error(parsed.error.message || 'Lỗi API từ máy chủ');
+                        const err = new Error(parsed.error.message || 'Lỗi cấu trúc API');
                         err.code = parsed.error.code || response.status;
                         throw err;
                     }
-                    if (typeof onChunk === 'function') {
-                        onChunk(parsed);
-                    }
+                    if (typeof onChunk === 'function') onChunk(parsed);
                 } catch (jsonErr) {
-                    if (jsonErr.code) throw jsonErr;
-                    // Bỏ qua lỗi cú pháp nếu gói tin bị rách dòng
+                    if (jsonErr.code) throw jsonErr; // Lỗi từ Server API -> Bắn thẳng ra ngoài
+                    
+                    // [TỰ CHỮA LÀNH CỰC HẠN] Nếu là lỗi SyntaxError -> Mảnh JSON bị rách giữa dòng bởi TCP Packet.
+                    // TUYỆT ĐỐI KHÔNG VỨT BỎ! Phải nhả ngược lại buffer và break vòng lặp parse để chờ reader.read() nạp mảnh tiếp theo!
+                    if (jsonErr instanceof SyntaxError && !done) {
+                        buffer = chunkWithBoundary + buffer;
+                        break;
+                    }
                 }
             }
+            if (done) break;
         }
     } finally {
+        clearInterval(stallInterval);
         try { reader.releaseLock(); } catch (_) {}
     }
 };
@@ -6661,7 +6986,7 @@ _gdeep_stderr_val = sys.stderr.getvalue()
                             <span>Figure Output (Matplotlib / Seaborn)</span>
                             <span style="color:#38bdf8; font-size:8.5px;">Nhấp để phóng to</span>
                         </div>
-                        <img src="data:image/png;base64,${p.plotBase64}" style="max-height:420px; width:auto; max-width:100%; border-radius:6px; margin:0 auto; display:block; cursor:zoom-in; box-shadow:0 8px 24px rgba(0,0,0,0.6);" alt="Đồ thị tính toán" onclick="openLightbox(this.src)" />
+                        <img src="data:image/png;base64,${p.plotBase64}" style="max-height:420px; width:auto; max-width:100%; border-radius:6px; margin:0 auto; display:block; cursor:zoom-in; box-shadow:0 8px 24px rgba(0,0,0,0.6);" alt="Đồ thị tính toán" />
                     </div>`;
                 }
 
@@ -7304,8 +7629,8 @@ _gdeep_stderr_val = sys.stderr.getvalue()
                 // Thử parse thông thường
                 try { return JSON.parse(clean); } catch (_) {}
 
-                // Sửa lỗi trailing commas (dấu phẩy ở cuối trước dấu đóng ] hoặc })
-                clean = clean.replace(/,\s*([\]}])/g, '$1');
+                // SỬA LỖI HỎNG CẤU TRÚC JSON: Dùng Regex Lookahead an toàn để không xóa nhầm dấu phẩy nằm bên trong chuỗi (String)
+                clean = clean.replace(/,(?=\s*[\]}](?:[^"']*["'][^"']*["'])*[^"']*$)/g, '');
                 try { return JSON.parse(clean); } catch (_) {}
 
                 // Trích xuất đoạn nằm giữa cặp ngoặc nhọn { ... }
@@ -8300,10 +8625,22 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     const scheduleDbSave = (msg, forceImmediate = false) => {
                         if (!msg?.id || !msg?.threadId) return;
+                        
+                        // SỬA LỖI MẤT DỮ LIỆU KHI TẢI LẠI TRANG (RELOAD): Đồng bộ LocalStorage ngay lập tức (Synchronous) trước khi đưa vào hàng đợi IndexedDB
+                        try {
+                            const backupKey = `gdeep_msg_backup_${msg.threadId}`;
+                            const existing = JSON.parse(localStorage.getItem(backupKey) || '[]');
+                            const idx = existing.findIndex(m => m.id === msg.id);
+                            const cleaned = cleanForDb(msg);
+                            if (idx !== -1) existing[idx] = cleaned;
+                            else existing.push(cleaned);
+                            localStorage.setItem(backupKey, JSON.stringify(existing));
+                        } catch (_) {}
+
                         pendingSaveMap.set(msg.id, msg);
 
                         const now = Date.now();
-                        // Nếu đang stream và chưa đủ 1000ms: Gom dữ liệu chờ nhịp sau, không gọi IndexedDB
+                        // Nếu đang stream và chưa đủ 1000ms: Gom dữ liệu chờ nhịp sau, không gọi IndexedDB để bảo vệ IO
                         if (!forceImmediate && isGenerating.value && (now - lastStreamSaveTs < 1000)) {
                             return;
                         }
@@ -8327,8 +8664,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     const cancelGeneration = () => {
-                        if (abortController) { try { abortController.abort(); } catch (_) {} abortController = null; }
-                        AICinemaWorkerBridge.terminate();
+                        if (abortController) {
+                            try {
+                                abortController.abort();
+                            } catch (_) {}
+                            abortController = null;
+                        }
+                        if (AICinemaWorkerBridge && typeof AICinemaWorkerBridge.terminate === 'function') {
+                            try { AICinemaWorkerBridge.terminate(); } catch (_) {}
+                        }
                         isGenerating.value = false;
                         searchStatusText.value = "";
                         renderLoopActive = false;
@@ -8404,9 +8748,17 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
                     const downloadImageFromMessage = (msg) => {
-                        // Regex nâng cao hỗ trợ nhận diện link có chứa ngoặc đơn lồng nhau
-                        const match = (msg.content || '').match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
-                        if (match && match[2]) downloadImageFile(match[2].trim(), `Artwork_${Date.now()}.jpg`);
+                        // SỬA LỖI REGEX: Hỗ trợ trích xuất cả thẻ HTML <img> (do AI sinh ra) và Markdown ![]()
+                        let imgUrl = null;
+                        const htmlMatch = (msg.content || '').match(/<img[^>]+src=["']([^"']+)["']/i);
+                        if (htmlMatch && htmlMatch[1]) {
+                            imgUrl = htmlMatch[1];
+                        } else {
+                            const mdMatch = (msg.content || '').match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+                            if (mdMatch && mdMatch[2]) imgUrl = mdMatch[2];
+                        }
+                        
+                        if (imgUrl) downloadImageFile(imgUrl.trim(), `Artwork_${Date.now()}.jpg`);
                         else notify("Không tìm thấy tệp ảnh phù hợp trong tin nhắn", true);
                     };
                     const downloadLightboxImage = () => {
@@ -8532,225 +8884,293 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     };
 
         const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null) => {
-            if (isGenerating.value) return;
-            isGenerating.value = true;
-            triggerHaptic('heavy');
+    if (isGenerating.value) return;
+    isGenerating.value = true;
+    triggerHaptic('heavy');
 
-            const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
-            if (!msg) currentMessages.value.push(targetMsg);
+    let wakeLock = null;
+    let silentAudioCtx = null;
 
-            try {
-                const requestedDuration = Number(cinemaConfig.duration) || 15;
-                const userAspectRatio = cinemaConfig.aspectRatio || '16:9';
-                const userSeed = cinemaConfig.characterSeed || Math.floor(Math.random() * 899999) + 100000;
-                const userStyle = cinemaConfig.style || 'cinematic';
-                const userPrompt = (customPrompt || inputText.value || '').trim() || 'Một bộ phim nghệ thuật đậm chất điện ảnh về sự chuyển biến không gian và cảm xúc.';
-                const userCues = toRaw(userTimelineCues.value);
-                const userCharacters = toRaw(cinemaVoiceCharacters.value);
-                const healthyKey = getNextHealthyApiKey()?.key || '';
-                const userFps = 24;
+    try {
+        if ('wakeLock' in navigator) {
+            wakeLock = await navigator.wakeLock.request('screen');
+        }
+    } catch (_) {}
 
-                let directImageDataUrl = null;
-                if (directImageInput) {
-                    if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
-                    else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
-                } else if (msg?.content) {
-                    const imgMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
-                    if (imgMatch && imgMatch[2]) {
-                        directImageDataUrl = imgMatch[2].trim();
-                    }
-                }
+    try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+            silentAudioCtx = new AudioContextClass();
+            const osc = silentAudioCtx.createOscillator();
+            const gain = silentAudioCtx.createGain();
+            gain.gain.value = 0.0001;
+            osc.connect(gain);
+            gain.connect(silentAudioCtx.destination);
+            osc.start();
+        }
+    } catch (_) {}
 
-                if (directImageDataUrl && directImageDataUrl.startsWith('http')) {
-                    searchStatusText.value = "Đang nạp dữ liệu ảnh gốc...";
-                    try {
-                        let imgRes = await fetch(directImageDataUrl).catch(() => null);
-                        if (!imgRes || !imgRes.ok) {
-                            imgRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(directImageDataUrl)}`).catch(() => null);
-                        }
-                        if (imgRes && imgRes.ok) {
-                            const imgBlob = await imgRes.blob();
-                            directImageDataUrl = ObjectUrlRegistry.create(imgBlob);
-                        }
-                    } catch (_) {}
-                }
+    const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
+    if (!msg) currentMessages.value.push(targetMsg);
 
-                // BƯỚC 1: BIÊN KỊCH VÀ ĐẠO DIỄN TOÀN CẢNH PHIM DÀI TẬP VỚI GEMINI
-                searchStatusText.value = "Tổng đạo diễn Gemini đang phân tách cấu trúc hồi kịch bản...";
+    try {
+        const requestedDuration = Number(cinemaConfig.duration);
+        const userAspectRatio = cinemaConfig.aspectRatio;
+        const userSeed = cinemaConfig.characterSeed;
+        const userStyle = cinemaConfig.style;
+        const userPrompt = (customPrompt || inputText.value || '').trim();
+        if (!userPrompt && !directImageInput && !msg?.content) {
+            throw new Error("Vui lòng cung cấp chủ đề hoặc ý tưởng phân cảnh điện ảnh.");
+        }
 
-                const promptMasterDirector = `[TỔNG ĐẠO DIỄN VÀ BIÊN KỊCH ĐIỆN ẢNH TỐI THƯỢNG]
-Hãy chuyển thể ý tưởng sau đây thành kịch bản phân cảnh của một bộ phim điện ảnh hoàn chỉnh:
-Yêu cầu tác phẩm: "${userPrompt}"
-Tổng thời lượng mục tiêu: ${requestedDuration} giây.
-Tỷ lệ khung hình: ${userAspectRatio}
-Phong cách tạo hình: ${userStyle}
-Danh sách nhân vật thoại: ${JSON.stringify(userCharacters.map(c => ({ name: c.name, geminiVoice: c.geminiVoice })))}
+        const userCues = JSON.parse(JSON.stringify(userTimelineCues.value || []));
+        const userCharacters = JSON.parse(JSON.stringify(cinemaVoiceCharacters.value || []));
+        const defaultSpeakerName = (Array.isArray(userCharacters) && userCharacters.length > 0 && userCharacters[0]?.name)
+            ? userCharacters[0].name 
+            : "Người dẫn chuyện";
 
-YÊU CẦU ĐỘNG HỌC TUYỆT ĐỐI (CẤM HARDCODE):
-1. Tự động tính toán số phân cảnh (scenes) tối ưu (từ 2 đến 6 cảnh tùy thuộc vào tổng thời lượng ${requestedDuration}s).
-2. "overall_resolution": Tính toán độ rộng & cao chuẩn tỷ lệ ${userAspectRatio} (chia hết cho 16, tối thiểu 768px).
-3. Với mỗi phân cảnh trong "scenes":
-   - "scene_index": Thứ tự cảnh (1, 2, 3...).
-   - "title": Tên phân đoạn.
-   - "target_duration": Thời lượng cảnh (giây, cộng tổng các cảnh phải bằng đúng ${requestedDuration}).
-   - "action_description": Miêu tả hành động và diễn biến nghệ thuật.
-   - "narrative_plan":
-     * "visual_dna": Prompt tiếng Anh cực kỳ chi tiết cho Flux, đồng bộ phong cách ${userStyle}, khắc họa ánh sáng, bố cục, nhân vật.
-     * "optics": fov (30.0 - 55.0), plane_distance (1.8 - 2.8), overscan (1.2 - 1.5), mesh_grid (140 - 200).
-     * "camera_style": Tên kỹ thuật chuyển động (Dolly In, Pan Orbit, Crane Shot, Tracking, Tilt).
-     * "camera_trajectory": Mảng mốc nội suy Catmull-Rom tối thiểu 2 điểm: [{"t": 0.0, "cam": [x,y,z], "rot": [pitch,yaw,roll]}, {"t": 1.0, "cam": [x,y,z], "rot": [pitch,yaw,roll]}].
-     * "soundscape_blueprint": {"music": {"chords": [tần số Hz âm nhạc], "sub_bass": tần số Hz, "volume": 0.15 - 0.35}}.
-     * "cinematic_post": {"vignette": 0.15 - 0.35, "grain": 0.015 - 0.035}.
-   - "dialogue_cues": Mảng các câu thoại trong cảnh: [{"speaker": "Tên nhân vật", "startTimeSec": giây bắt đầu trong cảnh này, "text": "lời thoại tiếng Việt tự nhiên giàu cảm xúc"}].
+        const healthyKey = getNextHealthyApiKey()?.key || '';
+        if (!healthyKey) throw new Error("Chìa khóa hệ thống Gemini chưa được thiết lập.");
 
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG KÈM GIẢI THÍCH):
+        let directImageDataUrl = null;
+        if (directImageInput) {
+            if (typeof directImageInput === 'string') directImageDataUrl = directImageInput;
+            else if (directImageInput.data) directImageDataUrl = `data:image/jpeg;base64,${cleanBase64Data(directImageInput.data)}`;
+        } else if (msg?.content) {
+            const htmlMatch = msg.content.match(/<img[^>]+src=["']([^"']+)["']/i);
+            if (htmlMatch && htmlMatch[1]) directImageDataUrl = htmlMatch[1].trim();
+            else {
+                const mdMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+                if (mdMatch && mdMatch[2]) directImageDataUrl = mdMatch[2].trim();
+            }
+        }
+
+        let w = 1024, h = 576;
+        if (userAspectRatio === "9:16") { w = 768; h = 1344; }
+        else if (userAspectRatio === "1:1") { w = 1024; h = 1024; }
+        else if (userAspectRatio === "21:9") { w = 1344; h = 576; }
+        w = Math.round(w / 16) * 16;
+        h = Math.round(h / 16) * 16;
+
+        const selectedImageModel = getImageGenModel(userStyle);
+        const styleModifier = getImageStylePromptModifier(userStyle);
+
+        let masterScript = null;
+
+        if (requestedDuration > 60) {
+            searchStatusText.value = "Tổng đạo diễn Gemini đang phân tích cấu trúc hồi đại tác phẩm...";
+            const totalActs = Math.min(20, Math.max(3, Math.ceil(requestedDuration / 300)));
+
+            const promptMacro = `[TỔNG BIÊN KỊCH ĐIỆN ẢNH ĐẠI DỰ ÁN]
+Chủ đề: "${userPrompt}", Tổng thời lượng: ${requestedDuration}s.
+Hãy phân rã thành ${totalActs} chương hồi logic. Trả về định dạng JSON:
 {
-  "title": "Tên bộ phim",
-  "total_duration": ${requestedDuration},
-  "overall_aspect_ratio": "${userAspectRatio}",
-  "overall_resolution": { "width": 1024, "height": 576 },
-  "overall_fps": 24,
+  "title": "Tên tác phẩm",
+  "chapters": [
+    { "chapter_index": 1, "theme": "Nội dung chương", "target_duration": ${Math.round(requestedDuration / totalActs)} }
+  ]
+}`;
+
+            let macroPlan = null;
+            let macroTries = 0;
+            while (!macroPlan && macroTries < 3) {
+                macroTries++;
+                const macroRes = await dispatchBackgroundTaskWithFallback({
+                    contents: [{ role: 'user', parts: [{ text: promptMacro }] }],
+                    generationConfig: { temperature: 0.1, maxOutputTokens: 2048, responseMimeType: "application/json" }
+                });
+                macroPlan = SearchIntelligenceEngine.robustJsonRepair(macroRes?.candidates?.[0]?.content?.parts?.[0]?.text);
+            }
+            if (!macroPlan) throw new Error("Gemini không phản hồi cấu trúc kịch bản tổng thể.");
+
+            const rawChapters = Array.isArray(macroPlan.chapters) 
+                ? macroPlan.chapters 
+                : (Array.isArray(macroPlan) ? macroPlan : (Object.values(macroPlan).find(v => Array.isArray(v)) || []));
+
+            const allScenes = [];
+            let currentSceneIndex = 1;
+
+            for (let cIdx = 0; cIdx < rawChapters.length; cIdx++) {
+                const chap = rawChapters[cIdx] || {};
+                searchStatusText.value = `Gemini đang đạo diễn chi tiết Chương ${cIdx + 1}/${rawChapters.length}...`;
+
+                const chapDuration = Number(chap.target_duration) || Math.round(requestedDuration / Math.max(1, rawChapters.length));
+                const scenesInChapter = Math.min(8, Math.max(2, Math.ceil(chapDuration / 20)));
+
+                const promptChapter = `[ĐẠO DIỄN PHÂN CẢNH VÀ CHỦ THỂ 3D CHƯƠNG ${cIdx + 1}]: "${chap.theme || userPrompt}".
+Thời lượng chương: ${chapDuration}s. Cần đúng ${scenesInChapter} phân cảnh.
+Phong cách thị giác: "${styleModifier}". Model ảnh: "${selectedImageModel}".
+Nhân vật: ${JSON.stringify(userCharacters.map(c => c.name))}.
+YÊU CẦU: Xác định rõ chuyển động của chủ thể chính trong từng cảnh.
+Trả về JSON:
+{
   "scenes": [
     {
       "scene_index": 1,
-      "title": "Khởi đầu",
-      "target_duration": 5,
-      "action_description": "...",
-      "narrative_plan": {
-        "visual_dna": "cinematic 8k masterpiece...",
-        "optics": { "fov": 36.0, "plane_distance": 2.2, "overscan": 1.35, "mesh_grid": 160 },
-        "camera_style": "Slow Push-In Dolly",
-        "camera_trajectory": [
-          { "t": 0.0, "cam": [0, 0, 2.2], "rot": [0, 0, 0] },
-          { "t": 1.0, "cam": [0, 0, 1.95], "rot": [0.2, -0.4, 0] }
-        ],
-        "soundscape_blueprint": { "music": { "chords": [146.83, 220.0], "sub_bass": 36.7, "volume": 0.25 } },
-        "cinematic_post": { "vignette": 0.25, "grain": 0.02 }
+      "title": "Tên cảnh",
+      "target_duration": ${Math.round(chapDuration / scenesInChapter)},
+      "action_description": "Mô tả hành động của chủ thể chính và bối cảnh",
+      "image_plan": {
+        "model": "${selectedImageModel}",
+        "prompt": "Detailed English prompt for ${selectedImageModel}, ${styleModifier}, high quality 8k film still, clear foreground subject..."
       },
       "dialogue_cues": [
-        { "speaker": "Nhân vật 1", "startTimeSec": 1.0, "text": "Câu thoại đầu tiên..." }
+        { "speaker": "${defaultSpeakerName}", "startTimeSec": 1.0, "text": "Lời thoại..." }
       ]
     }
   ]
 }`;
 
-                let masterScript = null;
-                const scriptRes = await dispatchBackgroundTaskWithFallback({
-                    contents: [{ role: 'user', parts: [{ text: promptMasterDirector }] }],
-                    generationConfig: { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" }
-                });
-
-                if (scriptRes?.candidates?.[0]?.content?.parts?.[0]?.text) {
-                    masterScript = SearchIntelligenceEngine.robustJsonRepair(scriptRes.candidates[0].content.parts[0].text);
-                }
-
-                // Fallback nếu việc parse JSON từ LLM gặp sự cố cấu trúc
-                if (!masterScript || !Array.isArray(masterScript.scenes) || masterScript.scenes.length === 0) {
-                    let w = 1024, h = 576;
-                    if (userAspectRatio === '9:16') { w = 576; h = 1024; }
-                    else if (userAspectRatio === '1:1') { w = 768; h = 768; }
-                    else if (userAspectRatio === '21:9') { w = 1200; h = 512; }
-
-                    masterScript = {
-                        title: "Bản Hùng Ca Điện Ảnh",
-                        total_duration: requestedDuration,
-                        overall_aspect_ratio: userAspectRatio,
-                        overall_resolution: { width: w, height: h },
-                        overall_fps: userFps,
-                        base_seed: userSeed,
-                        voice_characters: userCharacters,
-                        scenes: [
-                            {
-                                scene_index: 1,
-                                title: "Cảnh 1",
-                                target_duration: requestedDuration,
-                                action_description: userPrompt,
-                                directImageDataUrl: directImageDataUrl,
-                                narrative_plan: {
-                                    visual_dna: userPrompt || "Cinematic 8k film scene",
-                                    optics: { fov: 36.0, plane_distance: 2.2, overscan: 1.35, mesh_grid: 160 },
-                                    camera_style: "Epic Floating Tracking",
-                                    camera_trajectory: [
-                                        { t: 0.0, cam: [0, 0, 2.2], rot: [0, 0, 0] },
-                                        { t: 1.0, cam: [0.06, -0.02, 2.05], rot: [0.3, -0.8, 0] }
-                                    ],
-                                    soundscape_blueprint: { "music": { "chords": [130.81, 196.0], "sub_bass": 32.7, "volume": 0.22 } },
-                                    cinematic_post: { vignette: 0.25, grain: 0.02 }
-                                },
-                                dialogue_cues: userCues.length > 0 ? userCues : []
-                            }
-                        ]
-                    };
-                } else {
-                    masterScript.base_seed = userSeed;
-                    masterScript.voice_characters = userCharacters;
-                    if (directImageDataUrl && masterScript.scenes[0]) {
-                        masterScript.scenes[0].directImageDataUrl = directImageDataUrl;
-                    }
-                    if (userCues.length > 0 && masterScript.scenes[0]) {
-                        masterScript.scenes[0].dialogue_cues = userCues;
-                    }
-                }
-
-                // BƯỚC 2: VÒNG LẶP SẢN XUẤT PHIM ĐA PHÂN CẢNH VÀ HỘI ĐỒNG KIỂM DUYỆT 9.5/10
-                let productionAttempts = 0;
-                const MAX_PRODUCTION_ATTEMPTS = 3;
-                let finalResult = null;
-
-                while (productionAttempts < MAX_PRODUCTION_ATTEMPTS) {
-                    productionAttempts++;
-                    searchStatusText.value = productionAttempts > 1
-                        ? `Tái tối ưu chất lượng quang học đạt ngưỡng 9.5/10 (Lần ${productionAttempts})...`
-                        : "Xưởng phim đang tiến hành sản xuất đa phân cảnh khép kín...";
-
-                    const result = await AICinemaWorkerBridge.runProductionInWorker({
-                        masterScript,
-                        apiKey: healthyKey,
-                        geminiTTSApiKey: healthyKey
-                    }, (statusText, percent) => {
-                        searchStatusText.value = percent !== null ? `[${percent}%] ${statusText}` : statusText;
+                let chapScenesObj = null;
+                let chapTries = 0;
+                while (!chapScenesObj && chapTries < 3) {
+                    chapTries++;
+                    const chapRes = await dispatchBackgroundTaskWithFallback({
+                        contents: [{ role: 'user', parts: [{ text: promptChapter }] }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
                     });
-
-                    const audit = await SynapticNeuralMesh.NeuralCouncil.auditCommercialVideo(result.videoBlob, result.narrativePlan);
-                    if (audit.passed) {
-                        finalResult = result;
-                        break;
-                    } else {
-                        masterScript.base_seed = Math.floor(Math.random() * 899999) + 100000;
-                    }
+                    chapScenesObj = SearchIntelligenceEngine.robustJsonRepair(chapRes?.candidates?.[0]?.content?.parts?.[0]?.text);
                 }
 
-                if (!finalResult) throw new Error("Chất lượng thành phẩm chưa vượt qua hội đồng thẩm định tiêu chuẩn điện ảnh.");
+                const parsedScenes = Array.isArray(chapScenesObj?.scenes)
+                    ? chapScenesObj.scenes
+                    : (Array.isArray(chapScenesObj) ? chapScenesObj : []);
 
-                const videoUrl = ObjectUrlRegistry.create(finalResult.videoBlob);
-                targetMsg.renderedVideoUrl = videoUrl;
-
-                const shotsDetail = (finalResult.shotsLog || []).map(s =>
-                    `- **Phân cảnh ${s.shot_id}: ${s.title} (${s.duration}s):** *${s.action || 'Diễn biến điện ảnh'}* [Góc máy: ${s.camera}]`
-                ).join('\n\n');
-
-                targetMsg.content = (targetMsg.content || '') +
-                    `\n\n🎬 **Tác Phẩm Điện Ảnh Đa Phân Cảnh: "${masterScript.title || 'Phim Nghệ Thuật'}"**\n` +
-                    `- **Độ phân giải:** ${finalResult.narrativePlan.resolution.width}x${finalResult.narrativePlan.resolution.height} (${userAspectRatio})\n` +
-                    `- **Tổng thời lượng:** ${finalResult.narrativePlan.total_duration}s | **Số phân cảnh:** ${finalResult.narrativePlan.total_scenes}\n\n` +
-                    `🎞️ **Nhật ký phân cảnh chi tiết do AI đạo diễn & quay dựng:**\n${shotsDetail}`;
-
-                targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-                scheduleDbSave(targetMsg);
-                triggerGenerateFollowUps(targetMsg);
-                scrollToBottom(true);
-                notify("Đã hoàn tất kết xuất bộ phim điện ảnh nghệ thuật!");
-            } catch (err) {
-                notify(`Lỗi tạo phim điện ảnh: ${err.message}`, true);
-                targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi xưởng phim: ${err.message})*`;
-                targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-                scheduleDbSave(targetMsg);
-            } finally {
-                isGenerating.value = false;
-                searchStatusText.value = "";
-                updateInputTokensDisplay();
+                for (const sc of parsedScenes) {
+                    sc.scene_index = currentSceneIndex++;
+                    allScenes.push(sc);
+                }
             }
-        };             
+
+            masterScript = {
+                title: macroPlan.title || userPrompt.slice(0, 30),
+                total_duration: requestedDuration,
+                overall_aspect_ratio: userAspectRatio,
+                overall_resolution: { width: w, height: h },
+                overall_fps: 24,
+                base_seed: userSeed,
+                voice_characters: userCharacters,
+                scenes: allScenes
+            };
+
+        } else {
+            searchStatusText.value = "Gemini đang thiết lập kịch bản và phân cảnh 3D...";
+            const promptSingle = `[TỔNG ĐẠO DIỄN VÀ BÓC TÁCH CHỦ THỂ 3D ĐIỆN ẢNH]
+Yêu cầu: "${userPrompt}". Thời lượng: ${requestedDuration}s. Tỷ lệ: ${userAspectRatio}.
+Phong cách thị giác: "${styleModifier}". Model ảnh: "${selectedImageModel}".
+Nhân vật: ${JSON.stringify(userCharacters.map(c => c.name))}.
+QUY TẮC:
+- "image_plan.prompt": Viết bằng tiếng Anh mô tả bối cảnh cực kỳ chi tiết cho model ${selectedImageModel}, làm nổi bật chủ thể tiền cảnh.
+Trả về duy nhất định dạng JSON:
+{
+  "title": "Tên phim",
+  "total_duration": ${requestedDuration},
+  "overall_aspect_ratio": "${userAspectRatio}",
+  "overall_resolution": { "width": ${w}, "height": ${h} },
+  "overall_fps": 24,
+  "scenes": [
+    {
+      "scene_index": 1,
+      "title": "Cảnh 1",
+      "target_duration": ${requestedDuration},
+      "action_description": "Mô tả chi tiết hành động di chuyển của chủ thể trong không gian 3D",
+      "image_plan": {
+        "model": "${selectedImageModel}",
+        "prompt": "English cinematic description for ${selectedImageModel}, ${styleModifier}, 8k photorealistic, distinct subject..."
+      },
+      "dialogue_cues": [
+        { "speaker": "${defaultSpeakerName}", "startTimeSec": 1.0, "text": "Lời thoại..." }
+      ]
+    }
+  ]
+}`;
+
+            let tries = 0;
+            while (!masterScript && tries < 3) {
+                tries++;
+                const res = await dispatchBackgroundTaskWithFallback({
+                    contents: [{ role: 'user', parts: [{ text: promptSingle }] }],
+                    generationConfig: { temperature: 0.1, maxOutputTokens: 3072, responseMimeType: "application/json" }
+                });
+                masterScript = SearchIntelligenceEngine.robustJsonRepair(res?.candidates?.[0]?.content?.parts?.[0]?.text);
+            }
+            if (!masterScript) throw new Error("Gemini không phản hồi kịch bản phân cảnh.");
+
+            // Chuẩn hóa cấu trúc MasterScript bất kể Gemini trả về Array hay Object
+            if (Array.isArray(masterScript)) {
+                masterScript = {
+                    title: userPrompt.slice(0, 30),
+                    total_duration: requestedDuration,
+                    overall_aspect_ratio: userAspectRatio,
+                    overall_resolution: { width: w, height: h },
+                    overall_fps: 24,
+                    scenes: masterScript
+                };
+            } else if (!Array.isArray(masterScript.scenes)) {
+                masterScript.scenes = Object.values(masterScript).find(v => Array.isArray(v)) || [];
+            }
+        }
+
+        masterScript.base_seed = userSeed;
+        masterScript.voice_characters = userCharacters;
+
+        // Gán an toàn hình ảnh & âm thanh mà không bao giờ văng lỗi [0]
+        if (Array.isArray(masterScript.scenes) && masterScript.scenes.length > 0) {
+            if (directImageDataUrl) {
+                masterScript.scenes[0].directImageDataUrl = directImageDataUrl;
+            }
+            if (userCues.length > 0) {
+                masterScript.scenes[0].dialogue_cues = userCues;
+            }
+        } else {
+            throw new Error("Không thể trích xuất danh sách phân cảnh từ dữ liệu của Gemini.");
+        }
+
+        searchStatusText.value = `Kích hoạt xưởng phim 3D Dual-Mesh Gemini (${masterScript.scenes.length} phân cảnh)...`;
+
+        const allAvailableKeys = (apiKeyPool.value || []).map(k => k.key).filter(Boolean);
+        const result = await AICinemaWorkerBridge.runProductionInWorker({
+            masterScript,
+            apiKey: healthyKey,
+            apiKeys: allAvailableKeys.length > 0 ? allAvailableKeys : [healthyKey],
+            geminiTTSApiKey: healthyKey
+        }, (statusText, percent) => {
+            searchStatusText.value = percent !== null ? `[${percent}%] ${statusText}` : statusText;
+        });
+
+        const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
+        targetMsg.renderedVideoUrl = videoUrl;
+
+        const shotsDetail = (result.shotsLog || []).map(s =>
+            `- **Phân cảnh ${s.shot_id}: ${s.title} (${s.duration}s)**`
+        ).join('\n');
+
+        targetMsg.content = (targetMsg.content || '') +
+            `\n\n🎬 **Tác Phẩm Điện Ảnh Độc Bản (Dual-Mesh 3D Matrix): "${masterScript.title}"**\n` +
+            `- **Tổng thời lượng:** ${Math.round(result.narrativePlan.total_duration / 60)} phút (${result.narrativePlan.total_duration}s)\n` +
+            `- **Số phân cảnh:** ${result.narrativePlan.total_scenes} cảnh quay liền mạch\n` +
+            `- **Công nghệ:** Tách lớp chủ thể độc lập + Chuyển vị ma trận điểm ảnh 3D tự do (Gemini Vision)\n` +
+            `- **Độ phân giải:** ${result.narrativePlan.resolution.width}x${result.narrativePlan.resolution.height} (${userAspectRatio})\n\n` +
+            `🎞️ **Danh mục phân cảnh đã xuất xưởng:**\n${shotsDetail}`;
+
+        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+        scheduleDbSave(targetMsg);
+        scrollToBottom(true);
+        notify("Đã hoàn tất kết xuất bộ phim 3D với chủ thể chuyển động độc lập!");
+
+    } catch (err) {
+        notify(`Lỗi sản xuất phim: ${err.message}`, true);
+        targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi xưởng phim: ${err.message})*`;
+        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+        scheduleDbSave(targetMsg);
+    } finally {
+        if (wakeLock) { try { await wakeLock.release(); } catch (_) {} }
+        if (silentAudioCtx) { try { await silentAudioCtx.close(); } catch (_) {} }
+        isGenerating.value = false;
+        searchStatusText.value = "";
+        updateInputTokensDisplay();
+    }
+};        
 
                     const animateCurrentLightboxImage = () => {
                         const currentUrl = lightbox.url;
@@ -9093,7 +9513,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG KÈM GIẢI THÍCH)
 
                     const executeConfirm = async () => {
                         try {
-                            if (confirmActionCallback) await confirmActionCallback();
+                            if (confirmActionCallback) {
+                                await confirmActionCallback();
+                            }
+                        } catch (err) {
+                            const isAbort = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('aborted');
+                            if (!isAbort) {
+                                console.warn("[ExecuteConfirm]", err);
+                            }
                         } finally {
                             showConfirmModal.value = false;
                             confirmActionCallback = null;
@@ -10336,7 +10763,7 @@ Trả về duy nhất định dạng JSON:
                         let attempts = 0;
                         const maxAttempts = 15;
                         
-                        // Chuỗi mô hình dự phòng chuẩn 100% của Google
+                        // Chuỗi mô hình dự phòng chuẩn 100%
                         const candidateModels = Array.from(new Set([
                             activeModelId,
                             ...(Array.isArray(GDeepMasterConfig.Models.FALLBACK_CHAIN) ? GDeepMasterConfig.Models.FALLBACK_CHAIN : ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
@@ -10373,24 +10800,40 @@ Trả về duy nhất định dạng JSON:
                                 reqPayload.contents = [{ role: 'user', parts: [{ text: "Hãy tiếp tục phản hồi." }] }];
                             }
 
-                            // TRIỆT TIÊU XUNG ĐỘT 400: Không gửi tools nếu model không phải 2.0 hoặc khi có thinkingConfig
                             if (reqPayload.generationConfig?.thinkingConfig && reqPayload.tools) {
                                 delete reqPayload.tools;
                             }
 
                             const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
 
+                            // MÀNG CHẮN BẢO VỆ TREO MẠNG (Sliding Window Timeout)
+                            // Xử lý kịch bản Máy chủ nhận Request nhưng treo không gửi Data
+                            const stallAbortController = new AbortController();
+                            const combinedSignal = signal ? 
+                                (signal.aborted ? signal : (
+                                    AbortSignal.any ? AbortSignal.any([signal, stallAbortController.signal]) : stallAbortController.signal
+                                )) : stallAbortController.signal;
+                            
+                            let stallWatchdog = null;
+                            const resetStallWatchdog = () => {
+                                if (stallWatchdog) clearTimeout(stallWatchdog);
+                                stallWatchdog = setTimeout(() => {
+                                    stallAbortController.abort();
+                                }, 20000); // 20 Giây không nhận thêm bit nào -> Cưỡng bức hủy kết nối treo
+                            };
+
                             try {
+                                resetStallWatchdog(); // Bắt đầu đếm ngược từ lúc gửi
                                 const response = await fetch(url, {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify(reqPayload),
-                                    signal
+                                    signal: combinedSignal
                                 });
 
                                 if (!response.ok) {
+                                    clearTimeout(stallWatchdog);
                                     if (response.status === 400) {
-                                        // Giải giáp toàn bộ tham số nâng cao để đảm bảo 100% tương thích
                                         if (reqPayload.generationConfig) {
                                             delete reqPayload.generationConfig.thinkingConfig;
                                             delete reqPayload.generationConfig.responseMimeType;
@@ -10404,31 +10847,40 @@ Trả về duy nhất định dạng JSON:
                                         markApiKeyFailure(currentKey, response.status);
                                     }
                                     attempts++;
-                                    await new Promise(r => setTimeout(r, 250));
+                                    await new Promise(r => setTimeout(r, Math.min(250 * Math.pow(1.5, attempts), 2000)));
                                     continue;
                                 }
 
                                 let streamChunksReceived = 0;
-                                await readSSEStream(response, signal, (chunk) => {
+                                await readSSEStream(response, combinedSignal, (chunk) => {
+                                    // Chạm vào watchdog bất cứ khi nào có 1 chunk đến thành công
+                                    resetStallWatchdog();
+                                    
                                     streamChunksReceived++;
                                     hasReceivedAnyChunkInSession = true;
                                     if (typeof onPartialDataReceived === 'function') onPartialDataReceived();
                                     onChunk(chunk);
                                 });
 
+                                clearTimeout(stallWatchdog); // Dọn dẹp sau khi luồng SSE hoàn thành mỹ mãn
                                 if (streamChunksReceived > 0) {
                                     markApiKeySuccess(currentKey);
                                     return { success: true, modelUsed: currentTargetModel, chunksCount: streamChunksReceived };
                                 }
                             } catch (err) {
-                                if (err.message === 'AbortError' || err.name === 'AbortError') throw err;
+                                clearTimeout(stallWatchdog);
+                                if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
+                                
+                                // Nếu đứt gánh giữa chừng nhưng ĐÃ NHẢ được chữ ra UI, ghi nhận thành công nhưng đánh dấu Dropped
+                                // Cỗ máy Continuation sẽ tự động lấy đoạn Text đó ghép vào và nối tiếp (Tiết kiệm Token & Xử lý vô hình với người dùng)
                                 if (hasReceivedAnyChunkInSession) {
                                     markApiKeySuccess(currentKey);
                                     return { success: true, isMidStreamDrop: true, modelUsed: currentTargetModel };
                                 }
                             }
 
-                            // CỨU TRỢ PHI STREAMING (DIRECT FETCH): Vượt qua hoàn toàn việc rớt mạng SSE
+                            // CỨU TRỢ PHI STREAMING (DIRECT FETCH)
+                            // Trượt vào đây nếu Stream thất bại ngay từ bước bắt tay TLS
                             try {
                                 const directUrl = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:generateContent?key=${currentKey.key}`;
                                 const cleanDirectPayload = {
@@ -10454,7 +10906,7 @@ Trả về duy nhất định dạng JSON:
 
                             attempts++;
                             currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
-                            await new Promise(r => setTimeout(r, 300));
+                            await new Promise(r => setTimeout(r, Math.min(300 * Math.pow(1.5, attempts), 3000)));
                         }
 
                         return { success: hasReceivedAnyChunkInSession, isExhausted: true, modelUsed: candidateModels[0] };
@@ -11475,7 +11927,8 @@ if (!shouldContinue) {
                         // 6. Xử lý sự kiện phân quyền tương tác tài liệu (Event Delegation)
                         const handleDocClick = (e) => {
                             try {
-                                const imgEl = e.target.closest('.markdown-body img');
+                                // SỬA LỖI CLICK ẢNH ĐỒ THỊ: Cấp quyền Event Delegation bao quát cả vùng ảnh Matplotlib xuất ra
+                                const imgEl = e.target.closest('.markdown-body img, .execution-content img');
                                 if (imgEl && imgEl.src) {
                                     e.stopPropagation();
                                     openLightbox(imgEl.src);
@@ -11525,16 +11978,39 @@ if (!shouldContinue) {
                             if (e.target && e.target.tagName === 'IMG') {
                                 const img = e.target;
                                 if (img.src && img.src.includes('pollinations.ai')) {
-                                    // 1. Gỡ bỏ proxy corsproxy.io nếu còn sót lại từ cache dữ liệu cũ
-                                    if (img.src.includes('corsproxy.io')) {
-                                        const clean = img.src.replace(/https?:\/\/corsproxy\.io\/\?(?:https?%3A%2F%2F|https?:\/\/)/gi, 'https://');
-                                        img.src = decodeURIComponent(clean);
-                                        return;
-                                    }
-                                    // 2. Tự động chuyển về model=flux chuẩn nếu model phong cách bị quá tải
-                                    if (!img.dataset.retried) {
-                                        img.dataset.retried = "1";
-                                        img.src = img.src.replace(/model=[a-zA-Z0-9_-]+/g, 'model=flux');
+                                    // Chỉ thử lại nếu chưa quá 2 lần để tránh vòng lặp vô hạn
+                                    const retryCount = parseInt(img.dataset.retried || '0', 10);
+                                    if (retryCount < 2) {
+                                        img.dataset.retried = String(retryCount + 1);
+                                        
+                                        // 1. Nếu ảnh đang dùng proxy Jina AI và vẫn lỗi, thử lại với proxy khác (corsproxy.io)
+                                        if (img.src.includes('r.jina.ai')) {
+                                            const originalUrlMatch = img.src.match(/https:\/\/r\.jina\.ai\/(https?%3A%2F%2F.*)/i);
+                                            if (originalUrlMatch && originalUrlMatch[1]) {
+                                                const cleanOriginalUrl = decodeURIComponent(originalUrlMatch[1]);
+                                                img.src = `https://corsproxy.io/?${encodeURIComponent(cleanOriginalUrl)}`;
+                                                return;
+                                            }
+                                        }
+                                        // 2. Nếu ảnh đang dùng corsproxy.io và vẫn lỗi, thử lại với URL gốc (có thể đã hết chặn)
+                                        else if (img.src.includes('corsproxy.io')) {
+                                            const originalUrlMatch = img.src.match(/https:\/\/corsproxy\.io\/\?(https?%3A%2F%2F.*)/i);
+                                            if (originalUrlMatch && originalUrlMatch[1]) {
+                                                img.src = decodeURIComponent(originalUrlMatch[1]);
+                                                return;
+                                            }
+                                        }
+                                        // 3. Tự động chuyển về model=flux chuẩn nếu model phong cách bị quá tải hoặc lỗi
+                                        else if (!img.src.includes('model=flux')) {
+                                            img.src = img.src.replace(/model=[a-zA-Z0-9_-]+/g, 'model=flux');
+                                            return;
+                                        }
+                                        // 4. Cuối cùng, thử lại với Jina AI proxy nếu mọi cách đều thất bại (chống CORS/chặn IP)
+                                        else if (!img.src.includes('r.jina.ai')) { // Đảm bảo chưa thử Jina AI
+                                            const originalUrl = img.src;
+                                            img.src = `https://r.jina.ai/${encodeURIComponent(originalUrl)}`;
+                                            return;
+                                        }
                                     }
                                 }
                             }
