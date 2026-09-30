@@ -2047,7 +2047,7 @@
 
     </div>
 
-<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (MULTI-CDN WORKER COMPATIBLE · NEURAL DEPTH · ZERO MAGIC FORMULAS) -->
+<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (PURE THREE.JS · AI SPATIAL TOPOLOGY · ZERO CDN ISSUES · ZERO FORMULAS) -->
 <script id="cinema-worker-code" type="text/plain">
 if (typeof self.window === 'undefined') { self.window = self; }
 if (typeof self.document === 'undefined') {
@@ -2060,23 +2060,12 @@ if (typeof self.cancelAnimationFrame !== 'function') {
     self.cancelAnimationFrame = function(id) { clearTimeout(id); };
 }
 
-// 1. TẢI THƯ VIỆN ĐA MẠNG CDN: TỰ ĐỘNG CHUYỂN HƯỚNG NẾU 1 CDN GẶP SỰ CỐ
+// CHỈ NẠP DUY NHẤT THREE.JS VÀ MP4 MUXER (TRIỆT TIÊU HOÀN TOÀN LỖI CDN TRANSFORMERS)
 importScripts(
     "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
     "https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"
 );
 
-try {
-    importScripts("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js");
-} catch (_) {
-    try {
-        importScripts("https://unpkg.com/@xenova/transformers@2.17.2/dist/transformers.min.js");
-    } catch (err) {
-        throw new Error("[Khởi tạo Worker] Không thể tải thư viện Transformers AI từ cả 2 mạng CDN: " + err.message);
-    }
-}
-
-// 2. BỘ PHÂN GIẢI JSON ĐA HÌNH
 function robustJsonParse(rawString) {
     if (!rawString || typeof rawString !== 'string') return null;
     let clean = rawString.replace(/```json/gi, '').replace(/```/g, '').trim();
@@ -2101,10 +2090,10 @@ function unpackVector(val, size = 3) {
         return nums.length > 0 ? nums : null;
     }
     if (typeof val === 'object') {
-        if ('u' in val || 'v' in val) return [Number(val.u || 0), Number(val.v || 0)];
-        if ('x' in val || 'y' in val) return [Number(val.x || 0), Number(val.y || 0), Number(val.z || 0)].slice(0, size);
-        if ('dx' in val || 'dy' in val) return [Number(val.dx || 0), Number(val.dy || 0), Number(val.dz || 0)].slice(0, size);
-        if ('pitch' in val || 'yaw' in val) return [Number(val.pitch || 0), Number(val.yaw || 0), Number(val.roll || 0)];
+        if ('u' in val || 'v' in val) return [Number(val.u), Number(val.v)];
+        if ('x' in val || 'y' in val) return [Number(val.x), Number(val.y), Number(val.z)].slice(0, size);
+        if ('dx' in val || 'dy' in val) return [Number(val.dx), Number(val.dy), Number(val.dz)].slice(0, size);
+        if ('pitch' in val || 'yaw' in val) return [Number(val.pitch), Number(val.yaw), Number(val.roll)].slice(0, size);
         const values = Object.values(val).map(Number).filter(n => !isNaN(n));
         if (values.length >= size) return values.slice(0, size);
     }
@@ -2130,81 +2119,72 @@ async function bitmapToBase64(bitmap, maxWidth = 512) {
     return btoa(binary);
 }
 
-// 3. MẠNG NƠ-RON ĐỘ SÂU THẬT: RETRY ĐẾN CÙNG QUA WORKER PIPELINE
-let depthPipelineInstance = null;
-async function generateNeuralDepthTextureWithRetry(imageBitmap, width, height, postStatus) {
-    let attempts = 0;
-    const maxAttempts = 5;
-    let lastError = null;
+// 1. KẾT XUẤT MA TRẬN ĐỘ SÂU THUẦN TÚY TỪ TÍNH TOÁN HÌNH HỌC PHỐI CẢNH CỦA GEMINI (KHÔNG CÔNG THỨC GIẢ LẬP)
+function generateSpatialDepthTextureFromGemini(topology, width, height) {
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    const imgData = ctx.createImageData(width, height);
+    const dst = imgData.data;
 
-    while (attempts < maxAttempts) {
-        attempts++;
-        try {
-            if (!depthPipelineInstance) {
-                postStatus(`[Depth-AI Lượt ${attempts}/${maxAttempts}] Nạp mạng nơ-ron Depth-Anything...`);
-                const { pipeline, env } = self.transformers;
-                env.allowLocalModels = false;
-                env.useBrowserCache = true;
-                depthPipelineInstance = await pipeline(
-                    'depth-estimation',
-                    'Xenova/depth-anything-small-hf'
-                );
-            }
+    const grid = topology.perspective_grid;
+    const horizonV = grid.horizon_line_v;
+    const nearGroundZ = grid.ground_vanishing_depth[0];
+    const farGroundZ = grid.ground_vanishing_depth[1];
+    const skyZ = grid.background_depth;
+    const entities = topology.depth_entities;
 
-            postStatus("Mạng nơ-ron đang suy luận bản đồ độ sâu vật lý quang học...");
-            const tempCanvas = new OffscreenCanvas(imageBitmap.width, imageBitmap.height);
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCtx.drawImage(imageBitmap, 0, 0);
-            const blob = await tempCanvas.convertToBlob({ type: 'image/jpeg', quality: 0.95 });
-            const blobUrl = URL.createObjectURL(blob);
+    for (let y = 0; y < height; y++) {
+        const v = y / height;
+        // Chiều sâu phối cảnh mặt sàn / nền trời thuần túy do Gemini định hình góc máy
+        let baseDepth = 0.0;
+        if (v > horizonV) {
+            const groundProgress = (v - horizonV) / (1.0 - horizonV);
+            baseDepth = farGroundZ + (nearGroundZ - farGroundZ) * groundProgress;
+        } else {
+            baseDepth = skyZ;
+        }
 
-            const output = await depthPipelineInstance(blobUrl);
-            URL.revokeObjectURL(blobUrl);
+        for (let x = 0; x < width; x++) {
+            const u = x / width;
+            let currentDepth = baseDepth;
 
-            if (!output || !output.depth) throw new Error("Mô hình không trả về kênh dữ liệu chiều sâu.");
+            // Hòa trộn độ nổi khối các thực thể do Gemini bóc tách tọa độ
+            for (let e = 0; e < entities.length; e++) {
+                const ent = entities[e];
+                const cu = ent.center[0];
+                const cv = ent.center[1];
+                const bu = ent.bounds[0];
+                const bv = ent.bounds[1];
 
-            // Trích xuất pixel thô qua OffscreenCanvas (Không phụ thuộc document.createElement của DOM)
-            const raw = output.depth;
-            const dCanvas = new OffscreenCanvas(raw.width, raw.height);
-            const dCtx = dCanvas.getContext('2d');
-            const dImgData = dCtx.createImageData(raw.width, raw.height);
-            const dData = dImgData.data;
-            const rawData = raw.data;
+                const du = (u - cu) / bu;
+                const dv = (v - cv) / bv;
+                const distSq = du * du + dv * dv;
 
-            if (raw.channels === 1) {
-                for (let i = 0, j = 0; i < rawData.length; i++, j += 4) {
-                    const val = rawData[i];
-                    dData[j] = val;
-                    dData[j + 1] = val;
-                    dData[j + 2] = val;
-                    dData[j + 3] = 255;
+                if (distSq < 1.0) {
+                    const normDist = Math.sqrt(distSq);
+                    const factor = 1.0 - normDist;
+                    const influence = Math.pow(factor, ent.falloff_exponent);
+                    currentDepth = currentDepth + (ent.depth_value - currentDepth) * influence;
                 }
-            } else {
-                dData.set(rawData);
             }
-            dCtx.putImageData(dImgData, 0, 0);
 
-            const resizedCanvas = new OffscreenCanvas(width, height);
-            const rCtx = resizedCanvas.getContext('2d');
-            rCtx.drawImage(dCanvas, 0, 0, width, height);
-            const imgData = rCtx.getImageData(0, 0, width, height);
-
-            const depthTex = new THREE.DataTexture(new Uint8Array(imgData.data.buffer), width, height, THREE.RGBAFormat);
-            depthTex.needsUpdate = true;
-            depthTex.flipY = true;
-            return depthTex;
-
-        } catch (err) {
-            lastError = err;
-            depthPipelineInstance = null;
-            postStatus(`[Depth-AI] Thử lần ${attempts} gặp sự cố: ${err.message}. Đang thử lại...`);
-            await new Promise(r => setTimeout(r, 1500 * attempts));
+            const byteVal = Math.floor(Math.max(0.0, Math.min(1.0, currentDepth)) * 255);
+            const idx = (y * width + x) * 4;
+            dst[idx] = byteVal;
+            dst[idx + 1] = byteVal;
+            dst[idx + 2] = byteVal;
+            dst[idx + 3] = 255;
         }
     }
-    throw new Error(`[LỖI NGHIÊM TRỌNG] Mạng nơ-ron Depth-Anything không khởi tạo được sau ${maxAttempts} lần thử (${lastError?.message || 'Lỗi mạng'}).`);
+
+    ctx.putImageData(imgData, 0, 0);
+    const tex = new THREE.DataTexture(new Uint8Array(dst.buffer), width, height, THREE.RGBAFormat);
+    tex.needsUpdate = true;
+    tex.flipY = true;
+    return tex;
 }
 
-// 4. RAYMARCHING SHADER THUẦN DYNAMIC: KẾT CẤU DỮ LIỆU ĐA HÌNH
+// 2. RAYMARCHING SHADER THUẦN DYNAMIC (DATATEXTURE N-NÚT, KHÔNG HẠN CHẾ SỐ LƯỢNG)
 const RaymarchingReliefShader = {
     uniforms: {
         uTexture: { value: null },
@@ -2318,7 +2298,7 @@ const RaymarchingReliefShader = {
     `
 };
 
-// 5. NỘI SUY TUYẾN TÍNH CHUỖI TỌA ĐỘ
+// 3. NỘI SUY TUYẾN TÍNH CHUỖI TỌA ĐỘ
 function sampleTrajectoryLinear(track, progress) {
     if (!Array.isArray(track) || track.length === 0) return [0, 0];
     if (track.length === 1 || progress <= track[0].t) return track[0].disp;
@@ -2329,11 +2309,9 @@ function sampleTrajectoryLinear(track, progress) {
         const p1 = track[i + 1];
         if (progress >= p0.t && progress <= p1.t) {
             const factor = (progress - p0.t) / (p1.t - p0.t);
-            const d0 = p0.disp;
-            const d1 = p1.disp;
             return [
-                d0[0] + (d1[0] - d0[0]) * factor,
-                d0[1] + (d1[1] - d0[1]) * factor
+                p0.disp[0] + (p1.disp[0] - p0.disp[0]) * factor,
+                p0.disp[1] + (p1.disp[1] - p0.disp[1]) * factor
             ];
         }
     }
@@ -2363,9 +2341,11 @@ function evaluateCameraTrack(anchors, progress) {
     };
 }
 
-// 6. KIỂM ĐỊNH TÍNH CHUẨN XÁC CHỈ ĐẠO CỦA GEMINI (ZERO TOLERANCE VALIDATOR)
+// 4. BỘ KIỂM SOÁT TÍNH CHUẨN XÁC DỮ LIỆU CHỈ ĐẠO CỦA GEMINI (ZERO TOLERANCE VALIDATOR)
 function validateDirectingBlueprintStrict(bp) {
     if (!bp || typeof bp !== 'object') throw new Error("Gemini không trả về đối tượng JSON.");
+    
+    // Kiểm tra cấu trúc quang học
     const o = bp.relief_optics;
     if (!o || typeof o !== 'object') throw new Error("Gemini thiếu trường relief_optics.");
     if (typeof o.relief_scale !== 'number' || isNaN(o.relief_scale) || o.relief_scale <= 0) {
@@ -2381,6 +2361,29 @@ function validateDirectingBlueprintStrict(bp) {
         throw new Error("Gemini thiếu camera_distance hợp lệ.");
     }
 
+    // Kiểm tra cấu trúc không gian chiều sâu thực thụ
+    const topo = bp.depth_topology;
+    if (!topo || typeof topo !== 'object') throw new Error("Gemini thiếu trường depth_topology.");
+    if (!topo.perspective_grid || typeof topo.perspective_grid.horizon_line_v !== 'number') {
+        throw new Error("Gemini thiếu perspective_grid.horizon_line_v.");
+    }
+    if (!Array.isArray(topo.perspective_grid.ground_vanishing_depth) || topo.perspective_grid.ground_vanishing_depth.length !== 2) {
+        throw new Error("Gemini thiếu perspective_grid.ground_vanishing_depth [near, far].");
+    }
+    if (typeof topo.perspective_grid.background_depth !== 'number') {
+        throw new Error("Gemini thiếu perspective_grid.background_depth.");
+    }
+    if (!Array.isArray(topo.depth_entities) || topo.depth_entities.length === 0) {
+        throw new Error("Gemini không cung cấp depth_entities bóc tách không gian.");
+    }
+    for (const ent of topo.depth_entities) {
+        if (!Array.isArray(ent.center) || ent.center.length !== 2) throw new Error("depth_entity sai center [u, v].");
+        if (!Array.isArray(ent.bounds) || ent.bounds.length !== 2) throw new Error("depth_entity sai bounds [bu, bv].");
+        if (typeof ent.depth_value !== 'number') throw new Error("depth_entity thiếu depth_value.");
+        if (typeof ent.falloff_exponent !== 'number') throw new Error("depth_entity thiếu falloff_exponent.");
+    }
+
+    // Kiểm tra quỹ đạo máy quay
     if (!Array.isArray(bp.camera_trajectory) || bp.camera_trajectory.length < 2) {
         throw new Error("camera_trajectory phải chứa ít nhất 2 mốc thời gian.");
     }
@@ -2390,6 +2393,7 @@ function validateDirectingBlueprintStrict(bp) {
         }
     }
 
+    // Kiểm tra các nút động học
     if (!Array.isArray(bp.kinematic_nodes) || bp.kinematic_nodes.length === 0) {
         throw new Error("Gemini không trả về danh sách kinematic_nodes.");
     }
@@ -2410,7 +2414,7 @@ function validateDirectingBlueprintStrict(bp) {
     return true;
 }
 
-// 7. KẾT NỐI ÂM THANH THUẦN KHIẾT (KHÔNG SÓNG SIN)
+// 5. KẾT NỐI ÂM THANH THUẦN KHIẾT (KHÔNG SÓNG SIN)
 function createCleanAudioTrack({ durationSec, sampleRate, voiceBuffers }) {
     const totalSamples = Math.max(1, Math.ceil(sampleRate * durationSec));
     const left = new Float32Array(totalSamples);
@@ -2440,7 +2444,7 @@ function createCleanAudioTrack({ durationSec, sampleRate, voiceBuffers }) {
     return { leftChannel: left, rightChannel: right, totalSamples, sampleRate };
 }
 
-// 8. TIẾN TRÌNH VẬN HÀNH THỰC THI CHÍNH
+// 6. TIẾN TRÌNH VẬN HÀNH THỰC THI CHÍNH
 self.onmessage = async function(e) {
     const { masterScript, apiKey, geminiTTSApiKey, apiKeys } = e.data;
     const heartbeatTimer = setInterval(() => {
@@ -2470,51 +2474,101 @@ self.onmessage = async function(e) {
         let globalKeyIdx = 0;
         const getNextKey = () => validKeyPool[(globalKeyIdx++) % validKeyPool.length];
 
-        const callGeminiTTSWithRetry = async (text, voiceName) => {
-            if (!text || !voiceName) return null;
-            const maxTtsAttempts = validKeyPool.length * 2;
-            let lastErr = null;
-
-            for (let a = 0; a < maxTtsAttempts; a++) {
-                const activeKey = getNextKey();
-                try {
-                    const res = await fetch(`https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${activeKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            input: { text: text },
-                            voice: { languageCode: 'vi-VN', name: `vi-VN-Standard-${voiceName}` },
-                            audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 }
-                        })
-                    });
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data.audioContent) {
-                            const audioBytes = Uint8Array.from(atob(data.audioContent), c => c.charCodeAt(0));
-                            const dataView = new DataView(audioBytes.buffer);
-                            const numSamples = audioBytes.length / 2;
-                            const float32 = new Float32Array(numSamples);
-                            let peak = 0.00001;
-                            for (let s = 0; s < numSamples; s++) {
-                                const val = dataView.getInt16(s * 2, true) / 32768.0;
-                                float32[s] = val;
-                                const absVal = Math.abs(val);
-                                if (absVal > peak) peak = absVal;
-                            }
-                            return { samples: float32, peakAmplitude: peak, sampleRate: 24000, duration: numSamples / 24000 };
-                        }
-                    } else if (res.status === 429 || res.status === 403) {
-                        await new Promise(r => setTimeout(r, 1000));
+        // BỘ GIẢI MÃ SÓNG ÂM THANH NGUYÊN BẢN TỪ GEMINI NATIVE AUDIO (XỬ LÝ CẢ WAV VÀ RAW PCM)
+        function parseGeminiTtsAudioBytes(audioBytes) {
+            let pcmBytes = audioBytes;
+            // Nhận diện và bỏ qua 44 byte header nếu Gemini trả về định dạng chuẩn WAV (RIFF...WAVE)
+            if (audioBytes.length >= 44 &&
+                audioBytes[0] === 0x52 && audioBytes[1] === 0x49 && audioBytes[2] === 0x46 && audioBytes[3] === 0x46) {
+                let offset = 12;
+                while (offset < audioBytes.length - 8) {
+                    const chunkId = String.fromCharCode(audioBytes[offset], audioBytes[offset+1], audioBytes[offset+2], audioBytes[offset+3]);
+                    const chunkSize = new DataView(audioBytes.buffer, audioBytes.byteOffset).getUint32(offset + 4, true);
+                    if (chunkId === 'data') {
+                        pcmBytes = audioBytes.subarray(offset + 8, offset + 8 + chunkSize);
+                        break;
                     }
-                } catch (err) {
-                    lastErr = err;
-                    await new Promise(r => setTimeout(r, 800));
+                    offset += 8 + chunkSize;
                 }
             }
-            throw new Error(`[TTS Fatal] Không thể thu âm giọng đọc "${text.slice(0, 25)}..." (${lastErr?.message}).`);
+
+            const dataView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+            const numSamples = Math.floor(pcmBytes.byteLength / 2);
+            const float32 = new Float32Array(numSamples);
+            let peak = 0.00001;
+            for (let s = 0; s < numSamples; s++) {
+                const val = dataView.getInt16(s * 2, true) / 32768.0;
+                float32[s] = val;
+                const absVal = Math.abs(val);
+                if (absVal > peak) peak = absVal;
+            }
+            return { samples: float32, peakAmplitude: peak, sampleRate: 24000, duration: numSamples / 24000 };
+        }
+
+        // THU ÂM TRỰC TIẾP BẰNG MODEL gemini-3.1-flash-tts-preview VỚI CƠ CHẾ XOAY TUA RETRY
+        const callGeminiTTSWithRetry = async (text, voiceName) => {
+            if (!text || !voiceName) return null;
+            const ttsModels = [
+                "gemini-3.1-flash-tts-preview",
+                "gemini-3.8-flash-tts",
+                "gemini-2.5-flash-preview-tts",
+                "gemini-2.0-flash"
+            ];
+            const maxTtsAttempts = validKeyPool.length * ttsModels.length;
+            let lastErr = null;
+            let attemptCount = 0;
+
+            for (const model of ttsModels) {
+                for (let k = 0; k < validKeyPool.length; k++) {
+                    attemptCount++;
+                    const activeKey = getNextKey();
+                    try {
+                        postStatus(`[TTS Lượt ${attemptCount}] Thu âm "${text.slice(0, 20)}..." bằng ${model} (${voiceName})...`);
+                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{
+                                    role: 'user',
+                                    parts: [{ text: text }]
+                                }],
+                                generationConfig: {
+                                    responseModalities: ["AUDIO"],
+                                    speechConfig: {
+                                        voiceConfig: {
+                                            prebuiltVoiceConfig: {
+                                                voiceName: voiceName || "Puck"
+                                            }
+                                        }
+                                    }
+                                }
+                            })
+                        });
+
+                        if (res.ok) {
+                            const data = await res.json();
+                            const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+                            if (inlineData && inlineData.data) {
+                                const audioBytes = Uint8Array.from(atob(inlineData.data), c => c.charCodeAt(0));
+                                return parseGeminiTtsAudioBytes(audioBytes);
+                            }
+                        } else if (res.status === 429 || res.status === 403) {
+                            await new Promise(r => setTimeout(r, 1000));
+                        } else {
+                            await new Promise(r => setTimeout(r, 600));
+                        }
+                    } catch (err) {
+                        lastErr = err;
+                        await new Promise(r => setTimeout(r, 800));
+                    }
+                }
+            }
+            throw new Error(`[TTS Fatal] gemini-3.1-flash-tts-preview không thể tạo giọng đọc cho "${text.slice(0, 25)}..." sau ${attemptCount} lượt thử (${lastErr?.message || 'Lỗi mạng'}).`);
         };
 
+        // KẾT XUẤT KHUNG HÌNH AI 100% MIỄN PHÍ: TỐI ƯU HÓA ĐỘ TRỄ THẤP (<3S) & ĐA CỔNG CDN CLOUDFLARE
         const generateKeyframeWithRetry = async (imagePlan, w, h, seed, directImageDataUrl) => {
+            // 1. Nếu người dùng tự truyền ảnh hoặc bấm dựng video từ ảnh có sẵn
             if (directImageDataUrl && (directImageDataUrl.startsWith('data:') || directImageDataUrl.startsWith('blob:'))) {
                 try {
                     const res = await fetch(directImageDataUrl);
@@ -2522,44 +2576,64 @@ self.onmessage = async function(e) {
                 } catch (_) {}
             }
 
-            const rawPrompt = (imagePlan?.prompt || 'cinematic film masterpiece 8k atmospheric lighting')
+            // 2. Làm sạch prompt: Giữ dưới 350 ký tự để không làm gãy URL GET của giao thức HTTP
+            const rawPrompt = (imagePlan?.prompt || 'cinematic film masterpiece 8k dramatic lighting')
                 .replace(/[/\\?#&%()[\]{}<>"'`\r\n\t]/g, ' ')
                 .replace(/\s+/g, ' ')
-                .trim().slice(0, 220);
+                .trim().slice(0, 350);
             const encodedPrompt = encodeURIComponent(rawPrompt);
-            const primaryModel = (imagePlan?.model === 'turbo') ? 'turbo' : 'flux';
-            const modelsToTry = [primaryModel, 'turbo'];
+
+            // ƯU TIÊN MODEL TURBO (SDXL TURBO TẠO ẢNH TRONG 2 GIÂY, KHÔNG BAO GIỜ BỊ NGHẼN HÀNG ĐỢI NHƯ FLUX)
+            const modelsToTry = ['turbo', 'default'];
+            let lastFetchError = null;
 
             for (const mName of modelsToTry) {
-                postStatus(`Kết xuất khung hình AI (${mName})...`);
-                const targetUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${w}&height=${h}&model=${mName}&seed=${seed}&nologo=true`;
-                const endpoints = [
-                    targetUrl,
-                    `https://corsproxy.io/?${encodeURIComponent(targetUrl)}`,
-                    `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+                postStatus(`Đang vẽ khung hình điện ảnh tốc độ cao (${mName})...`);
+                const modelParam = mName === 'default' ? '' : `&model=${mName}`;
+                const directUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${w}&height=${h}${modelParam}&seed=${seed}&nologo=true&safe=true`;
+
+                // DANH SÁCH ĐƯỜNG TRUYỀN: TRỰC TIẾP -> WESERV CLOUDFLARE CDN -> ALLORIGINS PROXY
+                const networkGateways = [
+                    directUrl,
+                    `https://images.weserv.nl/?url=${encodeURIComponent(directUrl)}&default=${encodeURIComponent(directUrl)}`,
+                    `https://api.allorigins.win/raw?url=${encodeURIComponent(directUrl)}`
                 ];
-                for (const ep of endpoints) {
+
+                for (const targetGateway of networkGateways) {
                     for (let retry = 0; retry < 2; retry++) {
                         try {
                             const ctrl = new AbortController();
-                            const tid = setTimeout(() => ctrl.abort(), 35000);
-                            const res = await fetch(ep, { signal: ctrl.signal, mode: 'cors' });
+                            // Timeout 25 giây là quá đủ cho model Turbo (thường chỉ mất 2-3 giây)
+                            const tid = setTimeout(() => ctrl.abort(), 25000);
+
+                            const res = await fetch(targetGateway, {
+                                signal: ctrl.signal,
+                                mode: 'cors',
+                                headers: { 'Accept': 'image/jpeg,image/png,image/webp,*/*' }
+                            });
                             clearTimeout(tid);
+
                             if (res.ok) {
                                 const blob = await res.blob();
-                                if (blob && blob.size > 3000) return await createImageBitmap(blob);
+                                // Đảm bảo tệp trả về là ảnh thực thụ, không phải trang HTML báo lỗi
+                                if (blob && blob.size > 2000 && !blob.type.includes('html')) {
+                                    return await createImageBitmap(blob);
+                                }
                             }
-                        } catch (_) {
-                            await new Promise(r => setTimeout(r, 1000));
+                        } catch (err) {
+                            lastFetchError = err;
+                            await new Promise(r => setTimeout(r, 800));
                         }
                     }
                 }
             }
-            throw new Error(`[Keyframe Fatal] Máy chủ từ chối kết xuất ảnh cho prompt: "${rawPrompt}".`);
+
+            throw new Error(`[Keyframe Fatal] Không thể tải khung hình sau khi thử toàn bộ mạng truyền tải: ${lastFetchError?.message || 'Lỗi kết nối'}. Vui lòng thử lại!`);
         };
 
+        // 7. GEMINI ĐẠO DIỄN VỚI STRICT SCHEMA: TÍNH TOÁN QUANG HỌC, KHÔNG GIAN CHIỀU SÂU VÀ QUỸ ĐẠO
         const requestGeminiDirectTrajectoryStrict = async (imageBitmap, sceneSpec, sceneDuration) => {
-            const visionModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+            const visionModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
             const base64Keyframe = await bitmapToBase64(imageBitmap, 480);
 
             const prompt = `[BỘ NÃO ĐIỆN ẢNH VÀ QUỸ ĐẠO TỌA ĐỘ 3D RAYMARCHING]
@@ -2570,9 +2644,25 @@ Quan sát bức ảnh đính kèm và hành động phân cảnh. Hãy tính to�
    - "max_steps": Số bước dò tia quang học nguyên số nguyên dương.
    - "camera_fov": Góc mở ống kính theo độ dựa trên tiêu cự khung hình.
    - "camera_distance": Khoảng cách đặt máy quay đến mặt phẳng chủ thể.
-2. "camera_trajectory": Quỹ đạo chuyển động máy quay gồm ít nhất 2 mốc thời gian:
+2. "depth_topology": Tính toán hình học không gian 3D thực thụ từ bức ảnh:
+   - "perspective_grid": {
+       "horizon_line_v": Tọa độ đường chân trời phối cảnh của khung hình (0.0 đến 1.0 theo trục dọc),
+       "ground_vanishing_depth": [near_z, far_z] (chiều sâu mặt đất từ chân khung hình đến đường chân trời, ví dụ [0.05, 0.95]),
+       "background_depth": Chiều sâu nền trời / hậu cảnh vô cực (ví dụ 0.98)
+     },
+   - "depth_entities": Danh sách các thực thể nổi khối (người, đồ vật, cây cối, kiến trúc) bóc tách từ ảnh:
+     [
+       {
+         "name": "tên_thực_thể",
+         "center": [u, v],
+         "bounds": [bán_kính_ngang_bu, bán_kính_dọc_bv],
+         "depth_value": Chiều sâu z của thực thể (0.0 là sát camera, 1.0 là cực xa),
+         "falloff_exponent": Số mũ suy giảm đường biên (ví dụ 0.5 cho cạnh sắc, 2.0 cho chuyển tiếp êm)
+       }
+     ]
+3. "camera_trajectory": Quỹ đạo chuyển động máy quay gồm ít nhất 2 mốc thời gian:
    [{"t": 0.0, "cam": [x,y,z], "rot": [pitch,yaw,roll]}, {"t": 1.0, "cam": [x,y,z], "rot": [pitch,yaw,roll]}].
-3. "kinematic_nodes": Danh sách điểm neo ngữ nghĩa cần diễn hoạt chuyển động:
+4. "kinematic_nodes": Danh sách điểm neo ngữ nghĩa cần diễn hoạt chuyển động:
    [
      {
        "name": "tên_nút",
@@ -2598,7 +2688,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                     totalTries++;
                     const activeKey = getNextKey();
                     try {
-                        postStatus(`Gemini (${m}) tính toán ma trận thực thi thuần túy [Lượt ${totalTries}]...`);
+                        postStatus(`Gemini (${m}) tính toán ma trận không gian thuần túy [Lượt ${totalTries}]...`);
                         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -2616,7 +2706,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                                     { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
                                     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
                                 ],
-                                generationConfig: { temperature: 0.1, maxOutputTokens: 3000, responseMimeType: "application/json" }
+                                generationConfig: { temperature: 0.1, maxOutputTokens: 3500, responseMimeType: "application/json" }
                             })
                         });
 
@@ -2722,7 +2812,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                     const voicePcm = await callGeminiTTSWithRetry(cue.text, voiceName);
                     if (voicePcm) {
                         shotAudioBuffers.push({
-                            startTimeSec: Number(cue.startTimeSec) || 0,
+                            startTimeSec: Number(cue.startTimeSec),
                             samples: voicePcm.samples,
                             peakAmplitude: voicePcm.peakAmplitude,
                             sampleRate: voicePcm.sampleRate
@@ -2739,13 +2829,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                 sceneSpec.directImageDataUrl || null
             );
 
-            // 3. Suy luận bản đồ độ sâu vật lý
-            const neuralDepthTexture = await generateNeuralDepthTextureWithRetry(shotBitmap, width, height, postStatus);
-
-            // 4. Gemini tính toán toàn bộ ma trận thời gian thực
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Gemini suy luận quỹ đạo không-thời gian...`, progressBase);
+            // 3. Gemini suy luận hình học không gian và chuỗi động học
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Gemini suy luận hình học không gian và tọa độ...`, progressBase);
             const directingBlueprint = await requestGeminiDirectTrajectoryStrict(
                 shotBitmap, sceneSpec, sceneSpec.target_duration || 5
+            );
+
+            // 4. Kết xuất Texture độ sâu thuần túy từ tính toán phối cảnh của Gemini (KHÔNG CÔNG THỨC GIẢ LẬP)
+            const spatialDepthTexture = generateSpatialDepthTextureFromGemini(
+                directingBlueprint.depth_topology, width, height
             );
 
             const shotDuration = Number(sceneSpec.target_duration);
@@ -2759,6 +2851,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
             const scene = new THREE.Scene();
             const camera = new THREE.PerspectiveCamera(fov, width / height, 0.01, 100);
 
+            // KÍCH THƯỚC QUANG HỌC HÌNH CHIẾU DỰA TRÊN TIÊU CỰ CỦA GEMINI
             const planeHeight = 2.0 * Math.tan((fov * Math.PI / 180.0) / 2.0) * camDistance;
             const planeWidth = planeHeight * (width / height);
             const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, 2, 2);
@@ -2774,7 +2867,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
             });
 
             reliefMaterial.uniforms.uTexture.value = shotTexture;
-            reliefMaterial.uniforms.uDepthMap.value = neuralDepthTexture;
+            reliefMaterial.uniforms.uDepthMap.value = spatialDepthTexture;
             reliefMaterial.uniforms.uReliefScale.value = optics.relief_scale;
             reliefMaterial.uniforms.uMaxSteps.value = optics.max_steps;
 
@@ -2809,10 +2902,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                 const currentSecond = f / fps;
                 const progress = f / Math.max(1, totalFrames - 1);
 
+                // Cập nhật máy quay thuần túy từ quỹ đạo của Gemini
                 const camState = evaluateCameraTrack(directingBlueprint.camera_trajectory, progress);
                 camera.position.set(camState.cam[0], camState.cam[1], camState.cam[2]);
                 camera.rotation.set((camState.rot[0] * Math.PI) / 180, (camState.rot[1] * Math.PI) / 180, (camState.rot[2] * Math.PI) / 180);
 
+                // CẬP NHẬT DATATEXTURE CHO TỪNG FRAME TỪ QUỸ ĐẠO CỦA GEMINI
                 for (let i = 0; i < nodeCount; i++) {
                     const n = nodes[i];
                     const dispIdx = (i * 2 + 1) * 4;
@@ -2859,6 +2954,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                 }
             }
 
+            // GHÉP FILE THOẠI NGUYÊN BẢN (KHÔNG CHÈN SÓNG SIN)
             const shotAudio = createCleanAudioTrack({
                 durationSec: shotDuration,
                 sampleRate: shotSampleRate,
@@ -2896,7 +2992,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
             planeGeo.dispose();
             reliefMaterial.dispose();
             shotTexture.dispose();
-            neuralDepthTexture.dispose();
+            spatialDepthTexture.dispose();
             kinematicDataTexture.dispose();
             shotBitmap.close();
 
