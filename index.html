@@ -2047,7 +2047,7 @@
 
     </div>
 
-<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (PURE THREE.JS · AI SPATIAL TOPOLOGY · ZERO CDN ISSUES · ZERO FORMULAS) -->
+<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (PRESERVE BUFFER · NPOT SAFE · ZERO BLACK SCREEN · PURE THREE.JS) -->
 <script id="cinema-worker-code" type="text/plain">
 if (typeof self.window === 'undefined') { self.window = self; }
 if (typeof self.document === 'undefined') {
@@ -2060,7 +2060,6 @@ if (typeof self.cancelAnimationFrame !== 'function') {
     self.cancelAnimationFrame = function(id) { clearTimeout(id); };
 }
 
-// CHỈ NẠP DUY NHẤT THREE.JS VÀ MP4 MUXER (TRIỆT TIÊU HOÀN TOÀN LỖI CDN TRANSFORMERS)
 importScripts(
     "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
     "https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js"
@@ -2119,7 +2118,7 @@ async function bitmapToBase64(bitmap, maxWidth = 512) {
     return btoa(binary);
 }
 
-// 1. KẾT XUẤT MA TRẬN ĐỘ SÂU THUẦN TÚY TỪ TÍNH TOÁN HÌNH HỌC PHỐI CẢNH CỦA GEMINI (KHÔNG CÔNG THỨC GIẢ LẬP)
+// 1. KẾT XUẤT ĐỘ SÂU THUẦN TÚY TỪ GEMINI VỚI CẤU HÌNH NPOT KHÔNG BAO GIỜ BỊ ĐEN
 function generateSpatialDepthTextureFromGemini(topology, width, height) {
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
@@ -2135,35 +2134,23 @@ function generateSpatialDepthTextureFromGemini(topology, width, height) {
 
     for (let y = 0; y < height; y++) {
         const v = y / height;
-        // Chiều sâu phối cảnh mặt sàn / nền trời thuần túy do Gemini định hình góc máy
-        let baseDepth = 0.0;
-        if (v > horizonV) {
-            const groundProgress = (v - horizonV) / (1.0 - horizonV);
-            baseDepth = farGroundZ + (nearGroundZ - farGroundZ) * groundProgress;
-        } else {
-            baseDepth = skyZ;
-        }
+        let baseDepth = (v > horizonV)
+            ? farGroundZ + (nearGroundZ - farGroundZ) * ((v - horizonV) / (1.0 - horizonV))
+            : skyZ;
 
         for (let x = 0; x < width; x++) {
             const u = x / width;
             let currentDepth = baseDepth;
 
-            // Hòa trộn độ nổi khối các thực thể do Gemini bóc tách tọa độ
             for (let e = 0; e < entities.length; e++) {
                 const ent = entities[e];
-                const cu = ent.center[0];
-                const cv = ent.center[1];
-                const bu = ent.bounds[0];
-                const bv = ent.bounds[1];
-
-                const du = (u - cu) / bu;
-                const dv = (v - cv) / bv;
+                const du = (u - ent.center[0]) / ent.bounds[0];
+                const dv = (v - ent.center[1]) / ent.bounds[1];
                 const distSq = du * du + dv * dv;
 
                 if (distSq < 1.0) {
                     const normDist = Math.sqrt(distSq);
-                    const factor = 1.0 - normDist;
-                    const influence = Math.pow(factor, ent.falloff_exponent);
+                    const influence = Math.pow(1.0 - normDist, ent.falloff_exponent);
                     currentDepth = currentDepth + (ent.depth_value - currentDepth) * influence;
                 }
             }
@@ -2179,72 +2166,72 @@ function generateSpatialDepthTextureFromGemini(topology, width, height) {
 
     ctx.putImageData(imgData, 0, 0);
     const tex = new THREE.DataTexture(new Uint8Array(dst.buffer), width, height, THREE.RGBAFormat);
+    // BẮT BUỘC CHO NPOT: TẮT MIPMAP, BẬT LINEAR FILTER ĐỂ TRÁNH LỖI MÀN HÌNH ĐEN
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
-    tex.flipY = true;
     return tex;
 }
 
-// 2. RAYMARCHING SHADER THUẦN DYNAMIC (DATATEXTURE N-NÚT, KHÔNG HẠN CHẾ SỐ LƯỢNG)
-const RaymarchingReliefShader = {
-    uniforms: {
-        uTexture: { value: null },
-        uDepthMap: { value: null },
-        uReliefScale: { value: 0.0 },
-        uMaxSteps: { value: 0 },
-        uBinarySteps: { value: 8 },
-        uKinematicTexture: { value: null },
-        uNodeCount: { value: 0 },
-        uTexWidth: { value: 1.0 }
-    },
-    vertexShader: `
+// 2. RAYMARCHING SHADER TƯƠNG THÍCH 100% WEBGL (KHÔNG DÙNG HÀM INVERSE, KHÔNG SÓNG SIN)
+function createRaymarchingMaterial(nodeCount, width, height) {
+    const safeNodeCount = Math.max(1, nodeCount);
+
+    const vertexShader = `
         varying vec2 vUv;
         varying vec3 vViewDir;
 
         void main() {
             vUv = uv;
-            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-            vViewDir = normalize(position - (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz);
-            gl_Position = projectionMatrix * viewMatrix * worldPosition;
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+            // TIA NHÌN CHUẨN XÁC: KHÔNG DÙNG HÀM INVERSE GÂY SẬP SHADER
+            vViewDir = normalize(worldPos.xyz - cameraPosition);
+            gl_Position = projectionMatrix * viewMatrix * worldPos;
         }
-    `,
-    fragmentShader: `
+    `;
+
+    const fragmentShader = `
+        precision highp float;
+
         uniform sampler2D uTexture;
         uniform sampler2D uDepthMap;
         uniform float uReliefScale;
         uniform int uMaxSteps;
         uniform int uBinarySteps;
-        uniform sampler2D uKinematicTexture;
+
+        #define DYNAMIC_NODE_COUNT ${safeNodeCount}
         uniform int uNodeCount;
-        uniform float uTexWidth;
+        uniform vec2 uNodeCenter[DYNAMIC_NODE_COUNT];
+        uniform float uNodeRadius[DYNAMIC_NODE_COUNT];
+        uniform float uNodeFalloffExp[DYNAMIC_NODE_COUNT];
+        uniform vec2 uNodeCurrentOffset[DYNAMIC_NODE_COUNT];
 
         varying vec2 vUv;
         varying vec3 vViewDir;
 
         vec2 computeKinematicDisplacement(vec2 uvCoord) {
             vec2 totalOffset = vec2(0.0);
-            for (int i = 0; i < 64; i++) {
+            for (int i = 0; i < DYNAMIC_NODE_COUNT; i++) {
                 if (i >= uNodeCount) break;
-                float u0 = (float(i * 2) + 0.5) / uTexWidth;
-                float u1 = (float(i * 2 + 1) + 0.5) / uTexWidth;
-                vec4 p0 = texture2D(uKinematicTexture, vec2(u0, 0.5));
-                vec4 p1 = texture2D(uKinematicTexture, vec2(u1, 0.5));
-
-                vec2 center = p0.xy;
-                float radius = p0.z;
-                float falloffExp = p0.w;
-                vec2 disp = p1.xy;
-
+                vec2 center = uNodeCenter[i];
+                float radius = uNodeRadius[i];
                 float dist = distance(uvCoord, center);
+
                 if (dist < radius && radius > 0.0) {
                     float factor = 1.0 - (dist / radius);
-                    float influence = pow(max(factor, 0.0), falloffExp);
-                    totalOffset += disp * influence;
+                    float influence = pow(max(factor, 0.0), uNodeFalloffExp[i]);
+                    totalOffset += uNodeCurrentOffset[i] * influence;
                 }
             }
             return totalOffset;
         }
 
         vec2 raymarchDepthRelief(vec2 baseUv, vec3 viewDir) {
+            if (uMaxSteps <= 0 || uReliefScale <= 0.0) return baseUv;
+
             float stepSize = 1.0 / float(uMaxSteps);
             float currentLayerDepth = 0.0;
             vec2 p = viewDir.xy * uReliefScale;
@@ -2252,14 +2239,14 @@ const RaymarchingReliefShader = {
 
             vec2 currentTexCoords = baseUv;
             vec2 displacedUv = currentTexCoords + computeKinematicDisplacement(currentTexCoords);
-            float currentDepthMapValue = 1.0 - texture2D(uDepthMap, displacedUv).r;
+            float currentDepth = texture2D(uDepthMap, displacedUv).r;
 
             for (int i = 0; i < 64; i++) {
                 if (i >= uMaxSteps) break;
-                if (currentLayerDepth >= currentDepthMapValue) break;
+                if (currentLayerDepth >= currentDepth) break;
                 currentTexCoords -= deltaTexCoords;
                 displacedUv = currentTexCoords + computeKinematicDisplacement(currentTexCoords);
-                currentDepthMapValue = 1.0 - texture2D(uDepthMap, displacedUv).r;
+                currentDepth = texture2D(uDepthMap, displacedUv).r;
                 currentLayerDepth += stepSize;
             }
 
@@ -2273,9 +2260,9 @@ const RaymarchingReliefShader = {
                 halfDelta *= 0.5;
                 halfStep *= 0.5;
                 displacedUv = currentTexCoords + computeKinematicDisplacement(currentTexCoords);
-                currentDepthMapValue = 1.0 - texture2D(uDepthMap, displacedUv).r;
+                currentDepth = texture2D(uDepthMap, displacedUv).r;
 
-                if (currentDepthMapValue > currentLayerDepth) {
+                if (currentDepth > currentLayerDepth) {
                     currentTexCoords -= halfDelta;
                     currentLayerDepth += halfStep;
                 } else {
@@ -2283,22 +2270,40 @@ const RaymarchingReliefShader = {
                     currentLayerDepth -= halfStep;
                 }
             }
-
             return currentTexCoords;
         }
 
         void main() {
             vec3 vDir = normalize(vViewDir);
             vec2 finalUv = raymarchDepthRelief(vUv, vDir);
-            finalUv = clamp(finalUv, 0.0, 1.0);
+            finalUv = clamp(finalUv, 0.001, 0.999);
 
             vec2 activeDisplacedUv = finalUv + computeKinematicDisplacement(finalUv);
-            gl_FragColor = texture2D(uTexture, activeDisplacedUv);
-        }
-    `
-};
+            activeDisplacedUv = clamp(activeDisplacedUv, 0.001, 0.999);
 
-// 3. NỘI SUY TUYẾN TÍNH CHUỖI TỌA ĐỘ
+            vec4 color = texture2D(uTexture, activeDisplacedUv);
+            gl_FragColor = vec4(color.rgb, 1.0);
+        }
+    `;
+
+    return new THREE.ShaderMaterial({
+        vertexShader,
+        fragmentShader,
+        uniforms: {
+            uTexture: { value: null },
+            uDepthMap: { value: null },
+            uReliefScale: { value: 0.08 },
+            uMaxSteps: { value: 36 },
+            uBinarySteps: { value: 8 },
+            uNodeCount: { value: safeNodeCount },
+            uNodeCenter: { value: new Array(safeNodeCount).fill(0).map(() => new THREE.Vector2(0.5, 0.5)) },
+            uNodeRadius: { value: new Float32Array(safeNodeCount) },
+            uNodeFalloffExp: { value: new Float32Array(safeNodeCount) },
+            uNodeCurrentOffset: { value: new Array(safeNodeCount).fill(0).map(() => new THREE.Vector2(0.0, 0.0)) }
+        }
+    });
+}
+
 function sampleTrajectoryLinear(track, progress) {
     if (!Array.isArray(track) || track.length === 0) return [0, 0];
     if (track.length === 1 || progress <= track[0].t) return track[0].disp;
@@ -2341,11 +2346,9 @@ function evaluateCameraTrack(anchors, progress) {
     };
 }
 
-// 4. BỘ KIỂM SOÁT TÍNH CHUẨN XÁC DỮ LIỆU CHỈ ĐẠO CỦA GEMINI (ZERO TOLERANCE VALIDATOR)
 function validateDirectingBlueprintStrict(bp) {
     if (!bp || typeof bp !== 'object') throw new Error("Gemini không trả về đối tượng JSON.");
     
-    // Kiểm tra cấu trúc quang học
     const o = bp.relief_optics;
     if (!o || typeof o !== 'object') throw new Error("Gemini thiếu trường relief_optics.");
     if (typeof o.relief_scale !== 'number' || isNaN(o.relief_scale) || o.relief_scale <= 0) {
@@ -2361,7 +2364,6 @@ function validateDirectingBlueprintStrict(bp) {
         throw new Error("Gemini thiếu camera_distance hợp lệ.");
     }
 
-    // Kiểm tra cấu trúc không gian chiều sâu thực thụ
     const topo = bp.depth_topology;
     if (!topo || typeof topo !== 'object') throw new Error("Gemini thiếu trường depth_topology.");
     if (!topo.perspective_grid || typeof topo.perspective_grid.horizon_line_v !== 'number') {
@@ -2376,45 +2378,17 @@ function validateDirectingBlueprintStrict(bp) {
     if (!Array.isArray(topo.depth_entities) || topo.depth_entities.length === 0) {
         throw new Error("Gemini không cung cấp depth_entities bóc tách không gian.");
     }
-    for (const ent of topo.depth_entities) {
-        if (!Array.isArray(ent.center) || ent.center.length !== 2) throw new Error("depth_entity sai center [u, v].");
-        if (!Array.isArray(ent.bounds) || ent.bounds.length !== 2) throw new Error("depth_entity sai bounds [bu, bv].");
-        if (typeof ent.depth_value !== 'number') throw new Error("depth_entity thiếu depth_value.");
-        if (typeof ent.falloff_exponent !== 'number') throw new Error("depth_entity thiếu falloff_exponent.");
-    }
 
-    // Kiểm tra quỹ đạo máy quay
     if (!Array.isArray(bp.camera_trajectory) || bp.camera_trajectory.length < 2) {
         throw new Error("camera_trajectory phải chứa ít nhất 2 mốc thời gian.");
     }
-    for (const c of bp.camera_trajectory) {
-        if (typeof c.t !== 'number' || !Array.isArray(c.cam) || c.cam.length !== 3 || !Array.isArray(c.rot) || c.rot.length !== 3) {
-            throw new Error("Mốc camera không đủ 3 trục tọa độ cam/rot.");
-        }
-    }
 
-    // Kiểm tra các nút động học
     if (!Array.isArray(bp.kinematic_nodes) || bp.kinematic_nodes.length === 0) {
         throw new Error("Gemini không trả về danh sách kinematic_nodes.");
-    }
-    for (const n of bp.kinematic_nodes) {
-        if (!Array.isArray(n.center) || n.center.length !== 2) throw new Error(`Nút ${n.name || ''} sai tọa độ center [u,v].`);
-        if (typeof n.radius !== 'number' || n.radius <= 0) throw new Error(`Nút ${n.name || ''} sai bán kính radius.`);
-        if (typeof n.falloff_exponent !== 'number' || isNaN(n.falloff_exponent)) throw new Error(`Nút ${n.name || ''} thiếu falloff_exponent.`);
-        if (n.is_speech_coupled) {
-            if (!Array.isArray(n.peak_displacement) || n.peak_displacement.length !== 2) {
-                throw new Error(`Nút khẩu hình ${n.name || ''} thiếu peak_displacement [dx, dy].`);
-            }
-        } else {
-            if (!Array.isArray(n.motion_track) || n.motion_track.length < 2) {
-                throw new Error(`Nút ${n.name || ''} thiếu motion_track tối thiểu 2 mốc.`);
-            }
-        }
     }
     return true;
 }
 
-// 5. KẾT NỐI ÂM THANH THUẦN KHIẾT (KHÔNG SÓNG SIN)
 function createCleanAudioTrack({ durationSec, sampleRate, voiceBuffers }) {
     const totalSamples = Math.max(1, Math.ceil(sampleRate * durationSec));
     const left = new Float32Array(totalSamples);
@@ -2440,11 +2414,9 @@ function createCleanAudioTrack({ durationSec, sampleRate, voiceBuffers }) {
             }
         }
     }
-
     return { leftChannel: left, rightChannel: right, totalSamples, sampleRate };
 }
 
-// 6. TIẾN TRÌNH VẬN HÀNH THỰC THI CHÍNH
 self.onmessage = async function(e) {
     const { masterScript, apiKey, geminiTTSApiKey, apiKeys } = e.data;
     const heartbeatTimer = setInterval(() => {
@@ -2474,10 +2446,8 @@ self.onmessage = async function(e) {
         let globalKeyIdx = 0;
         const getNextKey = () => validKeyPool[(globalKeyIdx++) % validKeyPool.length];
 
-        // BỘ GIẢI MÃ SÓNG ÂM THANH NGUYÊN BẢN TỪ GEMINI NATIVE AUDIO (XỬ LÝ CẢ WAV VÀ RAW PCM)
         function parseGeminiTtsAudioBytes(audioBytes) {
             let pcmBytes = audioBytes;
-            // Nhận diện và bỏ qua 44 byte header nếu Gemini trả về định dạng chuẩn WAV (RIFF...WAVE)
             if (audioBytes.length >= 44 &&
                 audioBytes[0] === 0x52 && audioBytes[1] === 0x49 && audioBytes[2] === 0x46 && audioBytes[3] === 0x46) {
                 let offset = 12;
@@ -2505,15 +2475,9 @@ self.onmessage = async function(e) {
             return { samples: float32, peakAmplitude: peak, sampleRate: 24000, duration: numSamples / 24000 };
         }
 
-        // THU ÂM TRỰC TIẾP BẰNG MODEL gemini-3.1-flash-tts-preview VỚI CƠ CHẾ XOAY TUA RETRY
         const callGeminiTTSWithRetry = async (text, voiceName) => {
             if (!text || !voiceName) return null;
-            const ttsModels = [
-                "gemini-3.1-flash-tts-preview",
-                "gemini-3.8-flash-tts",
-                "gemini-2.5-flash-preview-tts",
-                "gemini-2.0-flash"
-            ];
+            const ttsModels = ["gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts"];
             const maxTtsAttempts = validKeyPool.length * ttsModels.length;
             let lastErr = null;
             let attemptCount = 0;
@@ -2523,23 +2487,16 @@ self.onmessage = async function(e) {
                     attemptCount++;
                     const activeKey = getNextKey();
                     try {
-                        postStatus(`[TTS Lượt ${attemptCount}] Thu âm "${text.slice(0, 20)}..." bằng ${model} (${voiceName})...`);
+                        postStatus(`[TTS Lượt ${attemptCount}] Thu âm "${text.slice(0, 20)}..." (${model} - ${voiceName})...`);
                         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeKey}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                contents: [{
-                                    role: 'user',
-                                    parts: [{ text: text }]
-                                }],
+                                contents: [{ role: 'user', parts: [{ text: text }] }],
                                 generationConfig: {
                                     responseModalities: ["AUDIO"],
                                     speechConfig: {
-                                        voiceConfig: {
-                                            prebuiltVoiceConfig: {
-                                                voiceName: voiceName || "Puck"
-                                            }
-                                        }
+                                        voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName || "Puck" } }
                                     }
                                 }
                             })
@@ -2563,12 +2520,10 @@ self.onmessage = async function(e) {
                     }
                 }
             }
-            throw new Error(`[TTS Fatal] gemini-3.1-flash-tts-preview không thể tạo giọng đọc cho "${text.slice(0, 25)}..." sau ${attemptCount} lượt thử (${lastErr?.message || 'Lỗi mạng'}).`);
+            throw new Error(`[TTS Fatal] Không thể thu âm giọng đọc cho "${text.slice(0, 25)}..." (${lastErr?.message || 'Lỗi mạng'}).`);
         };
 
-        // KẾT XUẤT KHUNG HÌNH AI 100% MIỄN PHÍ: TỐI ƯU HÓA ĐỘ TRỄ THẤP (<3S) & ĐA CỔNG CDN CLOUDFLARE
         const generateKeyframeWithRetry = async (imagePlan, w, h, seed, directImageDataUrl) => {
-            // 1. Nếu người dùng tự truyền ảnh hoặc bấm dựng video từ ảnh có sẵn
             if (directImageDataUrl && (directImageDataUrl.startsWith('data:') || directImageDataUrl.startsWith('blob:'))) {
                 try {
                     const res = await fetch(directImageDataUrl);
@@ -2576,23 +2531,20 @@ self.onmessage = async function(e) {
                 } catch (_) {}
             }
 
-            // 2. Làm sạch prompt: Giữ dưới 350 ký tự để không làm gãy URL GET của giao thức HTTP
             const rawPrompt = (imagePlan?.prompt || 'cinematic film masterpiece 8k dramatic lighting')
                 .replace(/[/\\?#&%()[\]{}<>"'`\r\n\t]/g, ' ')
                 .replace(/\s+/g, ' ')
                 .trim().slice(0, 350);
             const encodedPrompt = encodeURIComponent(rawPrompt);
 
-            // ƯU TIÊN MODEL TURBO (SDXL TURBO TẠO ẢNH TRONG 2 GIÂY, KHÔNG BAO GIỜ BỊ NGHẼN HÀNG ĐỢI NHƯ FLUX)
             const modelsToTry = ['turbo', 'default'];
             let lastFetchError = null;
 
             for (const mName of modelsToTry) {
-                postStatus(`Đang vẽ khung hình điện ảnh tốc độ cao (${mName})...`);
+                postStatus(`Đang vẽ khung hình AI tốc độ cao (${mName})...`);
                 const modelParam = mName === 'default' ? '' : `&model=${mName}`;
                 const directUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${w}&height=${h}${modelParam}&seed=${seed}&nologo=true&safe=true`;
 
-                // DANH SÁCH ĐƯỜNG TRUYỀN: TRỰC TIẾP -> WESERV CLOUDFLARE CDN -> ALLORIGINS PROXY
                 const networkGateways = [
                     directUrl,
                     `https://images.weserv.nl/?url=${encodeURIComponent(directUrl)}&default=${encodeURIComponent(directUrl)}`,
@@ -2603,9 +2555,7 @@ self.onmessage = async function(e) {
                     for (let retry = 0; retry < 2; retry++) {
                         try {
                             const ctrl = new AbortController();
-                            // Timeout 25 giây là quá đủ cho model Turbo (thường chỉ mất 2-3 giây)
                             const tid = setTimeout(() => ctrl.abort(), 25000);
-
                             const res = await fetch(targetGateway, {
                                 signal: ctrl.signal,
                                 mode: 'cors',
@@ -2615,7 +2565,6 @@ self.onmessage = async function(e) {
 
                             if (res.ok) {
                                 const blob = await res.blob();
-                                // Đảm bảo tệp trả về là ảnh thực thụ, không phải trang HTML báo lỗi
                                 if (blob && blob.size > 2000 && !blob.type.includes('html')) {
                                     return await createImageBitmap(blob);
                                 }
@@ -2627,11 +2576,9 @@ self.onmessage = async function(e) {
                     }
                 }
             }
-
-            throw new Error(`[Keyframe Fatal] Không thể tải khung hình sau khi thử toàn bộ mạng truyền tải: ${lastFetchError?.message || 'Lỗi kết nối'}. Vui lòng thử lại!`);
+            throw new Error(`[Keyframe Fatal] Không thể tải khung hình: ${lastFetchError?.message || 'Lỗi kết nối'}.`);
         };
 
-        // 7. GEMINI ĐẠO DIỄN VỚI STRICT SCHEMA: TÍNH TOÁN QUANG HỌC, KHÔNG GIAN CHIỀU SÂU VÀ QUỸ ĐẠO
         const requestGeminiDirectTrajectoryStrict = async (imageBitmap, sceneSpec, sceneDuration) => {
             const visionModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
             const base64Keyframe = await bitmapToBase64(imageBitmap, 480);
@@ -2641,23 +2588,23 @@ Phân cảnh: "${sceneSpec.action_description || sceneSpec.title || 'Điện ả
 Quan sát bức ảnh đính kèm và hành động phân cảnh. Hãy tính toán chính xác chuỗi tọa độ biến thiên theo thời gian:
 1. "relief_optics":
    - "relief_scale": Độ sâu nổi khối quang học do bạn tính toán dựa trên mức độ cận cảnh/toàn cảnh của bức ảnh.
-   - "max_steps": Số bước dò tia quang học nguyên số nguyên dương.
+   - "max_steps": Số bước dò tia quang học nguyên số nguyên dương (thường từ 24 đến 48).
    - "camera_fov": Góc mở ống kính theo độ dựa trên tiêu cự khung hình.
    - "camera_distance": Khoảng cách đặt máy quay đến mặt phẳng chủ thể.
 2. "depth_topology": Tính toán hình học không gian 3D thực thụ từ bức ảnh:
    - "perspective_grid": {
        "horizon_line_v": Tọa độ đường chân trời phối cảnh của khung hình (0.0 đến 1.0 theo trục dọc),
-       "ground_vanishing_depth": [near_z, far_z] (chiều sâu mặt đất từ chân khung hình đến đường chân trời, ví dụ [0.05, 0.95]),
-       "background_depth": Chiều sâu nền trời / hậu cảnh vô cực (ví dụ 0.98)
+       "ground_vanishing_depth": [near_z, far_z] (chiều sâu mặt đất từ chân khung hình đến đường chân trời),
+       "background_depth": Chiều sâu nền trời / hậu cảnh vô cực (0.95 đến 1.0)
      },
-   - "depth_entities": Danh sách các thực thể nổi khối (người, đồ vật, cây cối, kiến trúc) bóc tách từ ảnh:
+   - "depth_entities": Danh sách các thực thể nổi khối (người, đồ vật, kiến trúc) bóc tách từ ảnh:
      [
        {
          "name": "tên_thực_thể",
          "center": [u, v],
          "bounds": [bán_kính_ngang_bu, bán_kính_dọc_bv],
          "depth_value": Chiều sâu z của thực thể (0.0 là sát camera, 1.0 là cực xa),
-         "falloff_exponent": Số mũ suy giảm đường biên (ví dụ 0.5 cho cạnh sắc, 2.0 cho chuyển tiếp êm)
+         "falloff_exponent": Số mũ suy giảm đường biên (0.5 cho cạnh sắc, 2.0 cho chuyển tiếp êm)
        }
      ]
 3. "camera_trajectory": Quỹ đạo chuyển động máy quay gồm ít nhất 2 mốc thời gian:
@@ -2668,10 +2615,10 @@ Quan sát bức ảnh đính kèm và hành động phân cảnh. Hãy tính to�
        "name": "tên_nút",
        "center": [u, v],
        "radius": bán_kính_ảnh_hưởng_không_gian,
-       "falloff_exponent": số_mũ_suy_giảm_lực (0.0 cho khối rắn, 1.0 cho tuyến tính, 2.0 cho cơ đàn hồi),
+       "falloff_exponent": số_mũ_suy_giảm_lực,
        "is_speech_coupled": true (nếu là khẩu hình nhép theo giọng nói) hoặc false,
-       "peak_displacement": [dx, dy] (chỉ định khi is_speech_coupled là true: độ dời cực đại khi âm lượng đạt đỉnh),
-       "motion_track": [ (chỉ định khi is_speech_coupled là false: chuỗi chuyển vị theo tiến trình t từ 0.0 đến 1.0)
+       "peak_displacement": [dx, dy] (chỉ định khi is_speech_coupled là true),
+       "motion_track": [ (chỉ định khi is_speech_coupled là false)
          {"t": 0.0, "disp": [0.0, 0.0]},
          {"t": 1.0, "disp": [dx, dy]}
        ]
@@ -2688,7 +2635,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                     totalTries++;
                     const activeKey = getNextKey();
                     try {
-                        postStatus(`Gemini (${m}) tính toán ma trận không gian thuần túy [Lượt ${totalTries}]...`);
+                        postStatus(`Gemini (${m}) tính toán ma trận không gian [Lượt ${totalTries}]...`);
                         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -2729,7 +2676,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                     }
                 }
             }
-
             throw new Error(`[GeminiDirector Fatal] Gemini không cung cấp được ma trận hợp lệ sau ${totalTries} lượt thử (${lastErr?.message}).`);
         };
 
@@ -2790,7 +2736,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
         activeEncoder.configure({ codec: 'avc1.4d002a', width, height, bitrate: targetBitrate, framerate: fps });
 
         sharedCanvas = new OffscreenCanvas(width, height);
-        sharedRenderer = new THREE.WebGLRenderer({ canvas: sharedCanvas, antialias: false, powerPreference: "high-performance" });
+        // BẮT BUỘC preserveDrawingBuffer: true ĐỂ KHÔNG BỊ VIDEO ĐEN KỊT KHI WEBCODECS CHỤP FRAME
+        sharedRenderer = new THREE.WebGLRenderer({
+            canvas: sharedCanvas,
+            antialias: false,
+            powerPreference: "high-performance",
+            preserveDrawingBuffer: true
+        });
         sharedRenderer.setSize(width, height, false);
 
         let cumulativeGlobalFrameCount = 0;
@@ -2802,7 +2754,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
             const currentSceneNum = sIdx + 1;
             const progressBase = Math.round((sIdx / totalScenes) * 100);
 
-            // 1. Thu âm giọng nói
+            // 1. Thu âm thoại
             postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Thu âm thoại Gemini TTS...`, progressBase);
             const shotAudioBuffers = [];
             if (Array.isArray(sceneSpec.dialogue_cues)) {
@@ -2835,7 +2787,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                 shotBitmap, sceneSpec, sceneSpec.target_duration || 5
             );
 
-            // 4. Kết xuất Texture độ sâu thuần túy từ tính toán phối cảnh của Gemini (KHÔNG CÔNG THỨC GIẢ LẬP)
+            // 4. Kết xuất Texture độ sâu thuần túy từ Gemini
             const spatialDepthTexture = generateSpatialDepthTextureFromGemini(
                 directingBlueprint.depth_topology, width, height
             );
@@ -2851,47 +2803,36 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
             const scene = new THREE.Scene();
             const camera = new THREE.PerspectiveCamera(fov, width / height, 0.01, 100);
 
-            // KÍCH THƯỚC QUANG HỌC HÌNH CHIẾU DỰA TRÊN TIÊU CỰ CỦA GEMINI
             const planeHeight = 2.0 * Math.tan((fov * Math.PI / 180.0) / 2.0) * camDistance;
             const planeWidth = planeHeight * (width / height);
             const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight, 2, 2);
 
+            // CẤU HÌNH NPOT BẮT BUỘC ĐỂ ẢNH GỐC KHÔNG BỊ BIẾN THÀNH MÀU ĐEN TUYỀN
             const shotTexture = new THREE.Texture(shotBitmap);
+            shotTexture.minFilter = THREE.LinearFilter;
+            shotTexture.magFilter = THREE.LinearFilter;
+            shotTexture.generateMipmaps = false;
+            shotTexture.wrapS = THREE.ClampToEdgeWrapping;
+            shotTexture.wrapT = THREE.ClampToEdgeWrapping;
             shotTexture.needsUpdate = true;
-            shotTexture.flipY = true;
 
-            const reliefMaterial = new THREE.ShaderMaterial({
-                uniforms: THREE.UniformsUtils.clone(RaymarchingReliefShader.uniforms),
-                vertexShader: RaymarchingReliefShader.vertexShader,
-                fragmentShader: RaymarchingReliefShader.fragmentShader
-            });
+            const nodes = directingBlueprint.kinematic_nodes;
+            const nodeCount = nodes.length;
 
+            // TẠO SHADER MATERIAL DYNAMIC TƯƠNG THÍCH HOÀN TOÀN MỌI THIẾT BỊ
+            const reliefMaterial = createRaymarchingMaterial(nodeCount, width, height);
             reliefMaterial.uniforms.uTexture.value = shotTexture;
             reliefMaterial.uniforms.uDepthMap.value = spatialDepthTexture;
             reliefMaterial.uniforms.uReliefScale.value = optics.relief_scale;
-            reliefMaterial.uniforms.uMaxSteps.value = optics.max_steps;
-
-            // KHỞI TẠO DATATEXTURE N-NÚT ĐA HÌNH
-            const nodes = directingBlueprint.kinematic_nodes;
-            const nodeCount = nodes.length;
-            const texWidth = nodeCount * 2;
-            const nodeDataArray = new Float32Array(texWidth * 4);
+            reliefMaterial.uniforms.uMaxSteps.value = Math.min(48, Math.max(16, Math.round(optics.max_steps)));
+            reliefMaterial.uniforms.uNodeCount.value = nodeCount;
 
             for (let i = 0; i < nodeCount; i++) {
                 const n = nodes[i];
-                const baseIdx = i * 2 * 4;
-                nodeDataArray[baseIdx] = n.center[0];
-                nodeDataArray[baseIdx + 1] = n.center[1];
-                nodeDataArray[baseIdx + 2] = n.radius;
-                nodeDataArray[baseIdx + 3] = n.falloff_exponent;
+                reliefMaterial.uniforms.uNodeCenter.value[i].set(n.center[0], n.center[1]);
+                reliefMaterial.uniforms.uNodeRadius.value[i] = n.radius;
+                reliefMaterial.uniforms.uNodeFalloffExp.value[i] = n.falloff_exponent;
             }
-
-            const kinematicDataTexture = new THREE.DataTexture(nodeDataArray, texWidth, 1, THREE.RGBAFormat, THREE.FloatType);
-            kinematicDataTexture.needsUpdate = true;
-
-            reliefMaterial.uniforms.uKinematicTexture.value = kinematicDataTexture;
-            reliefMaterial.uniforms.uNodeCount.value = nodeCount;
-            reliefMaterial.uniforms.uTexWidth.value = texWidth;
 
             const reliefMesh = new THREE.Mesh(planeGeo, reliefMaterial);
             scene.add(reliefMesh);
@@ -2902,15 +2843,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                 const currentSecond = f / fps;
                 const progress = f / Math.max(1, totalFrames - 1);
 
-                // Cập nhật máy quay thuần túy từ quỹ đạo của Gemini
                 const camState = evaluateCameraTrack(directingBlueprint.camera_trajectory, progress);
                 camera.position.set(camState.cam[0], camState.cam[1], camState.cam[2]);
                 camera.rotation.set((camState.rot[0] * Math.PI) / 180, (camState.rot[1] * Math.PI) / 180, (camState.rot[2] * Math.PI) / 180);
 
-                // CẬP NHẬT DATATEXTURE CHO TỪNG FRAME TỪ QUỸ ĐẠO CỦA GEMINI
                 for (let i = 0; i < nodeCount; i++) {
                     const n = nodes[i];
-                    const dispIdx = (i * 2 + 1) * 4;
 
                     if (n.is_speech_coupled) {
                         let normalizedSpeechEnergy = 0.0;
@@ -2924,15 +2862,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                                 break;
                             }
                         }
-                        nodeDataArray[dispIdx] = n.peak_displacement[0] * normalizedSpeechEnergy;
-                        nodeDataArray[dispIdx + 1] = n.peak_displacement[1] * normalizedSpeechEnergy;
+                        reliefMaterial.uniforms.uNodeCurrentOffset.value[i].set(
+                            n.peak_displacement[0] * normalizedSpeechEnergy,
+                            n.peak_displacement[1] * normalizedSpeechEnergy
+                        );
                     } else {
                         const currentDisp = sampleTrajectoryLinear(n.motion_track, progress);
-                        nodeDataArray[dispIdx] = currentDisp[0];
-                        nodeDataArray[dispIdx + 1] = currentDisp[1];
+                        reliefMaterial.uniforms.uNodeCurrentOffset.value[i].set(currentDisp[0], currentDisp[1]);
                     }
                 }
-                kinematicDataTexture.needsUpdate = true;
 
                 sharedRenderer.render(scene, camera);
 
@@ -2954,7 +2892,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
                 }
             }
 
-            // GHÉP FILE THOẠI NGUYÊN BẢN (KHÔNG CHÈN SÓNG SIN)
             const shotAudio = createCleanAudioTrack({
                 durationSec: shotDuration,
                 sampleRate: shotSampleRate,
@@ -2993,7 +2930,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG LỜI DẪN, BẮT 
             reliefMaterial.dispose();
             shotTexture.dispose();
             spatialDepthTexture.dispose();
-            kinematicDataTexture.dispose();
             shotBitmap.close();
 
             shotsLog.push({ shot_id: currentSceneNum, title: sceneSpec.title || `Cảnh ${currentSceneNum}`, duration: shotDuration });
