@@ -3018,44 +3018,55 @@ self.onmessage = async function(e) {
                         };
                     }
                     
-                    // 4. Máy trạng thái phân giải luồng Streaming Textvs Thought Tag ()
-                    if (part.text !== undefined && part.text !== null) {
-                        let textStr = String(part.text);
-                        let thoughtChunk = "";
-                        let mainTextChunk = "";
+                // 4. Máy trạng thái phân giải luồng Streaming Text và Thought Tag
+                if (part.text !== undefined && part.text !== null) {
+                    let textStr = String(part.text);
+                    let mainTextBuffer = ""; // Tích lũy văn bản bên ngoài ';
 
-                        while (textStr.length > 0) {
-                            if (!state.inThought) {
-                                const openIdx = textStr.indexOf('<thought>');
-                                if (openIdx !== -1) {
-                                    mainTextChunk += textStr.slice(0, openIdx);
-                                    state.inThought = true;
-                                    textStr = textStr.slice(openIdx + 9);
-                                } else {
-                                    mainTextChunk += textStr;
-                                    textStr = "";
-                                }
+                    let currentSegment = textStr;
+
+                    while (currentSegment.length > 0) {
+                        if (state.inThought) {
+                            const closeIdx = currentSegment.indexOf(THOUGHT_CLOSE_TAG);
+                            if (closeIdx !== -1) {
+                                thoughtTextBuffer += currentSegment.slice(0, closeIdx);
+                                state.inThought = false;
+                                currentSegment = currentSegment.slice(closeIdx + THOUGHT_CLOSE_TAG.length);
+                                hasProcessedThoughtInThisPart = true;
                             } else {
-                                const closeIdx = textStr.indexOf('</thought>');
-                                if (closeIdx !== -1) {
-                                    thoughtChunk += textStr.slice(0, closeIdx);
-                                    state.inThought = false;
-                                    textStr = textStr.slice(closeIdx + 10);
-                                } else {
-                                    thoughtChunk += textStr;
-                                    textStr = "";
-                                }
+                                thoughtTextBuffer += currentSegment;
+                                currentSegment = "";
+                            }
+                        } else { // Không ở trong khối suy luận
+                            const openIdx = currentSegment.indexOf(THOUGHT_OPEN_TAG);
+                            if (openIdx !== -1) {
+                                mainTextBuffer += currentSegment.slice(0, openIdx);
+                                state.inThought = true;
+                                currentSegment = currentSegment.slice(openIdx + THOUGHT_OPEN_TAG.length);
+                            } else {
+                                mainTextBuffer += currentSegment;
+                                currentSegment = "";
                             }
                         }
-
-                        if (thoughtChunk && mainTextChunk) {
-                            return { type: this.DataTypes.THOUGHT, payload: thoughtChunk, remainingText: mainTextChunk };
-                        } else if (thoughtChunk) {
-                            return { type: this.DataTypes.THOUGHT, payload: thoughtChunk };
-                        } else {
-                            return { type: this.DataTypes.TEXT, payload: mainTextChunk };
-                        }
                     }
+
+                    // Logic quyết định:
+                    // Nếu có nội dung suy luận được xử lý trong phần này, ưu tiên trả về nó.
+                    // Hoặc nếu đang ở trong khối suy luận và đã tích lũy văn bản suy luận.
+                    if (hasProcessedThoughtInThisPart || (state.inThought && thoughtTextBuffer.length > 0)) {
+                        return {
+                            type: this.DataTypes.THOUGHT,
+                            payload: thoughtTextBuffer,
+                            // Bất kỳ văn bản chính nào tích lũy *sau* khối suy luận trong chunk này
+                            // sẽ được coi là 'remainingText' cho bước xử lý tiếp theo.
+                            remainingText: mainTextBuffer.trim().length > 0 ? mainTextBuffer : null
+                        };
+                    } else if (mainTextBuffer.trim().length > 0) {
+                        return { type: this.DataTypes.TEXT, payload: mainTextBuffer };
+                    }
+                    // Nếu không có suy luận và không có văn bản chính, trả về phần văn bản rỗng.
+                    return { type: this.DataTypes.TEXT, payload: "" };
+                }
                     return { type: this.DataTypes.UNKNOWN, payload: null };
                 }
             },
@@ -6219,11 +6230,12 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
     let working = String(rawText);
 
     // Chuẩn hóa đường dẫn hình ảnh AI Pollinations và render trực tiếp thẻ HTML
-    working = working.replace(/!\[(.*?)\]\((https?:\/\/image\.pollinations\.ai\/prompt\/[^\)\s]+)\)/gi, (match, alt, fullUrl) => {
+    // Đã sửa: Mở rộng regex để nhận diện mọi URL hình ảnh (bao gồm data:image)
+    working = working.replace(/!\[(.*?)\]\(((?:https?|data):[^\)\s]+)\)/gi, (match, alt, fullUrl) => {
         // BẢO MẬT XSS: Ép buộc mã hóa HTML (Escape) đối với Alt text và URL để chặn đứng mã độc khi DOMPurify đang tạm tắt
         const safeAlt = escapeHTML(alt || 'Tác phẩm nghệ thuật');
         const safeUrl = escapeHTML(fullUrl);
-        return `\n\n<img src="${safeUrl}" alt="${safeAlt}" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-105 transition-all" loading="lazy" />\n\n`;
+        return `\n\n<img src="${safeUrl}" alt="${safeAlt}" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-110 transition-all" />\n\n`;
     });
 
             // Tiếp tục cân bằng cấu trúc nếu đang trong tiến trình streaming
