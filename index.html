@@ -3021,7 +3021,11 @@ self.onmessage = async function(e) {
                 // 4. Máy trạng thái phân giải luồng Streaming Text và Thought Tag
                 if (part.text !== undefined && part.text !== null) {
                     let textStr = String(part.text);
-                    let mainTextBuffer = ""; // Tích lũy văn bản bên ngoài ';
+                    let mainTextBuffer = "";
+                    let thoughtTextBuffer = "";
+                    let hasProcessedThoughtInThisPart = false;
+                    const THOUGHT_OPEN_TAG = "<thought>";
+                    const THOUGHT_CLOSE_TAG = "</thought>";
 
                     let currentSegment = textStr;
 
@@ -3050,21 +3054,15 @@ self.onmessage = async function(e) {
                         }
                     }
 
-                    // Logic quyết định:
-                    // Nếu có nội dung suy luận được xử lý trong phần này, ưu tiên trả về nó.
-                    // Hoặc nếu đang ở trong khối suy luận và đã tích lũy văn bản suy luận.
                     if (hasProcessedThoughtInThisPart || (state.inThought && thoughtTextBuffer.length > 0)) {
                         return {
                             type: this.DataTypes.THOUGHT,
                             payload: thoughtTextBuffer,
-                            // Bất kỳ văn bản chính nào tích lũy *sau* khối suy luận trong chunk này
-                            // sẽ được coi là 'remainingText' cho bước xử lý tiếp theo.
                             remainingText: mainTextBuffer.trim().length > 0 ? mainTextBuffer : null
                         };
                     } else if (mainTextBuffer.trim().length > 0) {
                         return { type: this.DataTypes.TEXT, payload: mainTextBuffer };
                     }
-                    // Nếu không có suy luận và không có văn bản chính, trả về phần văn bản rỗng.
                     return { type: this.DataTypes.TEXT, payload: "" };
                 }
                     return { type: this.DataTypes.UNKNOWN, payload: null };
@@ -11587,7 +11585,6 @@ if (!shouldContinue) {
                         window.addEventListener('beforeunload', handleBeforeUnload);
                         document.addEventListener('visibilitychange', handleVisibilityChange);
 
-                        // --- DÁN MỤC SỐ 4 VÀO ĐÂY ---
                         // Tự động khôi phục ảnh nếu gặp sự cố kết nối hoặc model bận
                         window.addEventListener('error', (e) => {
                             if (e.target && e.target.tagName === 'IMG') {
