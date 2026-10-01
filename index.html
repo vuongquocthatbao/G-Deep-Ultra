@@ -2076,6 +2076,10 @@ function robustJsonParse(rawString) {
     if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
         try { return JSON.parse(clean.slice(firstBrace, lastBrace + 1)); } catch (_) {}
     }
+    const firstBracket = clean.indexOf('['), lastBracket = clean.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+        try { return JSON.parse(clean.slice(firstBracket, lastBracket + 1)); } catch (_) {}
+    }
     return null;
 }
 
@@ -2097,19 +2101,17 @@ async function bitmapToBase64(bitmap, maxWidth = 512) {
     return btoa(binary);
 }
 
-// BỘ GIẢI MÃ NHỊ PHÂN CHUẨN XÁC: CHỐNG LỖI DECODE TỪ TRANG HTML LỖI
+// BẢO VỆ NHỊ PHÂN: KIỂM TRA MAGIC BYTES CHỐNG LỖI DECODE TỪ TRANG LỖI PROXY
 async function decodeImageBlobSafely(blob) {
     if (!blob || blob.size < 100) return null;
     const arrayBuffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     
-    // Kiểm tra định danh byte quang học thực tế của ảnh
     const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
     const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
     const isWebp = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
                    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
 
-    // Nếu không phải ảnh hợp lệ (là trang web HTML hoặc chuỗi lỗi), từ chối giải mã
     if (!isJpeg && !isPng && !isWebp) return null;
 
     try {
@@ -2121,7 +2123,7 @@ async function decodeImageBlobSafely(blob) {
 }
 
 // =========================================================================
-// BỘ XỬ LÝ ÂM THANH & GIỌNG ĐỌC G-DEEP CORE AUDIO ENGINE
+// BỘ THU ÂM & NÉN KHẨU HÌNH G-DEEP CORE AUDIO
 // =========================================================================
 function parseAudioBytes(audioBytes) {
     let pcmBytes = audioBytes;
@@ -2149,7 +2151,7 @@ function parseAudioBytes(audioBytes) {
 
 async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) {
     if (!text) return null;
-    const voiceModels = ["gemini-3.1-flash-tts-preview"];
+    const voiceModels = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"];
     for (const m of voiceModels) {
         for (let k = 0; k < keyPool.length; k++) {
             const activeKey = keyPool[k];
@@ -2181,13 +2183,14 @@ async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) 
 }
 
 // =========================================================================
-// SHADER BIẾN DẠNG 2 TẦNG (CAMERA HOMOGRAPHY + LOCAL LAGRANGIAN STRAIN)
+// SHADER TENSOR ĐỒNG NHẤT: HOMOGRAPHY + DUAL-PHASE FLOW + ELASTIC SWAY
 // =========================================================================
-function createCinematicTwoLayerWarpMaterial(maxNodes = 16) {
+function createUnifiedTensorDynamicsMaterial() {
     const vertexShader = `
         varying vec2 vUv;
         void main() {
-            vUv = uv;
+            // Chuẩn hóa hệ quy chiếu Top-Down đồng bộ 100% với Gemini Vision Tensor
+            vUv = vec2(uv.x, 1.0 - uv.y);
             gl_Position = vec4(position.xy, 0.0, 1.0);
         }
     `;
@@ -2196,25 +2199,36 @@ function createCinematicTwoLayerWarpMaterial(maxNodes = 16) {
         precision highp float;
 
         uniform sampler2D uTexture;
-        uniform vec2 uResolution;
+        uniform float uTime;
         
-        // TẦNG 1: QUANG HỌC ỐNG KÍNH TOÀN CẢNH (CAMERA HOMOGRAPHY FLOW)
+        // 1. TỔNG LỰC CAMERA QUANG HỌC TOÀN CẢNH
         uniform vec2 uCameraPan;
         uniform float uCameraZoom;
         uniform float uCameraRotation;
 
-        // TẦNG 2: TRƯỜNG BIẾN DẠNG NỘI TẠI CỦA CÁC THỰC THỂ (LOCAL SPLINE STRAIN)
-        #define MAX_NODES ${maxNodes}
-        uniform int uNodeCount;
-        uniform vec2 uNodeCenter[MAX_NODES];
-        uniform vec2 uNodeRadius[MAX_NODES];
-        uniform float uNodeFalloff[MAX_NODES];
-        uniform vec2 uNodeDisplacement[MAX_NODES];
-        uniform float uNodeRotation[MAX_NODES];
+        // 2. MA TRẬN DÒNG CHẢY 2 PHA (DUAL-PHASE FLOW MATRICES)
+        #define MAX_FLOW_NODES 8
+        uniform int uFlowCount;
+        uniform vec2 uFlowCenter[MAX_FLOW_NODES];
+        uniform vec2 uFlowRadius[MAX_FLOW_NODES];
+        uniform vec2 uFlowVector[MAX_FLOW_NODES];
+        uniform float uFlowSpeed[MAX_FLOW_NODES];
+        uniform float uFlowFalloff[MAX_FLOW_NODES];
+
+        // 3. MA TRẬN DAO ĐỘNG ĐÀN HỒI CÓ GỐC NEO (ELASTIC HARMONIC NODES)
+        #define MAX_ELASTIC_NODES 8
+        uniform int uElasticCount;
+        uniform vec2 uElasticAnchor[MAX_ELASTIC_NODES];
+        uniform vec2 uElasticRadius[MAX_ELASTIC_NODES];
+        uniform vec2 uElasticVector[MAX_ELASTIC_NODES];
+        uniform float uElasticFreq[MAX_ELASTIC_NODES];
+        uniform float uElasticAmp[MAX_ELASTIC_NODES];
+        uniform float uElasticPhase[MAX_ELASTIC_NODES];
+        uniform float uElasticFalloff[MAX_ELASTIC_NODES];
 
         varying vec2 vUv;
 
-        vec2 rotateVec(vec2 v, float angle) {
+        vec2 rotateCoord(vec2 v, float angle) {
             float s = sin(angle);
             float c = cos(angle);
             return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
@@ -2223,43 +2237,74 @@ function createCinematicTwoLayerWarpMaterial(maxNodes = 16) {
         void main() {
             vec2 uv = vUv;
 
-            // 1. ÁNH XẠ NGƯỢC QUANG HỌC ỐNG KÍNH (KHÔNG CO GIÃN ĐIỂM ẢNH GỐC)
+            // BƯỚC 1: HỆ QUY CHIẾU HOMOGRAPHY CAMERA (KHÔNG LÀM DÃN VỠ ĐIỂM ẢNH)
             vec2 centered = uv - vec2(0.5);
-            centered = rotateVec(centered, -uCameraRotation);
+            centered = rotateCoord(centered, -uCameraRotation);
             centered /= max(uCameraZoom, 0.001);
-            vec2 homographyUv = centered + vec2(0.5) - uCameraPan;
+            vec2 sourceUv = centered + vec2(0.5) - uCameraPan;
 
-            // 2. TỔNG HỢP BIẾN DẠNG VI PHÂN NỘI TẠI TỪ CÁC ĐIỂM NEO THỰC THỂ
-            vec2 localStrain = vec2(0.0);
+            // BƯỚC 2: TÍNH TOÁN DAO ĐỘNG ĐÀN HỒI VI SAI CÓ GỐC NEO
+            vec2 elasticDisplacement = vec2(0.0);
+            for (int j = 0; j < MAX_ELASTIC_NODES; j++) {
+                if (j >= uElasticCount) break;
 
-            for (int i = 0; i < MAX_NODES; i++) {
-                if (i >= uNodeCount) break;
-
-                vec2 center = uNodeCenter[i];
-                vec2 radius = max(uNodeRadius[i], vec2(0.001));
-                
-                vec2 delta = (homographyUv - center) / radius;
+                vec2 anchor = uElasticAnchor[j];
+                vec2 rad = max(uElasticRadius[j], vec2(0.001));
+                vec2 delta = (sourceUv - anchor) / rad;
                 float distSq = dot(delta, delta);
 
                 if (distSq < 1.0) {
                     float dist = sqrt(distSq);
-                    // Đường cong suy giảm lực mềm Hermite tự nhiên
-                    float influence = pow(clamp(1.0 - dist, 0.0, 1.0), uNodeFalloff[i]);
-                    
-                    vec2 displacement = uNodeDisplacement[i];
-                    if (abs(uNodeRotation[i]) > 0.001) {
-                        vec2 rotPos = rotateVec(homographyUv - center, -uNodeRotation[i] * influence);
-                        displacement += (homographyUv - center) - rotPos;
-                    }
-
-                    localStrain += displacement * influence;
+                    // Càng xa điểm neo gốc, biên độ chuyển vị đàn hồi càng mạnh
+                    float elasticity = pow(clamp(dist, 0.0, 1.0), 1.5) * pow(clamp(1.0 - dist, 0.0, 1.0), uElasticFalloff[j]);
+                    float wave = sin(uTime * uElasticFreq[j] * 6.2831853 + uElasticPhase[j]);
+                    elasticDisplacement += uElasticVector[j] * wave * uElasticAmp[j] * elasticity;
                 }
             }
 
-            vec2 finalUv = homographyUv - localStrain;
-            finalUv = clamp(finalUv, vec2(0.001), vec2(0.999));
+            vec2 postElasticUv = sourceUv - elasticDisplacement;
 
-            gl_FragColor = texture2D(uTexture, finalUv);
+            // BƯỚC 3: TÍNH TOÁN DÒNG CHẢY 2 PHA LỆCH SÓNG (DUAL-PHASE BLENDING - ZERO STRETCH)
+            vec2 flowDisplacementA = vec2(0.0);
+            vec2 flowDisplacementB = vec2(0.0);
+            float totalFlowBlendWeight = 0.0;
+            float totalFlowInfluence = 0.0;
+
+            for (int i = 0; i < MAX_FLOW_NODES; i++) {
+                if (i >= uFlowCount) break;
+
+                vec2 center = uFlowCenter[i];
+                vec2 rad = max(uFlowRadius[i], vec2(0.001));
+                vec2 delta = (postElasticUv - center) / rad;
+                float distSq = dot(delta, delta);
+
+                if (distSq < 1.0) {
+                    float dist = sqrt(distSq);
+                    float influence = pow(clamp(1.0 - dist, 0.0, 1.0), uFlowFalloff[i]);
+                    
+                    float progressA = fract(uTime * uFlowSpeed[i]);
+                    float progressB = fract(uTime * uFlowSpeed[i] + 0.5);
+
+                    float weight = abs(1.0 - 2.0 * progressA);
+
+                    flowDisplacementA += uFlowVector[i] * (progressA - 0.5) * influence;
+                    flowDisplacementB += uFlowVector[i] * (progressB - 0.5) * influence;
+
+                    totalFlowBlendWeight = mix(totalFlowBlendWeight, weight, influence);
+                    totalFlowInfluence = max(totalFlowInfluence, influence);
+                }
+            }
+
+            // KẾT XUẤT QUANG HỌC: NẾU CÓ DÒNG CHẢY THÌ TRỘN 2 PHA, NGƯỢC LẠI LẤY MẪU ĐƠN
+            vec2 finalUvA = clamp(postElasticUv - flowDisplacementA, vec2(0.001), vec2(0.999));
+            vec2 finalUvB = clamp(postElasticUv - flowDisplacementB, vec2(0.001), vec2(0.999));
+
+            vec4 colorA = texture2D(uTexture, finalUvA);
+            vec4 colorB = texture2D(uTexture, finalUvB);
+
+            vec4 finalColor = mix(texture2D(uTexture, clamp(postElasticUv, vec2(0.001), vec2(0.999))), mix(colorA, colorB, totalFlowBlendWeight), totalFlowInfluence);
+
+            gl_FragColor = finalColor;
         }
     `;
 
@@ -2268,16 +2313,26 @@ function createCinematicTwoLayerWarpMaterial(maxNodes = 16) {
         fragmentShader,
         uniforms: {
             uTexture: { value: null },
-            uResolution: { value: new THREE.Vector2(1, 1) },
+            uTime: { value: 0.0 },
             uCameraPan: { value: new THREE.Vector2(0, 0) },
             uCameraZoom: { value: 1.0 },
             uCameraRotation: { value: 0.0 },
-            uNodeCount: { value: 0 },
-            uNodeCenter: { value: new Array(maxNodes).fill(0).map(() => new THREE.Vector2(0.5, 0.5)) },
-            uNodeRadius: { value: new Array(maxNodes).fill(0).map(() => new THREE.Vector2(0.2, 0.2)) },
-            uNodeFalloff: { value: new Float32Array(maxNodes).fill(2.0) },
-            uNodeDisplacement: { value: new Array(maxNodes).fill(0).map(() => new THREE.Vector2(0.0, 0.0)) },
-            uNodeRotation: { value: new Float32Array(maxNodes).fill(0.0) }
+            
+            uFlowCount: { value: 0 },
+            uFlowCenter: { value: new Array(8).fill(0).map(() => new THREE.Vector2(0.5, 0.5)) },
+            uFlowRadius: { value: new Array(8).fill(0).map(() => new THREE.Vector2(0.2, 0.2)) },
+            uFlowVector: { value: new Array(8).fill(0).map(() => new THREE.Vector2(0.0, 0.0)) },
+            uFlowSpeed: { value: new Float32Array(8).fill(0.5) },
+            uFlowFalloff: { value: new Float32Array(8).fill(2.0) },
+
+            uElasticCount: { value: 0 },
+            uElasticAnchor: { value: new Array(8).fill(0).map(() => new THREE.Vector2(0.5, 0.5)) },
+            uElasticRadius: { value: new Array(8).fill(0).map(() => new THREE.Vector2(0.2, 0.2)) },
+            uElasticVector: { value: new Array(8).fill(0).map(() => new THREE.Vector2(0.0, 0.0)) },
+            uElasticFreq: { value: new Float32Array(8).fill(1.0) },
+            uElasticAmp: { value: new Float32Array(8).fill(0.0) },
+            uElasticPhase: { value: new Float32Array(8).fill(0.0) },
+            uElasticFalloff: { value: new Float32Array(8).fill(2.0) }
         },
         depthTest: false,
         depthWrite: false
@@ -2285,88 +2340,113 @@ function createCinematicTwoLayerWarpMaterial(maxNodes = 16) {
 }
 
 // =========================================================================
-// BỘ NÃO ĐẠO DIỄN G-DEEP VISION: THIẾT KẾ ĐƯỜNG CONG CHUYỂN ĐỘNG CHO CÚ MÁY
+// BỘ NÃO ĐẠO DIỄN G-DEEP VISION TENSOR (TABULA RASA / ZERO-BIAS)
 // =========================================================================
-async function requestShotParametricMotion(imageBitmap, shotActionPrompt, shotDuration, keyPool, postStatus) {
+async function requestAgnosticTensorTrajectory(imageBitmap, shotActionPrompt, shotDuration, keyPool, postStatus) {
     const base64Keyframe = await bitmapToBase64(imageBitmap, 512);
 
-    const shotPrompt = `[G-DEEP VISION DIRECTING ENGINE]
-Quan sát ma trận điểm ảnh tại t=0.0 và kịch bản cú máy: "${shotActionPrompt}".
-Thời lượng cú máy liên tục: ${shotDuration} giây.
+    // CÂU LỆNH TOÁN HỌC KHÔNG GIAN THUẦN TÚY: Không có bất kỳ danh từ, con người, hay hành động mẫu nào
+    const agnosticTensorPrompt = `[G-DEEP VISION DYNAMICS ENGINE]
+Quan sát ma trận điểm ảnh tại t=0.0 và yêu cầu biến thiên thời gian: "${shotActionPrompt}".
+Thời lượng cú máy liên tục: ${shotDuration} giây (24 FPS).
 
-HÃY THIẾT LẬP PHƯƠNG TRÌNH ĐƯỜNG CONG THAM SỐ TOÀN DIỆN CHO CẢ CÚ MÁY:
-1. "camera_spline": Chuyển động toàn cảnh từ t=0.0 đến t=1.0:
-   - "pan": [dx, dy] (Dịch chuyển ống kính chuẩn hóa)
-   - "zoom": Tỷ lệ phóng đại (1.0 là gốc)
-   - "rotation": Góc xoay khung hình (radians)
-2. "kinematic_nodes": Danh sách các thực thể điểm ảnh chuyển động (tối đa 12 thực thể):
-   - "name": Tên thực thể thực tế trên ảnh
-   - "center": [u, v] (Gốc tọa độ [0.0, 0.0] là góc trên bên trái)
+HÃY PHÂN TÍCH MA TRẬN ĐIỂM ẢNH THỰC TẾ VÀ THIẾT LẬP CÁC TRƯỜNG TENSOR ĐỘC BẢN:
+1. "camera_spline": Chuyển động toàn khung quan sát từ t=0.0 đến t=1.0:
+   - "pan": [dx, dy] (Chuẩn hóa phạm vi -1.0 đến 1.0)
+   - "zoom": Tỷ lệ tiêu cự (1.0 là gốc)
+   - "rotation": Góc xoay mặt phẳng (radians)
+2. "flow_matrices": Các vùng có chuyển động dòng chảy/thể dịch tuần hoàn liên tục (tối đa 6 vùng):
+   - "center": [u, v] (Gốc [0.0, 0.0] là góc trên bên trái)
    - "radius": [radius_u, radius_v]
-   - "falloff_exponent": Độ suy giảm lực mềm
-   - "motion_curve": Các mốc kiểm soát đường cong nội suy:
-     [
-       {"t": 0.0, "disp": [0.0, 0.0], "rot": 0.0},
-       {"t": 0.5, "disp": [dx, dy], "rot": radians},
-       {"t": 1.0, "disp": [dx, dy], "rot": radians}
-     ]
+   - "direction_vector": [du, dv] (Vector vận tốc hướng dòng chảy)
+   - "speed": Tốc độ chu kỳ dòng chảy (thường từ 0.2 đến 1.5)
+   - "falloff_exponent": Độ mềm chuyển tiếp biên
+3. "elastic_matrices": Các thực thể có dao động đàn hồi/uốn lượn/co giãn quanh điểm neo (tối đa 6 vùng):
+   - "anchor_center": [u, v] (Điểm neo cố định của thực thể trên ảnh)
+   - "radius": [radius_u, radius_v]
+   - "displacement_vector": [du, dv] (Vector hướng dao động cực đại)
+   - "frequency_hz": Tần số dao động mỗi giây (ví dụ 0.5 đến 2.5)
+   - "amplitude": Biên độ biến dạng (0.01 đến 0.08)
+   - "phase_offset": Độ lệch pha ban đầu (radians)
+   - "falloff_exponent": Độ mềm tính chất vật liệu
 
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ:
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ (KHÔNG KÈM VĂN BẢN NGOÀI):
 {
   "camera_spline": [
     {"t": 0.0, "pan": [0.0, 0.0], "zoom": 1.0, "rotation": 0.0},
-    {"t": 1.0, "pan": [0.06, -0.02], "zoom": 1.08, "rotation": 0.015}
+    {"t": 1.0, "pan": [0.05, 0.0], "zoom": 1.06, "rotation": 0.01}
   ],
-  "kinematic_nodes": [
+  "flow_matrices": [
     {
-      "name": "thực_thể",
-      "center": [0.5, 0.5],
-      "radius": [0.2, 0.2],
-      "falloff_exponent": 2.0,
-      "motion_curve": [
-        {"t": 0.0, "disp": [0.0, 0.0], "rot": 0.0},
-        {"t": 1.0, "disp": [0.05, -0.03], "rot": 0.04}
-      ]
+      "center": [0.5, 0.6],
+      "radius": [0.3, 0.4],
+      "direction_vector": [0.0, 0.05],
+      "speed": 0.6,
+      "falloff_exponent": 1.8
+    }
+  ],
+  "elastic_matrices": [
+    {
+      "anchor_center": [0.5, 0.4],
+      "radius": [0.15, 0.2],
+      "displacement_vector": [0.03, 0.0],
+      "frequency_hz": 1.2,
+      "amplitude": 0.04,
+      "phase_offset": 0.0,
+      "falloff_exponent": 2.0
     }
   ]
 }`;
 
+    const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
     let totalTries = 0;
-    for (let retry = 0; retry < 3; retry++) {
-        totalTries++;
-        const activeKey = keyPool[totalTries % keyPool.length];
-        try {
-            postStatus(`Đang tính toán cú máy [Lượt ${totalTries}]...`);
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${activeKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{
-                        role: 'user',
-                        parts: [
-                            { text: shotPrompt },
-                            { inlineData: { mimeType: "image/jpeg", data: base64Keyframe } }
-                        ]
-                    }],
-                    generationConfig: { temperature: 0.1, maxOutputTokens: 3000, responseMimeType: "application/json" }
-                })
-            });
 
-            if (res.ok) {
-                const data = await res.json();
-                const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                const parsed = robustJsonParse(rawText);
-                if (parsed && Array.isArray(parsed.kinematic_nodes)) {
-                    return parsed;
+    for (let retry = 0; retry < 3; retry++) {
+        for (const activeModel of candidateModels) {
+            totalTries++;
+            const activeKey = keyPool[totalTries % keyPool.length];
+            try {
+                postStatus(`Đang trích xuất ma trận tensor [Lượt ${totalTries}]...`);
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${activeKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{
+                            role: 'user',
+                            parts: [
+                                { text: agnosticTensorPrompt },
+                                { inlineData: { mimeType: "image/jpeg", data: base64Keyframe } }
+                            ]
+                        }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 3000, responseMimeType: "application/json" }
+                    })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const parsed = robustJsonParse(rawText);
+                    if (parsed && Array.isArray(parsed.camera_spline)) {
+                        return parsed;
+                    }
+                } else {
+                    await new Promise(r => setTimeout(r, 800));
                 }
-            } else {
-                await new Promise(r => setTimeout(r, 1000));
+            } catch (_) {
+                await new Promise(r => setTimeout(r, 800));
             }
-        } catch (_) {
-            await new Promise(r => setTimeout(r, 1000));
         }
     }
-    throw new Error("G-Deep Core không trích xuất được ma trận cú máy.");
+
+    // TỰ ĐỘNG CHUYỂN GIAO Ý CHÍ TRỰC TIẾP NẾU MẠNG LLM PHÂN TÍCH QUÁ TẢI
+    return {
+        camera_spline: [
+            { t: 0.0, pan: [0.0, 0.0], zoom: 1.0, rotation: 0.0 },
+            { t: 1.0, pan: [0.04, -0.01], zoom: 1.05, rotation: 0.01 }
+        ],
+        flow_matrices: [],
+        elastic_matrices: []
+    };
 }
 
 // NỘI SUY SPLINE HERMITE BẬC 3
@@ -2511,10 +2591,10 @@ self.onmessage = async function(e) {
         const quadGeo = new THREE.PlaneGeometry(2, 2);
 
         let cumulativeGlobalFrameCount = 0;
-        let cumulativeAudioFramesEncoded = 0; // ĐỒNG BỘ CHUẨN XÁC: Đếm đơn điệu số frame âm thanh đã nén
+        let cumulativeAudioFramesEncoded = 0;
         const shotsLog = [];
 
-        // VÒNG LẶP SẢN XUẤT CÁC CÚ MÁY (SHOT CONTINUITY)
+        // VÒNG LẶP SẢN XUẤT CÁC CÚ MÁY (MỖI CÚ MÁY LÀ MỘT KHÔNG GIAN ĐỘC LẬP)
         for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
             const sceneSpec = rawScenesList[sIdx] || {};
             const currentSceneNum = sIdx + 1;
@@ -2522,9 +2602,8 @@ self.onmessage = async function(e) {
             const totalFrames = Math.round(shotDuration * fps);
             const frameMicros = 1000000 / fps;
 
-            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Đang chuẩn bị hình ảnh...`);
+            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Đang khởi tạo hình ảnh gốc...`);
 
-            // Giãn nhịp 1.2s trước cú máy tiếp theo để chống nghẽn Rate-Limit
             if (sIdx > 0) {
                 await new Promise(r => setTimeout(r, 1200));
             }
@@ -2543,7 +2622,7 @@ self.onmessage = async function(e) {
                 } catch (_) {}
             }
 
-            // 2. Kết xuất ảnh cho cú máy này với đa tầng Model & Gateway
+            // 2. Kết xuất ảnh Flux.1 theo đúng kịch bản của Cú máy hiện tại
             if (!shotBitmap) {
                 const targetModels = ['flux', 'turbo'];
                 for (const mName of targetModels) {
@@ -2559,7 +2638,7 @@ self.onmessage = async function(e) {
                         for (let attempt = 0; attempt < 2; attempt++) {
                             try {
                                 const ctrl = new AbortController();
-                                const timer = setTimeout(() => ctrl.abort(), 25000);
+                                const timer = setTimeout(() => ctrl.abort(), 30000); 
                                 const res = await fetch(targetUrl, { signal: ctrl.signal, headers: { 'Accept': 'image/*' } });
                                 clearTimeout(timer);
                                 
@@ -2584,9 +2663,9 @@ self.onmessage = async function(e) {
                 throw new Error(`Cú máy ${currentSceneNum}: Không thể tải ảnh gốc từ mạng. Vui lòng kiểm tra lại kết nối.`);
             }
 
-            // G-DEEP VISION: ĐẠO DIỄN TOÀN BỘ CÚ MÁY
-            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Đang trích xuất quỹ đạo cú máy...`);
-            const motionPlan = await requestShotParametricMotion(
+            // G-DEEP VISION: ĐẠO DIỄN MA TRẬN TENSOR ĐỘC BẢN
+            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] G-Deep Vision: Đang trích xuất ma trận tensor...`);
+            const tensorPlan = await requestAgnosticTensorTrajectory(
                 shotBitmap,
                 sceneSpec.action_description || rawPrompt,
                 shotDuration,
@@ -2619,7 +2698,7 @@ self.onmessage = async function(e) {
                 }
             }
 
-            // NẠP ÂM THANH: SỬA TRIỆT ĐỂ LỖI TIMESTAMP ĐƠN ĐIỆU (MONOTONIC TIME GUARANTEE)
+            // NẠP ÂM THANH VÀO AUDIO ENCODER VỚI TIMESTAMP ĐƠN ĐIỆU TUYỆT ĐỐI
             if (supportsAudio && audioEngine && audioEngine.state === 'configured') {
                 const aacFrameSize = 1024;
                 const totalPaddedChunks = Math.ceil(totalShotAudioSamples / aacFrameSize);
@@ -2632,7 +2711,6 @@ self.onmessage = async function(e) {
                     planarData.set(leftChannel.subarray(offset, offset + chunkLen), 0);
                     planarData.set(rightChannel.subarray(offset, offset + chunkLen), aacFrameSize);
 
-                    // Timestamp tăng liên tục, tuyệt đối không bao giờ bị đè lùi thời gian
                     const aData = new AudioData({
                         format: 'f32-planar',
                         sampleRate: shotSampleRate,
@@ -2656,120 +2734,60 @@ self.onmessage = async function(e) {
             shotTexture.wrapT = THREE.ClampToEdgeWrapping;
             shotTexture.needsUpdate = true;
 
-            const nodes = motionPlan.kinematic_nodes || [];
-            const nodeCount = Math.min(16, nodes.length);
+            const warpMaterial = createUnifiedTensorDynamicsMaterial();
+            warpMaterial.uniforms.uTexture.value = shotTexture;
 
-            const vertexShader = `
-                varying vec2 vUv;
-                void main() {
-                    vUv = vec2(uv.x, 1.0 - uv.y);
-                    gl_Position = vec4(position.xy, 0.0, 1.0);
-                }
-            `;
+            // NẠP THAM SỐ DÒNG CHẢY 2 PHA (FLOW MATRICES)
+            const flowNodes = tensorPlan.flow_matrices || [];
+            const flowCount = Math.min(8, flowNodes.length);
+            warpMaterial.uniforms.uFlowCount.value = flowCount;
 
-            const fragmentShader = `
-                precision highp float;
-                uniform sampler2D uTexture;
-                uniform vec2 uCameraPan;
-                uniform float uCameraZoom;
-                uniform float uCameraRotation;
-                #define MAX_NODES 16
-                uniform int uNodeCount;
-                uniform vec2 uNodeCenter[MAX_NODES];
-                uniform vec2 uNodeRadius[MAX_NODES];
-                uniform float uNodeFalloff[MAX_NODES];
-                uniform vec2 uNodeDisplacement[MAX_NODES];
-                uniform float uNodeRotation[MAX_NODES];
-                varying vec2 vUv;
+            for (let i = 0; i < flowCount; i++) {
+                const fn = flowNodes[i];
+                warpMaterial.uniforms.uFlowCenter.value[i].set(fn.center[0], fn.center[1]);
+                warpMaterial.uniforms.uFlowRadius.value[i].set(fn.radius[0], fn.radius[1]);
+                warpMaterial.uniforms.uFlowVector.value[i].set(fn.direction_vector[0], fn.direction_vector[1]);
+                warpMaterial.uniforms.uFlowSpeed.value[i] = Number(fn.speed) || 0.5;
+                warpMaterial.uniforms.uFlowFalloff.value[i] = Number(fn.falloff_exponent) || 2.0;
+            }
 
-                vec2 rotateVec(vec2 v, float angle) {
-                    float s = sin(angle);
-                    float c = cos(angle);
-                    return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
-                }
+            // NẠP THAM SỐ DAO ĐỘNG ĐÀN HỒI (ELASTIC MATRICES)
+            const elasticNodes = tensorPlan.elastic_matrices || [];
+            const elasticCount = Math.min(8, elasticNodes.length);
+            warpMaterial.uniforms.uElasticCount.value = elasticCount;
 
-                void main() {
-                    vec2 uv = vUv;
-                    vec2 centered = uv - vec2(0.5);
-                    centered = rotateVec(centered, -uCameraRotation);
-                    centered /= max(uCameraZoom, 0.001);
-                    vec2 homographyUv = centered + vec2(0.5) - uCameraPan;
-
-                    vec2 localStrain = vec2(0.0);
-                    for (int i = 0; i < MAX_NODES; i++) {
-                        if (i >= uNodeCount) break;
-                        vec2 center = uNodeCenter[i];
-                        vec2 radius = max(uNodeRadius[i], vec2(0.001));
-                        vec2 delta = (homographyUv - center) / radius;
-                        float distSq = dot(delta, delta);
-
-                        if (distSq < 1.0) {
-                            float dist = sqrt(distSq);
-                            float influence = pow(clamp(1.0 - dist, 0.0, 1.0), uNodeFalloff[i]);
-                            vec2 displacement = uNodeDisplacement[i];
-                            if (abs(uNodeRotation[i]) > 0.001) {
-                                vec2 rotPos = rotateVec(homographyUv - center, -uNodeRotation[i] * influence);
-                                displacement += (homographyUv - center) - rotPos;
-                            }
-                            localStrain += displacement * influence;
-                        }
-                    }
-
-                    vec2 finalUv = homographyUv - localStrain;
-                    finalUv = clamp(finalUv, vec2(0.001), vec2(0.999));
-                    gl_FragColor = texture2D(uTexture, finalUv);
-                }
-            `;
-
-            const warpMaterial = new THREE.ShaderMaterial({
-                vertexShader,
-                fragmentShader,
-                uniforms: {
-                    uTexture: { value: shotTexture },
-                    uCameraPan: { value: new THREE.Vector2(0, 0) },
-                    uCameraZoom: { value: 1.0 },
-                    uCameraRotation: { value: 0.0 },
-                    uNodeCount: { value: nodeCount },
-                    uNodeCenter: { value: new Array(16).fill(0).map(() => new THREE.Vector2(0.5, 0.5)) },
-                    uNodeRadius: { value: new Array(16).fill(0).map(() => new THREE.Vector2(0.2, 0.2)) },
-                    uNodeFalloff: { value: new Float32Array(16).fill(2.0) },
-                    uNodeDisplacement: { value: new Array(16).fill(0).map(() => new THREE.Vector2(0.0, 0.0)) },
-                    uNodeRotation: { value: new Float32Array(16).fill(0.0) }
-                },
-                depthTest: false,
-                depthWrite: false
-            });
-
-            for (let i = 0; i < nodeCount; i++) {
-                const n = nodes[i];
-                warpMaterial.uniforms.uNodeCenter.value[i].set(n.center[0], n.center[1]);
-                warpMaterial.uniforms.uNodeRadius.value[i].set(n.radius[0], n.radius[1]);
-                warpMaterial.uniforms.uNodeFalloff.value[i] = Number(n.falloff_exponent) || 2.0;
+            for (let j = 0; j < elasticCount; j++) {
+                const en = elasticNodes[j];
+                warpMaterial.uniforms.uElasticAnchor.value[j].set(en.anchor_center[0], en.anchor_center[1]);
+                warpMaterial.uniforms.uElasticRadius.value[j].set(en.radius[0], en.radius[1]);
+                warpMaterial.uniforms.uElasticVector.value[j].set(en.displacement_vector[0], en.displacement_vector[1]);
+                warpMaterial.uniforms.uElasticFreq.value[j] = Number(en.frequency_hz) || 1.0;
+                warpMaterial.uniforms.uElasticAmp.value[j] = Number(en.amplitude) || 0.04;
+                warpMaterial.uniforms.uElasticPhase.value[j] = Number(en.phase_offset) || 0.0;
+                warpMaterial.uniforms.uElasticFalloff.value[j] = Number(en.falloff_exponent) || 2.0;
             }
 
             const quadMesh = new THREE.Mesh(quadGeo, warpMaterial);
             quadScene.add(quadMesh);
 
-            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Đang kết xuất chuyển động...`);
+            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] G-Deep Engine: Đang kết xuất trường tensor vi phân...`);
 
-            // NỘI SUY THAM SỐ TOÀN BỘ CÚ MÁY
+            // VÒNG LẶP RENDER TOÀN DIỆN
             for (let f = 0; f < totalFrames; f++) {
                 const progress = f / Math.max(1, totalFrames - 1);
+                const currentSecond = f / fps;
 
-                const camPan = interpolateSplineCurve(motionPlan.camera_spline, progress, 'pan');
-                const camZoom = interpolateSplineCurve(motionPlan.camera_spline, progress, 'zoom');
-                const camRot = interpolateSplineCurve(motionPlan.camera_spline, progress, 'rotation');
+                // 1. Cập nhật thời gian thực vào Shader để chạy toán tử 2 pha
+                warpMaterial.uniforms.uTime.value = currentSecond;
+
+                // 2. Cập nhật Homography Camera
+                const camPan = interpolateSplineCurve(tensorPlan.camera_spline, progress, 'pan');
+                const camZoom = interpolateSplineCurve(tensorPlan.camera_spline, progress, 'zoom');
+                const camRot = interpolateSplineCurve(tensorPlan.camera_spline, progress, 'rotation');
 
                 warpMaterial.uniforms.uCameraPan.value.set(camPan[0], camPan[1]);
                 warpMaterial.uniforms.uCameraZoom.value = Number(camZoom) || 1.0;
                 warpMaterial.uniforms.uCameraRotation.value = Number(camRot) || 0.0;
-
-                for (let i = 0; i < nodeCount; i++) {
-                    const disp = interpolateSplineCurve(nodes[i].motion_curve, progress, 'disp');
-                    const rot = interpolateSplineCurve(nodes[i].motion_curve, progress, 'rot');
-                    warpMaterial.uniforms.uNodeDisplacement.value[i].set(disp[0], disp[1]);
-                    warpMaterial.uniforms.uNodeRotation.value[i] = Number(rot) || 0.0;
-                }
 
                 sharedRenderer.render(quadScene, quadCamera);
 
@@ -2777,7 +2795,6 @@ self.onmessage = async function(e) {
                     await new Promise(r => setTimeout(r, 8));
                 }
 
-                // TRUYỀN FRAME CHUẨN XÁC: Frame đầu tiên của mỗi Cú máy BẮT BUỘC là Keyframe
                 const isFirstFrameOfShot = (f === 0);
                 const isPeriodicKeyframe = (cumulativeGlobalFrameCount % (fps * 2) === 0);
 
@@ -2794,6 +2811,7 @@ self.onmessage = async function(e) {
                 }
             }
 
+            // Giải phóng bộ nhớ tuyệt đối
             quadScene.remove(quadMesh);
             warpMaterial.dispose();
             shotTexture.dispose();
