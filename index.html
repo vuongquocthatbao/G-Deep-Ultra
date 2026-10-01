@@ -2097,6 +2097,29 @@ async function bitmapToBase64(bitmap, maxWidth = 512) {
     return btoa(binary);
 }
 
+// BỘ GIẢI MÃ NHỊ PHÂN CHUẨN XÁC: CHỐNG LỖI DECODE TỪ TRANG HTML LỖI
+async function decodeImageBlobSafely(blob) {
+    if (!blob || blob.size < 100) return null;
+    const arrayBuffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    
+    // Kiểm tra định danh byte quang học thực tế của ảnh
+    const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
+    const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
+    const isWebp = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+                   bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+
+    // Nếu không phải ảnh hợp lệ (là trang web HTML hoặc chuỗi lỗi), từ chối giải mã
+    if (!isJpeg && !isPng && !isWebp) return null;
+
+    try {
+        const cleanBlob = new Blob([bytes], { type: isJpeg ? 'image/jpeg' : (isPng ? 'image/png' : 'image/webp') });
+        return await createImageBitmap(cleanBlob);
+    } catch (_) {
+        return null;
+    }
+}
+
 // =========================================================================
 // BỘ XỬ LÝ ÂM THANH & GIỌNG ĐỌC G-DEEP CORE AUDIO ENGINE
 // =========================================================================
@@ -2505,18 +2528,51 @@ self.onmessage = async function(e) {
                 .replace(/[/\\?#&%()[\]{}<>"'`\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 350);
             
             const seed = sceneSpec.seed || (masterScript.base_seed + sIdx);
-            const visualUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(rawPrompt)}?width=${width}&height=${height}&model=flux&seed=${seed}&nologo=true`;
-            
             let shotBitmap = null;
-            try {
-                const imgRes = await fetch(visualUrl);
-                if (imgRes.ok) shotBitmap = await createImageBitmap(await imgRes.blob());
-            } catch (_) {}
+
+            // 1. Ưu tiên giải mã ảnh nếu người dùng đính kèm trực tiếp
+            if (sceneSpec.directImageDataUrl) {
+                try {
+                    const directRes = await fetch(sceneSpec.directImageDataUrl);
+                    if (directRes.ok) shotBitmap = await decodeImageBlobSafely(await directRes.blob());
+                } catch (_) {}
+            }
+
+            // 2. Kết xuất ảnh Flux.1 theo Prompt tùy ý của người dùng qua các Gateway
+            if (!shotBitmap) {
+                const directFluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(rawPrompt)}?width=${width}&height=${height}&model=flux&seed=${seed}&nologo=true`;
+                const gatewayUrls = [
+                    directFluxUrl,
+                    `https://corsproxy.io/?${encodeURIComponent(directFluxUrl)}`,
+                    `https://api.allorigins.win/raw?url=${encodeURIComponent(directFluxUrl)}`
+                ];
+
+                for (let g = 0; g < gatewayUrls.length; g++) {
+                    const targetUrl = gatewayUrls[g];
+                    for (let attempt = 0; attempt < 2; attempt++) {
+                        try {
+                            const ctrl = new AbortController();
+                            const timer = setTimeout(() => ctrl.abort(), 30000); // 30s timeout phù hợp với Flux
+                            const res = await fetch(targetUrl, { signal: ctrl.signal, headers: { 'Accept': 'image/*' } });
+                            clearTimeout(timer);
+                            
+                            if (res.ok) {
+                                const decoded = await decodeImageBlobSafely(await res.blob());
+                                if (decoded) {
+                                    shotBitmap = decoded;
+                                    break;
+                                }
+                            }
+                        } catch (_) {
+                            await new Promise(r => setTimeout(r, 600));
+                        }
+                    }
+                    if (shotBitmap) break;
+                }
+            }
 
             if (!shotBitmap) {
-                const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(visualUrl)}`;
-                const pRes = await fetch(proxyUrl);
-                shotBitmap = await createImageBitmap(await pRes.blob());
+                throw new Error("Không thể kết xuất hình ảnh gốc từ mạng lưới. Vui lòng kiểm tra lại kết nối mạng.");
             }
 
             // G-DEEP VISION: ĐẠO DIỄN TOÀN BỘ CÚ MÁY
@@ -8014,7 +8070,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
         if (clean.length > 40) clean = clean.slice(0, 37) + '...';
         return `${brand}: ${clean}`;
     }
-    if (enableCinemaStudio.value) return `${brand}: Đang đạo diễn điện ảnh...`;
+    if (enableCinemaStudio.value) return `${brand}: Đang đạo diễn...`;
     if (enableImageGen.value) return `${brand}: Đang kết xuất tác phẩm nghệ thuật...`;
     if (enableDeepThinking.value) return `${brand}: Đang suy luận logic đa chiều...`;
     return `${brand}: Đang xử lý tri thức...`;
@@ -8402,7 +8458,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
         w = Math.round(w / 16) * 16;
         h = Math.round(h / 16) * 16;
 
-        searchStatusText.value = `${brand}: Đang đạo diễn kịch bản phân cảnh...`;
+        searchStatusText.value = `Đang đạo diễn...`;
 
         // KỊCH BẢN PHÂN CẢNH CHUẨN XÁC G-DEEP
         const promptScript = `[G-DEEP CINEMA DIRECTOR]
