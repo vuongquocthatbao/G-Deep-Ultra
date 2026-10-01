@@ -1444,9 +1444,9 @@
         <span class="font-bold text-purple-300 flex items-center gap-1.5">
             <lucide-icon name="film" class="w-4 h-4 text-purple-400"></lucide-icon> Video Hoàn Thiện
         </span>
-        <button type="button" @click.stop="downloadDirectMedia(msg.renderedVideoUrl, 'GDeep_Studio_Video.mp4')" class="btn-instant text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 text-[11px]">
-            <lucide-icon name="download" class="w-3.5 h-3.5"></lucide-icon> Tải Video Về Máy
-        </button>
+        <button type="button" @click.stop="downloadDirectMedia(msg.renderedVideoUrl, 'GDeep_Studio_Video.mp4', msg.videoBlob)" class="btn-instant text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 text-[11px]">
+    <lucide-icon name="download" class="w-3.5 h-3.5"></lucide-icon> Tải Video Về Máy
+</button>
     </div>
     <video :src="msg.renderedVideoUrl" controls playsinline loop preload="metadata" class="w-full max-h-[460px] rounded-xl object-contain bg-black shadow-inner"></video>
 </div>
@@ -2149,7 +2149,7 @@ function parseAudioBytes(audioBytes) {
 
 async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) {
     if (!text) return null;
-    const voiceModels = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-tts-preview"];
+    const voiceModels = ["gemini-3.1-flash-tts-preview"];
     for (const m of voiceModels) {
         for (let k = 0; k < keyPool.length; k++) {
             const activeKey = keyPool[k];
@@ -7677,6 +7677,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     const val = raw[k];
                     if (typeof val === 'function' || val instanceof HTMLElement) continue;
 
+                    // Cho phép IndexedDB lưu trực tiếp Blob video nguyên vẹn
+                    if (val instanceof Blob) {
+                        copy[k] = val;
+                        continue;
+                    }
+
                     try {
                         if (val === null || typeof val !== 'object') {
                             copy[k] = val;
@@ -8327,14 +8333,52 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         return att.videoUrl || '';
                     };
 
-                    const downloadDirectMedia = (url, filename) => {
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = filename || `Media_${Date.now()}.mp4`;
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        notify("Đang tải tệp về thiết bị");
+                    const downloadDirectMedia = async (url, filename, blob = null) => {
+                        notify("Đang chuẩn bị tệp video...");
+                        try {
+                            let targetBlob = blob;
+                            if (!targetBlob && url) {
+                                const res = await fetch(url);
+                                targetBlob = await res.blob();
+                            }
+                            if (!targetBlob) throw new Error("Không tìm thấy dữ liệu video");
+
+                            const finalFileName = filename || `GDeep_Film_${Date.now()}.mp4`;
+
+                            // 1. ƯU TIÊN TRÊN DI ĐỘNG: Dùng Web Share API để lưu trực tiếp vào Thư viện/Tệp điện thoại
+                            if (typeof navigator !== 'undefined' && navigator.canShare && navigator.share) {
+                                try {
+                                    const file = new File([targetBlob], finalFileName, { type: 'video/mp4' });
+                                    if (navigator.canShare({ files: [file] })) {
+                                        await navigator.share({
+                                            files: [file],
+                                            title: 'G-Deep Studio Video',
+                                            text: 'Tác phẩm điện ảnh hoàn thiện từ G-Deep Studio'
+                                        });
+                                        notify("Đã lưu video thành công!");
+                                        return;
+                                    }
+                                } catch (shareErr) {
+                                    if (shareErr.name === 'AbortError') return; // Người dùng tự bấm hủy
+                                }
+                            }
+
+                            // 2. TẢI XUỐNG TRUYỀN THỐNG (Dành cho Máy tính / Trình duyệt không hỗ trợ Share)
+                            const downloadUrl = URL.createObjectURL(targetBlob);
+                            const a = document.createElement('a');
+                            a.style.display = 'none';
+                            a.href = downloadUrl;
+                            a.download = finalFileName;
+                            document.body.appendChild(a);
+                            a.click();
+                            setTimeout(() => {
+                                a.remove();
+                                URL.revokeObjectURL(downloadUrl);
+                            }, 4000);
+                            notify("Đã bắt đầu tải video về máy");
+                        } catch (err) {
+                            notify("Lỗi tải video: " + err.message, true);
+                        }
                     };
 
                     const downloadImageFile = async (url, filename) => {
@@ -8601,6 +8645,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
             searchStatusText.value = percent !== null ? `[${percent}%] ${statusText}` : statusText;
         });
 
+        // LƯU TRỮ VĨNH CỬU: Lưu trực tiếp Blob MP4 vào tin nhắn để ghi vào IndexedDB
+        targetMsg.videoBlob = result.videoBlob;
         const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
         targetMsg.renderedVideoUrl = videoUrl;
 
@@ -8740,10 +8786,18 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         }
 
                         if (currentLock !== activeDbQueryLock) return;
-                        currentMessages.value = rawMsgs.map(m => createMessageRecord({
-                            ...m,
-                            htmlContent: m.role === 'system_execution' ? getExecutionLogsHtml(m) : compileMarkdownSync(m.content, true)
-                        }));
+                        currentMessages.value = rawMsgs.map(m => {
+                            const rec = createMessageRecord({
+                                ...m,
+                                // TỰ ĐỘNG PHỤC HỒI VIDEO TỪ DATABASE KHI F5 / RELOAD TRANG
+                                renderedVideoUrl: (m.videoBlob instanceof Blob) ? ObjectUrlRegistry.create(m.videoBlob) : null,
+                                htmlContent: m.role === 'system_execution' ? getExecutionLogsHtml(m) : compileMarkdownSync(m.content, true)
+                            });
+                            if (m.videoBlob instanceof Blob) {
+                                rec.videoBlob = m.videoBlob;
+                            }
+                            return rec;
+                        });
 
                         if (window.innerWidth < 768) isSidebarOpen.value = false;
                         nextTick(() => { scrollToBottom(true); renderMermaidDiagrams(); updateInputTokensDisplay(); });
