@@ -2615,6 +2615,7 @@ self.onmessage = async function(e) {
             let shotBitmap = null;
 
             // 1. Ưu tiên ảnh đính kèm nếu có ở cú máy đầu
+            // 1. Ưu tiên ảnh đính kèm trực tiếp (Chỉ áp dụng ở cú máy đầu tiên)
             if (sIdx === 0 && sceneSpec.directImageDataUrl) {
                 try {
                     const directRes = await fetch(sceneSpec.directImageDataUrl);
@@ -2622,35 +2623,51 @@ self.onmessage = async function(e) {
                 } catch (_) {}
             }
 
-            // 2. Kết xuất ảnh Flux.1 theo đúng kịch bản của Cú máy hiện tại
+            // 2. KẾT XUẤT HÌNH ẢNH AI THỰC TẾ (FLUX / TURBO / REALISM CASCADE)
             if (!shotBitmap) {
-                const targetModels = ['flux', 'turbo'];
-                for (const mName of targetModels) {
-                    const directFluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(rawPrompt)}?width=${width}&height=${height}&model=${mName}&seed=${seed}&nologo=true`;
+                const sanitizedPrompt = (sceneSpec.image_plan?.prompt || sceneSpec.action_description || 'cinematic masterpiece 8k dramatic lighting')
+                    .replace(/[/\\?#&%()[\]{}<>"'`\r\n\t]/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 250);
+
+                const encodedPrompt = encodeURIComponent(sanitizedPrompt);
+                const modelsToAttempt = ['flux', 'turbo', 'flux-realism'];
+
+                for (const mName of modelsToAttempt) {
+                    postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Đang kết xuất ảnh AI (${mName})...`);
+
+                    const directUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${mName}&seed=${seed}&nologo=true`;
+                    
                     const gatewayUrls = [
-                        directFluxUrl,
-                        `https://corsproxy.io/?${encodeURIComponent(directFluxUrl)}`,
-                        `https://api.allorigins.win/raw?url=${encodeURIComponent(directFluxUrl)}`
+                        directUrl,
+                        `https://corsproxy.io/?${encodeURIComponent(directUrl)}`,
+                        `https://api.allorigins.win/raw?url=${encodeURIComponent(directUrl)}`
                     ];
 
                     for (let g = 0; g < gatewayUrls.length; g++) {
-                        const targetUrl = gatewayUrls[g];
                         for (let attempt = 0; attempt < 2; attempt++) {
                             try {
                                 const ctrl = new AbortController();
-                                const timer = setTimeout(() => ctrl.abort(), 30000); 
-                                const res = await fetch(targetUrl, { signal: ctrl.signal, headers: { 'Accept': 'image/*' } });
-                                clearTimeout(timer);
-                                
+                                const timeoutMs = (mName === 'turbo') ? 10000 : 25000;
+                                const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+
+                                const res = await fetch(gatewayUrls[g], {
+                                    signal: ctrl.signal,
+                                    headers: { 'Accept': 'image/jpeg,image/png,image/webp,*/*' }
+                                });
+                                clearTimeout(tid);
+
                                 if (res.ok) {
-                                    const decoded = await decodeImageBlobSafely(await res.blob());
+                                    const blob = await res.blob();
+                                    const decoded = await decodeImageBlobSafely(blob);
                                     if (decoded) {
                                         shotBitmap = decoded;
                                         break;
                                     }
                                 }
                             } catch (_) {
-                                await new Promise(r => setTimeout(r, 500));
+                                await new Promise(r => setTimeout(r, 400));
                             }
                         }
                         if (shotBitmap) break;
@@ -2659,8 +2676,9 @@ self.onmessage = async function(e) {
                 }
             }
 
+            // NẾU TẤT CẢ CÁC MÔ HÌNH AI ĐỀU THẤT BẠI: NÉM LỖI CHÍNH XÁC, TUYỆT ĐỐI KHÔNG DÙNG ẢNH RÁC
             if (!shotBitmap) {
-                throw new Error(`Cú máy ${currentSceneNum}: Không thể tải ảnh gốc từ mạng. Vui lòng kiểm tra lại kết nối.`);
+                throw new Error(`Cú máy ${currentSceneNum}: Không thể kết xuất hình ảnh AI thực tế từ máy chủ. Vui lòng thử lại.`);
             }
 
             // G-DEEP VISION: ĐẠO DIỄN MA TRẬN TENSOR ĐỘC BẢN
