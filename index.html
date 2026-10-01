@@ -3018,35 +3018,56 @@ self.onmessage = async function(e) {
                         };
                     }
                     
-                // 4. Máy trạng thái phân giải luồng Streaming Text và Thought Tag
+                // 4. Máy trạng thái phân giải luồng Streaming Text và Thought Tag kháng lỗi tuyệt đối
                 if (part.text !== undefined && part.text !== null) {
-                    let textStr = String(part.text);
+                    const textStr = String(part.text);
                     let mainTextBuffer = "";
                     let thoughtTextBuffer = "";
                     let hasProcessedThoughtInThisPart = false;
-                    const THOUGHT_OPEN_TAG = "<thought>";
-                    const THOUGHT_CLOSE_TAG = "</thought>";
+
+                    const OPEN_TAGS = ["", "</think>"];
 
                     let currentSegment = textStr;
 
                     while (currentSegment.length > 0) {
                         if (state.inThought) {
-                            const closeIdx = currentSegment.indexOf(THOUGHT_CLOSE_TAG);
-                            if (closeIdx !== -1) {
-                                thoughtTextBuffer += currentSegment.slice(0, closeIdx);
+                            let nearestCloseIdx = -1;
+                            let matchedCloseTag = "";
+
+                            for (const tag of CLOSE_TAGS) {
+                                const idx = currentSegment.indexOf(tag);
+                                if (idx !== -1 && (nearestCloseIdx === -1 || idx < nearestCloseIdx)) {
+                                    nearestCloseIdx = idx;
+                                    matchedCloseTag = tag;
+                                }
+                            }
+
+                            if (nearestCloseIdx !== -1) {
+                                thoughtTextBuffer += currentSegment.slice(0, nearestCloseIdx);
                                 state.inThought = false;
-                                currentSegment = currentSegment.slice(closeIdx + THOUGHT_CLOSE_TAG.length);
+                                currentSegment = currentSegment.slice(nearestCloseIdx + matchedCloseTag.length);
                                 hasProcessedThoughtInThisPart = true;
                             } else {
                                 thoughtTextBuffer += currentSegment;
                                 currentSegment = "";
                             }
-                        } else { // Không ở trong khối suy luận
-                            const openIdx = currentSegment.indexOf(THOUGHT_OPEN_TAG);
-                            if (openIdx !== -1) {
-                                mainTextBuffer += currentSegment.slice(0, openIdx);
+                        } else {
+                            let nearestOpenIdx = -1;
+                            let matchedOpenTag = "";
+
+                            for (const tag of OPEN_TAGS) {
+                                const idx = currentSegment.indexOf(tag);
+                                if (idx !== -1 && (nearestOpenIdx === -1 || idx < nearestOpenIdx)) {
+                                    nearestOpenIdx = idx;
+                                    matchedOpenTag = tag;
+                                }
+                            }
+
+                            if (nearestOpenIdx !== -1) {
+                                mainTextBuffer += currentSegment.slice(0, nearestOpenIdx);
                                 state.inThought = true;
-                                currentSegment = currentSegment.slice(openIdx + THOUGHT_OPEN_TAG.length);
+                                currentSegment = currentSegment.slice(nearestOpenIdx + matchedOpenTag.length);
+                                hasProcessedThoughtInThisPart = true;
                             } else {
                                 mainTextBuffer += currentSegment;
                                 currentSegment = "";
@@ -3058,15 +3079,15 @@ self.onmessage = async function(e) {
                         return {
                             type: this.DataTypes.THOUGHT,
                             payload: thoughtTextBuffer,
-                            remainingText: mainTextBuffer.trim().length > 0 ? mainTextBuffer : null
+                            remainingText: mainTextBuffer.length > 0 ? mainTextBuffer : null
                         };
-                    } else if (mainTextBuffer.trim().length > 0) {
+                    } else if (mainTextBuffer.length > 0) {
                         return { type: this.DataTypes.TEXT, payload: mainTextBuffer };
                     }
                     return { type: this.DataTypes.TEXT, payload: "" };
                 }
-                    return { type: this.DataTypes.UNKNOWN, payload: null };
-                }
+                return { type: this.DataTypes.UNKNOWN, payload: null };
+            }
             },
 
             // 4. An Toàn, Escape & DOMPurify (Security & Content Filtering)
@@ -10681,7 +10702,12 @@ Trả về duy nhất định dạng JSON:
                             limitedHistory = sanitizeHistoryForGemini(limitedHistory, false);
                             const activeGem = currentActiveGemObj.value;
 
-                            let systemPrompt = `[CHỈ DẪN HỆ THỐNG]\nBạn là G-Deep ${targetModelObj.name}.\nQuy tắc: Phản hồi chuẩn xác, mạch lạc, trực tiếp, giải quyết vấn đề toàn diện.\nQuy tắc trình bày thẩm mỹ: Khi liệt kê các thay đổi, đối số, mã lệnh hoặc tính năng kỹ thuật, BẮT BUỘC tổ chức dưới dạng danh sách gạch đầu dòng (- ) hoặc bảng Markdown (Table) có phân cấp rõ ràng hoặc sơ đồ mermaid chuẩn mực. TUYỆT ĐỐI KHÔNG liệt kê dưới dạng các đoạn văn xuôi rời rạc.\n\n[CHUYÊN GIA: ${activeGem.name}]\n${(activeGem.instruction || "").trim() || 'Hỗ trợ giải quyết công việc toàn diện.'}\n`;
+                            let systemPrompt = `[CHỈ DẪN HỆ THỐNG TOÀN DIỆN]\nBạn là G-Deep ${targetModelObj.name}.\n` +
+                                `QUY TẮC CỐT LÕI: TUYỆT ĐỐI CẤM NHẢY VỌT LOGIC (STRICT ZERO-LOGICAL-LEAP PROTOCOL).\n` +
+                                `- Mọi kết luận, nhận định và giải pháp BẮT BUỘC phải đi qua từng bước suy luận diễn dịch vững chắc (Step-by-Step Causal Deductions).\n` +
+                                `- Bước N+1 phải là hệ quả tất yếu có căn cứ vững chắc từ bước N. Tuyệt đối không được bỏ qua các bước chứng minh trung gian hoặc giả định ngầm vô căn cứ.\n` +
+                                `- Quy tắc trình bày thẩm mỹ: Khi liệt kê các thay đổi, đối số, mã lệnh hoặc tính năng kỹ thuật, BẮT BUỘC tổ chức dưới dạng danh sách gạch đầu dòng (- ) hoặc bảng Markdown (Table) có phân cấp rõ ràng hoặc sơ đồ mermaid chuẩn mực. TUYỆT ĐỐI KHÔNG liệt kê dưới dạng các đoạn văn xuôi rời rạc.\n\n` +
+                                `[CHUYÊN GIA: ${activeGem.name}]\n${(activeGem.instruction || "").trim() || 'Tư duy logic, giải cấu trúc từng bước từ nguyên lý tiên khởi và giải quyết triệt để vấn đề.'}\n`;
 
                             let allSearchResults = [];
                             let detectedEntities = [];
@@ -10715,7 +10741,7 @@ Trả về duy nhất định dạng JSON:
                                 }
                             }
 
-// =========================================================================
+                            // =========================================================================
                             // [NATIVE 50-AGENT SENATE: TRỰC TIẾP TRONG LUỒNG SUY LUẬN CHÍNH & THINKING CONFIG]
                             // =========================================================================
                             const SENATE_50_AGENTS = Object.freeze([
@@ -10763,12 +10789,14 @@ Khi suy luận (luồng suy nghĩ nội tại), bạn BẮT BUỘC phải tổ c
 ${formattedAgentRoster}
 ${dynamicMiddleContext}
 
-CÁC GIAI ĐOẠN TRANH LUẬN BẮT BUỘC TRONG LUỒNG SUY LUẬN CHÍNH:
-1. Giai đoạn 1 - Khảo sát Rãnh sâu & Tiền đề (A01, A02, A06, A08, A12, A18, A30, A43, A46): Agent 06 & Agent 43 đào sâu rãnh giữa ngữ cảnh, khóa chặt toàn bộ biến số/điều kiện vào bàn nghị sự, Agent 46 thẩm định tiền đề câu hỏi.
-2. Giai đoạn 2 - Đội Đỏ Công Kích & Thử Tải (A04, A05, A14, A15, A21, A24, A33, A42, A44): Đẩy bài toán về các điều kiện biên cực hạn, triệt tiêu tính nịnh bợ (Anti-Sycophancy) và tấn công vào mọi lỗ hổng logic.
-3. Giai đoạn 3 - Đội Xanh Phòng Thủ & Tối Ưu (A03, A10, A11, A16, A19, A20, A22, A23, A25, A34): Giải cấu trúc từ nguyên lý tiên khởi (First-Principles), phân tích độ phức tạp Big-O và xây dựng đồ thị nhân quả vững chắc.
-4. Giai đoạn 4 - Giám Sát & Diệt Ảo Giác (A07, A09, A17, A26, A27, A28, A29, A31, A32, A35, A36, A37, A38, A39, A40, A41, A45, A48): Tuyệt đối không bịa đặt dữ kiện, đối soát 360 độ, phát hiện mâu thuẫn nội tại và cắt tỉa dư thừa.
-5. Giai đoạn 5 - Hòa Giải & Phán Quyết (A13, A47, A49, A50): Phá vỡ tư duy bầy đàn, điều đình xung đột gay gắt giữa Đội Đỏ và Đội Xanh, Agent 50 Supreme Architect đúc kết phán quyết hoàng kim thành câu trả lời chính thức.`;
+CÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢY VỌT LOGIC:
+- Không bao giờ nhảy cóc từ giả thiết tới kết luận.
+- Mọi mắt xích chứng minh đều phải hiển thị tường minh qua 5 giai đoạn:
+  1. Giai đoạn 1 - Khảo sát Rãnh sâu & Tiền đề (A01, A02, A06, A08, A12, A18, A30, A43, A46): Agent 06 & Agent 43 đào sâu rãnh giữa ngữ cảnh, khóa chặt toàn bộ biến số/điều kiện vào bàn nghị sự, Agent 46 thẩm định tiền đề câu hỏi.
+  2. Giai đoạn 2 - Đội Đỏ Công Kích & Thử Tải (A04, A05, A14, A15, A21, A24, A33, A42, A44): Đẩy bài toán về các điều kiện biên cực hạn, triệt tiêu tính nịnh bợ (Anti-Sycophancy) và tấn công vào mọi lỗ hổng logic.
+  3. Giai đoạn 3 - Đội Xanh Phòng Thủ & Tối Ưu (A03, A10, A11, A16, A19, A20, A22, A23, A25, A34): Giải cấu trúc từ nguyên lý tiên khởi (First-Principles), phân tích độ phức tạp Big-O và xây dựng đồ thị nhân quả vững chắc.
+  4. Giai đoạn 4 - Giám Sát & Diệt Ảo Giác (A07, A09, A17, A26, A27, A28, A29, A31, A32, A35, A36, A37, A38, A39, A40, A41, A45, A48): Tuyệt đối không bịa đặt dữ kiện, đối soát 360 độ, phát hiện mâu thuẫn nội tại và cắt tỉa dư thừa.
+  5. Giai đoạn 5 - Hòa Giải & Phán Quyết (A13, A47, A49, A50): Phá vỡ tư duy bầy đàn, điều đình xung đột gay gắt giữa Đội Đỏ và Đội Xanh, Agent 50 Supreme Architect đúc kết phán quyết hoàng kim thành câu trả lời chính thức.`;
                             }
 
                             if (enableImageGen.value) {
@@ -11121,16 +11149,17 @@ let isFirstContinuationChunk = false;
                             const MAX_CONTINUE_ATTEMPTS = 50;
 
                             while (continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController && !abortController.signal.aborted) {
-// THAY ĐỔI CỐT LÕI: Chỉ nối dòng khi THỰC SỰ cần thiết, không bao giờ đoán mò khi API đã báo STOP
+// THẨM ĐỊNH KẾT CẤU LOGIC TỪNG BƯỚC: Chỉ dừng lại khi chuỗi lập luận đã trọn vẹn tuyệt đối
 const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
+const isDangling = (typeof isStructurallyIncomplete === 'function') ? isStructurallyIncomplete(rawMarkdownBuffer) : false;
 
-// Nếu API báo dừng trọn vẹn và không bị bỏ lửng Code hay Toán -> DỪNG NGAY, không gửi prompt nối
-if (lastFinishReason === 'STOP' && !boundary.isCodeOpen && !boundary.isMathOpen && !streamDropped) {
+// Nếu API báo STOP nhưng câu văn, khối code, công thức toán hoặc danh sách đang dang dở -> BẮT BUỘC tiếp tục
+if (lastFinishReason === 'STOP' && !boundary.isCodeOpen && !boundary.isMathOpen && !isDangling && !streamDropped) {
     break;
 }
 
-// Chỉ tiếp tục nếu chạm trần token hoặc mở dở thẻ quan trọng
-const shouldContinue = (lastFinishReason === 'MAX_TOKENS') || boundary.isCodeOpen || boundary.isMathOpen || streamDropped;
+// Kích hoạt nối mạch nếu chạm trần token, mở dở thẻ cú pháp hoặc logic chưa hoàn tất
+const shouldContinue = (lastFinishReason === 'MAX_TOKENS') || boundary.isCodeOpen || boundary.isMathOpen || isDangling || streamDropped;
 if (!shouldContinue) {
     break;
 }
