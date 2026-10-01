@@ -449,13 +449,13 @@
                 transition: all 0.16s var(--ease-spring) !important;
             }
             @media (hover: hover) {
-                .action-btn:hover { 
-                    color: #ffffff; 
-                    background: rgba(255, 255, 255, 0.09); 
-                    border-color: var(--border-subtle) !important;
-                    transform: translateY(-1px);
-                    box-shadow: 0 4px 12px (0, 0, 0, 0.35);
-                }
+            .action-btn:hover { 
+                color: #ffffff; 
+                background: rgba(255, 255, 255, 0.09); 
+                border-color: var(--border-subtle) !important;
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35); /* Đã sửa lỗi cú pháp màu */
+            }
             }
 
             /* Con trỏ quang học Neon Holographic */
@@ -1758,9 +1758,8 @@
                                 class="btn-instant relative rounded-full shrink-0 cursor-pointer bg-white/[0.05] hover:bg-white/[0.1] w-9 h-9 md:w-10 md:h-10 flex items-center justify-center border border-white/[0.08] shadow-sm z-50 transition-all hover:scale-105 active:scale-95"
                                 title="Công cụ nâng cao">
                             <lucide-icon v-if="!isListening" :name="showInputMenu ? 'x' : 'plus'" class="w-4.5 h-4.5" :style="{ color: (enableDeepThinking || enableCodeExecution || enableGoogleSearch || enableImageGen || enableCinemaStudio) ? selectedAccent : '#8e96a8' }"></lucide-icon>
-                            <div v-else class="mic-wave-container">
-                                <!-- SỬA LỖI GIAO DIỆN: Bổ sung thanh sóng âm thứ 4 bị thiếu để khớp với CSS animation-delay -->
-                                <span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span>
+                                                        <div v-else class="mic-wave-container">
+                                <span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span> <!-- Đã bổ sung thanh sóng âm thứ 4 -->
                             </div>
                         </button>
 
@@ -2991,11 +2990,13 @@ self.onmessage = async function(e) {
                         graphql: 'gql', gql: 'gql', proto: 'proto', plaintext: 'txt', txt: 'txt', text: 'txt', env: 'env'
                     })
                 },
-                // [NƠ-RON PHÂN LUỒNG Ý THỨC TOÀN DIỆN 2026]
-                classifyPart(part) {
+                // =========================================================================
+                // [NƠ-RON PHÂN LUỒNG Ý THỨC TOÀN DIỆN 2026 - STATEFUL STREAMING LEXER]
+                // =========================================================================
+                classifyPart(part, state = { inThought: false }) {
                     if (!part || typeof part !== 'object') return { type: this.DataTypes.UNKNOWN, payload: null };
                     
-                    // 1. Nhận diện luồng suy luận gốc (Native Reasoning / Thought)
+                    // 1. Nhận diện luồng Native Reasoning từ Gemini Thinking API
                     if (part.thought === true || part.reasoning) {
                         return { type: this.DataTypes.THOUGHT, payload: String(part.text || part.reasoning || '') };
                     }
@@ -3017,18 +3018,43 @@ self.onmessage = async function(e) {
                         };
                     }
                     
-                    // 4. Giải mã luồng văn bản: Tách thẻ <thought> nếu model vô tình nhúng vào text
+                    // 4. Máy trạng thái phân giải luồng Streaming Textvs Thought Tag ()
                     if (part.text !== undefined && part.text !== null) {
-                        const rawStr = String(part.text);
-                        const thoughtMatch = rawStr.match(/<thought>([\s\S]*?)<\/thought>/i);
-                        if (thoughtMatch) {
-                            return { 
-                                type: this.DataTypes.THOUGHT, 
-                                payload: thoughtMatch[1],
-                                remainingText: rawStr.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim()
-                            };
+                        let textStr = String(part.text);
+                        let thoughtChunk = "";
+                        let mainTextChunk = "";
+
+                        while (textStr.length > 0) {
+                            if (!state.inThought) {
+                                const openIdx = textStr.indexOf('<thought>');
+                                if (openIdx !== -1) {
+                                    mainTextChunk += textStr.slice(0, openIdx);
+                                    state.inThought = true;
+                                    textStr = textStr.slice(openIdx + 9);
+                                } else {
+                                    mainTextChunk += textStr;
+                                    textStr = "";
+                                }
+                            } else {
+                                const closeIdx = textStr.indexOf('</thought>');
+                                if (closeIdx !== -1) {
+                                    thoughtChunk += textStr.slice(0, closeIdx);
+                                    state.inThought = false;
+                                    textStr = textStr.slice(closeIdx + 10);
+                                } else {
+                                    thoughtChunk += textStr;
+                                    textStr = "";
+                                }
+                            }
                         }
-                        return { type: this.DataTypes.TEXT, payload: rawStr };
+
+                        if (thoughtChunk && mainTextChunk) {
+                            return { type: this.DataTypes.THOUGHT, payload: thoughtChunk, remainingText: mainTextChunk };
+                        } else if (thoughtChunk) {
+                            return { type: this.DataTypes.THOUGHT, payload: thoughtChunk };
+                        } else {
+                            return { type: this.DataTypes.TEXT, payload: mainTextChunk };
+                        }
                     }
                     return { type: this.DataTypes.UNKNOWN, payload: null };
                 }
@@ -4063,7 +4089,8 @@ self.onmessage = async function(e) {
 
                 const middleTurns = (splitIndex > 1) ? fullTurns.slice(1, splitIndex) : [];
                 const lightlyCompressedMiddle = [];
-                let middleTokensBudget = safeLimit - accumulatedRecentTokens - 60000;
+                // Đã sửa: Giảm bộ đệm cố định để cho phép nhiều ngữ cảnh giữa hơn
+                let middleTokensBudget = safeLimit - accumulatedRecentTokens - 20000; 
 
                 for (let i = middleTurns.length - 1; i >= 0; i--) {
                     const compTurn = this.compressHistoricalTurnPreservingContext(middleTurns[i], i + 1);
@@ -4210,12 +4237,12 @@ self.onmessage = async function(e) {
                 });
             },
 
-            _executeRawVideoTranscode(videoFile, onProgress = () => {}) {
+                        _executeRawVideoTranscode(videoFile, onProgress = () => {}) {
                 return new Promise((resolve) => {
                     const videoUrl = URL.createObjectURL(videoFile);
                     const video = document.createElement('video');
                     video.src = videoUrl;
-                    video.muted = false; // Bắt buộc false để lấy luồng âm thanh
+                    video.muted = true; // Đã sửa: Đặt thành true để tránh phát âm thanh trong quá trình xử lý nền
                     video.playsInline = true;
                     video.crossOrigin = "anonymous";
 
@@ -4245,7 +4272,7 @@ self.onmessage = async function(e) {
                             if (AudioContextClass) {
                                 audioCtx = new AudioContextClass();
                                 // SỬA LỖI MẤT ÂM THANH: Trình duyệt luôn block AudioContext, bắt buộc gọi resume()
-                                if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+                                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {}); // Đã sửa: Thêm kiểm tra audioCtx
                                 const sourceNode = audioCtx.createMediaElementSource(video);
                                 const destNode = audioCtx.createMediaStreamDestination();
                                 sourceNode.connect(destNode); // Chỉ gửi vào bộ thu, không xuất ra loa
@@ -8631,11 +8658,25 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
         searchStatusText.value = `Đang đạo diễn...`;
 
+        // Đã sửa: Trích xuất thông tin nhân vật và lời thoại từ UI
+        const voiceCharactersInfo = toRaw(cinemaVoiceCharacters.value).map(c => ({
+            name: c.name,
+            gender: c.gender,
+            voice: c.geminiVoice
+        }));
+        const dialogueTimeline = toRaw(userTimelineCues.value).map(c => ({
+            speaker: c.speaker,
+            startTimeSec: c.startTimeSec,
+            text: c.text
+        }));
+
         // KỊCH BẢN PHÂN CẢNH CHUẨN XÁC G-DEEP
         const promptScript = `[G-DEEP CINEMA DIRECTOR]
 Chủ đề tác phẩm: "${userPrompt}". 
 Tổng thời lượng: ${requestedDuration} giây. Tỷ lệ khung hình: ${userAspectRatio}.
 Hãy chia kịch bản thành các cú máy (shots) điện ảnh liền mạch (mỗi cú máy từ 3-6 giây).
+${voiceCharactersInfo.length > 0 ? `Các nhân vật và giọng đọc đã định nghĩa: ${JSON.stringify(voiceCharactersInfo)}` : ''}
+${dialogueTimeline.length > 0 ? `Dòng thời gian lời thoại: ${JSON.stringify(dialogueTimeline)}` : ''}
 
 TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 {
@@ -8643,14 +8684,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
   "total_duration": ${requestedDuration},
   "overall_aspect_ratio": "${userAspectRatio}",
   "overall_resolution": { "width": ${w}, "height": ${h} },
+  "voice_characters": ${JSON.stringify(voiceCharactersInfo)}, /* Đã sửa: Bao gồm thông tin nhân vật */
+  "dialogue_cues": ${JSON.stringify(dialogueTimeline)}, /* Đã sửa: Bao gồm dòng thời gian lời thoại */
   "scenes": [
     {
       "scene_index": 1,
       "title": "Cú máy 1",
       "target_duration": ${requestedDuration},
-      "action_description": "Mô tả chi tiết động lực học của cú máy",
+      "action_description": "Mô tả chi tiết động lực học của cú máy, bao gồm hành động và cảm xúc của các nhân vật dựa trên lời thoại và thời gian", /* Đã sửa: Hướng dẫn LLM sử dụng lời thoại */
       "image_plan": {
-        "prompt": "Detailed English visual description for high quality 8k film still"
+        "prompt": "Detailed English visual description for high quality 8k film still, reflecting character actions and emotions, and scene context" /* Đã sửa: Hướng dẫn LLM sử dụng ngữ cảnh nhân vật/lời thoại */
       }
     }
   ]
@@ -8713,7 +8756,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
         searchStatusText.value = "";
         updateInputTokensDisplay();
     }
-};        
+}; 
 
                     const animateCurrentLightboxImage = () => {
                         const currentUrl = lightbox.url;
@@ -10885,6 +10928,9 @@ let isFirstContinuationChunk = false;
                             lastFinishReason = null;
                             let streamDropped = false;
 
+                            // KHỞI TẠO STATEFUL LEXER TRACKER CHO LUỒNG STREAMING
+                            const streamLexerState = { inThought: false };
+
                             const processChunk = (chunkJson, isContinuation = false) => {
                                 if (chunkJson.promptFeedback?.blockReason) {
                                     rawMarkdownBuffer += `\n\n*[Nội dung bị giới hạn bởi chính sách an toàn: ${chunkJson.promptFeedback.blockReason}]*`;
@@ -10899,29 +10945,28 @@ let isFirstContinuationChunk = false;
 
                                 const parts = candidate.content?.parts || [];
                                 for (const rawPart of parts) {
-                                    const routing = GDeepDataProtocol.classifyPart(rawPart);
+                                    const routing = GDeepDataProtocol.classifyPart(rawPart, streamLexerState);
                                     const type = routing.type;
                                     const payload = routing.payload;
                                     const remainingText = routing.remainingText;
 
-                                    // ĐÍCH ĐẾN 1: Luồng suy luận (Đồng bộ với Hội đồng O1)
+                                    // ĐÍCH ĐẾN 1: Luồng suy luận chuyên sâu 50 Agents
                                     if (type === GDeepDataProtocol.DataTypes.THOUGHT) {
                                         if (!thoughtMsg) {
-                                            thoughtMsg = createMessageRecord({ threadId: targetThreadId, role: GDeepDataProtocol.Roles.THOUGHT, isThinking: true, userOpenedThought: true });
+                                            thoughtMsg = createMessageRecord({
+                                                threadId: targetThreadId,
+                                                role: GDeepDataProtocol.Roles.THOUGHT,
+                                                isThinking: true,
+                                                userOpenedThought: true
+                                            });
                                             thoughtMsg.createdAt = botMsg.createdAt - 2;
                                             const botIdx = currentMessages.value.findIndex(m => m.id === botMsg.id);
                                             if (botIdx !== -1) currentMessages.value.splice(botIdx, 0, thoughtMsg);
                                             else currentMessages.value.push(thoughtMsg);
                                         }
                                         thoughtMsg.isThinking = true;
-                                        // Phân tách mạch lạc giữa bản vẽ O1 và dòng tư duy trực tiếp
-                                        if (!thoughtMsg._hasStreamedThought && thoughtMsg.content.includes('*Hội đồng đã đàm phán')) {
-                                            thoughtMsg.content += '\n\n*--- Luồng suy luận chi tiết ---*\n';
-                                            thoughtMsg._hasStreamedThought = true;
-                                        }
                                         thoughtMsg.content += (payload || '');
                                         
-                                        // Nếu có văn bản đi kèm sau thẻ <thought>, điều tuyến tiếp vào Markdown
                                         if (remainingText) {
                                             rawMarkdownBuffer += remainingText;
                                         }
@@ -11022,7 +11067,6 @@ let isFirstContinuationChunk = false;
                             const performStreaming = async (basePayload, chunkHandler) => {
                                 const payload = JSON.parse(JSON.stringify(basePayload));
                                 payload.safetySettings = SAFETY_SETTINGS;
-                                // Khi đang ở chế độ tạo ảnh nghệ thuật, BẮT BUỘC tắt codeExecution để AI không mở Python mã hóa URL
                                 if (enableCodeExecution.value && !enableImageGen.value) {
                                     payload.tools = [{ codeExecution: {} }];
                                 } else {
@@ -11030,7 +11074,11 @@ let isFirstContinuationChunk = false;
                                 }
                                 if (enableDeepThinking.value) {
                                     payload.generationConfig = payload.generationConfig || {};
-                                    payload.generationConfig.thinkingConfig = { includeThoughts: true };
+                                    // THIẾT LẬP BUDGET TỐI ĐA CHO PHÉP 50 AGENTS TRANH BIỆN TOÀN DIỆN
+                                    payload.generationConfig.thinkingConfig = {
+                                        includeThoughts: true,
+                                        thinkingBudget: 8192
+                                    };
                                 }
                                 try {
                                     return await fetchStreamWithFaultTolerance(payload, activeModelId, chunkHandler, abortController.signal);
