@@ -2991,103 +2991,94 @@ self.onmessage = async function(e) {
                     })
                 },
                 // =========================================================================
-                // [NƠ-RON PHÂN LUỒNG Ý THỨC TOÀN DIỆN 2026 - STATEFUL STREAMING LEXER]
+                // [NƠ-RON PHÂN LUỒNG Ý THỨC TOÀN DIỆN 2026 - STATEFUL STREAMING LEXER] - [TẦNG 4: MÁY TRẠNG THÁI PHÂN LUỒNG Ý THỨC - FINITE STATE LEXER]
                 // =========================================================================
-                classifyPart(part, state = { inThought: false }) {
+
+                classifyPart(part, state) {
+                    if (!state) state = { inThought: false, buffer: "" };
                     if (!part || typeof part !== 'object') return { type: this.DataTypes.UNKNOWN, payload: null };
                     
-                    // 1. Nhận diện luồng Native Reasoning từ Gemini Thinking API
+                    // 1. Luồng suy luận Native từ API (Gemini 2.0 Thinking)
                     if (part.thought === true || part.reasoning) {
-                        return { type: this.DataTypes.THOUGHT, payload: String(part.text || part.reasoning || '') };
+                        return { type: this.DataTypes.THOUGHT, payload: String(part.text || part.reasoning || ''), inThought: true };
                     }
                     
-                    // 2. Nhận diện cuộc gọi thực thi Python WASM
+                    // 2. Thực thi mã Wasm
                     if (part.executableCode) {
-                        return {
-                            type: this.DataTypes.CODE_INPUT,
-                            payload: { language: (part.executableCode.language || 'python').toLowerCase(), code: String(part.executableCode.code || '') }
-                        };
+                        return { type: this.DataTypes.CODE_INPUT, payload: { language: (part.executableCode.language || 'python').toLowerCase(), code: String(part.executableCode.code || '') } };
                     }
-                    
-                    // 3. Nhận diện kết quả tính toán độc lập
                     if (part.codeExecutionResult) {
                         const ok = (part.codeExecutionResult.outcome === 'OUTCOME_OK' || part.codeExecutionResult.outcome === 'COMPLETED');
-                        return {
-                            type: this.DataTypes.CODE_OUTPUT,
-                            payload: { output: String(part.codeExecutionResult.output || ''), outcome: ok ? 'COMPLETED' : 'ERROR' }
-                        };
+                        return { type: this.DataTypes.CODE_OUTPUT, payload: { output: String(part.codeExecutionResult.output || ''), outcome: ok ? 'COMPLETED' : 'ERROR' } };
                     }
                     
-                // 4. Máy trạng thái phân giải luồng Streaming Text và Thought Tag kháng lỗi tuyệt đối
-                if (part.text !== undefined && part.text !== null) {
-                    const textStr = String(part.text);
-                    let mainTextBuffer = "";
-                    let thoughtTextBuffer = "";
-                    let hasProcessedThoughtInThisPart = false;
+                    // 3. Xử lý luồng Text Streaming & Bắt thẻ <think> theo cơ chế FSM (Chống xé rách chunk)
+                    if (part.text !== undefined && part.text !== null) {
+                        const newChunk = String(part.text);
+                        let extractedThought = "";
+                        let extractedText = "";
 
-                    const OPEN_TAGS = ["", "</think>"];
+                        let streamBuffer = (state.buffer || "") + newChunk;
 
-                    let currentSegment = textStr;
-
-                    while (currentSegment.length > 0) {
-                        if (state.inThought) {
-                            let nearestCloseIdx = -1;
-                            let matchedCloseTag = "";
-
-                            for (const tag of CLOSE_TAGS) {
-                                const idx = currentSegment.indexOf(tag);
-                                if (idx !== -1 && (nearestCloseIdx === -1 || idx < nearestCloseIdx)) {
-                                    nearestCloseIdx = idx;
-                                    matchedCloseTag = tag;
+                        while (streamBuffer.length > 0) {
+                            if (!state.inThought) {
+                                const openIdx = streamBuffer.indexOf("<think>");
+                                if (openIdx !== -1) {
+                                    extractedText += streamBuffer.slice(0, openIdx);
+                                    state.inThought = true;
+                                    streamBuffer = streamBuffer.slice(openIdx + 7); 
+                                } else {
+                                    const possiblePartialTagMatch = streamBuffer.match(/<[^>]*$/);
+                                    if (possiblePartialTagMatch && "<think>".startsWith(possiblePartialTagMatch[0])) {
+                                        extractedText += streamBuffer.slice(0, possiblePartialTagMatch.index);
+                                        streamBuffer = possiblePartialTagMatch[0];
+                                        break;
+                                    } else {
+                                        extractedText += streamBuffer;
+                                        streamBuffer = "";
+                                    }
                                 }
-                            }
-
-                            if (nearestCloseIdx !== -1) {
-                                thoughtTextBuffer += currentSegment.slice(0, nearestCloseIdx);
-                                state.inThought = false;
-                                currentSegment = currentSegment.slice(nearestCloseIdx + matchedCloseTag.length);
-                                hasProcessedThoughtInThisPart = true;
                             } else {
-                                thoughtTextBuffer += currentSegment;
-                                currentSegment = "";
-                            }
-                        } else {
-                            let nearestOpenIdx = -1;
-                            let matchedOpenTag = "";
-
-                            for (const tag of OPEN_TAGS) {
-                                const idx = currentSegment.indexOf(tag);
-                                if (idx !== -1 && (nearestOpenIdx === -1 || idx < nearestOpenIdx)) {
-                                    nearestOpenIdx = idx;
-                                    matchedOpenTag = tag;
+                                const closeIdx = streamBuffer.indexOf("</think>");
+                                if (closeIdx !== -1) {
+                                    extractedThought += streamBuffer.slice(0, closeIdx);
+                                    state.inThought = false;
+                                    streamBuffer = streamBuffer.slice(closeIdx + 8);
+                                } else {
+                                    const possiblePartialTagMatch = streamBuffer.match(/<[^>]*$/);
+                                    if (possiblePartialTagMatch && "</think>".startsWith(possiblePartialTagMatch[0])) {
+                                        extractedThought += streamBuffer.slice(0, possiblePartialTagMatch.index);
+                                        streamBuffer = possiblePartialTagMatch[0];
+                                        break;
+                                    } else {
+                                        extractedThought += streamBuffer;
+                                        streamBuffer = "";
+                                    }
                                 }
-                            }
-
-                            if (nearestOpenIdx !== -1) {
-                                mainTextBuffer += currentSegment.slice(0, nearestOpenIdx);
-                                state.inThought = true;
-                                currentSegment = currentSegment.slice(nearestOpenIdx + matchedOpenTag.length);
-                                hasProcessedThoughtInThisPart = true;
-                            } else {
-                                mainTextBuffer += currentSegment;
-                                currentSegment = "";
                             }
                         }
-                    }
 
-                    if (hasProcessedThoughtInThisPart || (state.inThought && thoughtTextBuffer.length > 0)) {
-                        return {
-                            type: this.DataTypes.THOUGHT,
-                            payload: thoughtTextBuffer,
-                            remainingText: mainTextBuffer.length > 0 ? mainTextBuffer : null
-                        };
-                    } else if (mainTextBuffer.length > 0) {
-                        return { type: this.DataTypes.TEXT, payload: mainTextBuffer };
+                        state.buffer = streamBuffer;
+
+                        if (extractedThought.length > 0) {
+                            return { 
+                                type: this.DataTypes.THOUGHT, 
+                                payload: extractedThought, 
+                                remainingText: extractedText.length > 0 ? extractedText : null,
+                                inThought: state.inThought 
+                            };
+                        }
+                        if (extractedText.length > 0) {
+                            return { 
+                                type: this.DataTypes.TEXT, 
+                                payload: extractedText,
+                                inThought: state.inThought 
+                            };
+                        }
+                        return { type: this.DataTypes.UNKNOWN, payload: null };
                     }
-                    return { type: this.DataTypes.TEXT, payload: "" };
+                    return { type: this.DataTypes.UNKNOWN, payload: null };
                 }
-                return { type: this.DataTypes.UNKNOWN, payload: null };
-            }
             },
 
             // 4. An Toàn, Escape & DOMPurify (Security & Content Filtering)
@@ -5947,16 +5938,19 @@ self.onmessage = async function(e) {
         /**
  * NƠ-RON AI GIẢI MÃ LUỒNG SERVER-SENT EVENTS (SSE STREAM NEURON)
  */
+/**
+ * [TẦNG 3: NETWORK TRANSPORT & SSE BUFFER MANAGER CHUẨN RFC]
+ * Xử lý hoàn hảo cả ranh giới \r\n\r\n lẫn \n\n, không bao giờ nuốt nghẹn gói tin
+ */
 const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
     if (!response || !response.body) throw new Error('[readSSEStream] Phản hồi rỗng hoặc không tồn tại.');
 
     const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
-    let buffer = '';
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     
-    // [WATCHDOG TỐI THƯỢNG] Chống kẹt luồng TCP ảo (Silent TCP Drop)
+    let buffer = '';
     let lastActivityTime = Date.now();
-    const STALL_TIMEOUT = 18000; // 18s không nhận được cắn byte nào -> Ép hủy để nối dòng
+    const STALL_TIMEOUT = 25000; 
     const stallInterval = setInterval(() => {
         if (Date.now() - lastActivityTime > STALL_TIMEOUT) {
             clearInterval(stallInterval);
@@ -5966,41 +5960,48 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
 
     try {
         while (true) {
-            if (signal?.aborted) {
-                const abortErr = new Error('AbortError'); abortErr.name = 'AbortError'; throw abortErr;
-            }
+            if (signal?.aborted) throw new DOMException('AbortError', 'AbortError');
 
             let done, value;
             try {
                 ({ done, value } = await reader.read());
-                lastActivityTime = Date.now(); // Làm mới Watchdog
+                lastActivityTime = Date.now();
             } catch (readErr) {
                 if (readErr.message === 'STALL_TIMEOUT') throw new Error('NETWORK_STALLED_TIMEOUT');
                 throw readErr;
             }
 
-            if (value) buffer += decoder.decode(value, { stream: true });
-            
-            // Xử lý vét máng khi stream báo DONE nhưng vẫn còn kẹt trong buffer
-            if (done) {
-                buffer += decoder.decode(); // Decode nốt các byte rác cuối
-                if (buffer.trim() && !buffer.endsWith('\n\n')) buffer += '\n\n'; 
-            }
+            if (value) buffer += decoder.decode(value, { stream: !done });
 
-            let eventBoundary;
-            while ((eventBoundary = buffer.indexOf('\n\n')) !== -1 || (eventBoundary = buffer.indexOf('\r\n\r\n')) !== -1) {
-                const delimiterLength = buffer.startsWith('\r\n\r\n', eventBoundary) ? 4 : 2;
-                const rawEvent = buffer.slice(0, eventBoundary).trim();
-                const chunkWithBoundary = buffer.slice(0, eventBoundary + delimiterLength); // Giữ lại nguyên gốc để hoàn nguyên nếu lỗi
-                buffer = buffer.slice(eventBoundary + delimiterLength);
+            while (true) {
+                let boundaryIndex = -1;
+                let boundaryLength = 0;
+
+                const crlfIndex = buffer.indexOf('\r\n\r\n');
+                const lfIndex = buffer.indexOf('\n\n');
+
+                if (crlfIndex !== -1 && (lfIndex === -1 || crlfIndex < lfIndex)) {
+                    boundaryIndex = crlfIndex;
+                    boundaryLength = 4;
+                } else if (lfIndex !== -1) {
+                    boundaryIndex = lfIndex;
+                    boundaryLength = 2;
+                }
+
+                if (boundaryIndex === -1) break;
+
+                const rawEvent = buffer.slice(0, boundaryIndex).trim();
+                buffer = buffer.slice(boundaryIndex + boundaryLength);
 
                 if (!rawEvent || rawEvent.startsWith(':')) continue;
 
-                let dataPayload = '';
                 const lines = rawEvent.split(/\r?\n/);
+                let dataPayload = '';
+                
                 for (const line of lines) {
                     if (line.startsWith('data:')) {
-                        dataPayload += (dataPayload ? '\n' : '') + line.slice(5).trim();
+                        const content = line.slice(5).trim();
+                        dataPayload += (dataPayload ? '\n' : '') + content;
                     }
                 }
 
@@ -6015,17 +6016,27 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
                     }
                     if (typeof onChunk === 'function') onChunk(parsed);
                 } catch (jsonErr) {
-                    if (jsonErr.code) throw jsonErr; // Lỗi từ Server API -> Bắn thẳng ra ngoài
-                    
-                    // [TỰ CHỮA LÀNH CỰC HẠN] Nếu là lỗi SyntaxError -> Mảnh JSON bị rách giữa dòng bởi TCP Packet.
-                    // TUYỆT ĐỐI KHÔNG VỨT BỎ! Phải nhả ngược lại buffer và break vòng lặp parse để chờ reader.read() nạp mảnh tiếp theo!
-                    if (jsonErr instanceof SyntaxError && !done) {
-                        buffer = chunkWithBoundary + buffer;
-                        break;
-                    }
+                    buffer = rawEvent + (boundaryLength === 4 ? '\r\n\r\n' : '\n\n') + buffer;
+                    break;
                 }
             }
-            if (done) break;
+
+            if (done) {
+                if (buffer.trim()) {
+                    const lines = buffer.trim().split(/\r?\n/);
+                    let trailingData = '';
+                    for (const line of lines) {
+                        if (line.startsWith('data:')) trailingData += (trailingData ? '\n' : '') + line.slice(5).trim();
+                    }
+                    if (trailingData && trailingData !== '[DONE]') {
+                        try {
+                            const parsed = JSON.parse(trailingData);
+                            if (typeof onChunk === 'function') onChunk(parsed);
+                        } catch (_) {}
+                    }
+                }
+                break;
+            }
         }
     } finally {
         clearInterval(stallInterval);
@@ -10084,7 +10095,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                 if (p.fileData && p.fileData.fileUri) return true;
                                 return false;
                             }).map(p => {
-                                if (p.text) return { text: String(p.text).replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim() };
+                                // SỬA LỖI: Dọn dẹp sạch sẽ cặp thẻ <think> trong lịch sử để tiết kiệm Token
+                                if (p.text) return { text: String(p.text).replace(/<think>[\s\S]*?<\/think>/gi, '').trim() };
                                 return p;
                             }).filter(p => !p.text || p.text.length > 0);
 
@@ -10385,157 +10397,155 @@ Trả về duy nhất định dạng JSON:
                     };
 
                     const rawExecuteStreamTransport = async ({ payload, activeModelId, onChunk, signal, onPartialDataReceived }) => {
-                        let attempts = 0;
-                        const maxAttempts = 15;
-                        
-                        // Chuỗi mô hình dự phòng chuẩn 100%
-                        const candidateModels = Array.from(new Set([
-                            activeModelId,
-                            ...(Array.isArray(GDeepMasterConfig.Models.FALLBACK_CHAIN) ? GDeepMasterConfig.Models.FALLBACK_CHAIN : ["gemini-2.5-flash", "gemini-2.5-flash-lite"])
-                        ])).filter(Boolean);
-                        
-                        let currentModelIdx = 0;
-                        let hasReceivedAnyChunkInSession = false;
+    let attempts = 0;
+    const maxAttempts = 15;
+    
+    const candidateModels = Array.from(new Set([
+        activeModelId,
+        ...(Array.isArray(GDeepMasterConfig.Models.FALLBACK_CHAIN) ? GDeepMasterConfig.Models.FALLBACK_CHAIN : ["gemini-2.5-flash", "gemini-2.0-flash"])
+    ])).filter(Boolean);
+    
+    let currentModelIdx = 0;
+    let hasReceivedAnyChunkInSession = false;
 
-                        const ensureUsableKey = () => {
-                            let k = getNextHealthyApiKey();
-                            if (!k && apiKeyPool.value && apiKeyPool.value.length > 0) {
-                                apiKeyPool.value.forEach(item => { item.status = 'active'; item.cooldownUntil = 0; item.failCount = 0; });
-                                k = apiKeyPool.value[0];
-                            }
-                            return k;
-                        };
+    const ensureUsableKey = () => {
+        let k = getNextHealthyApiKey();
+        if (!k && apiKeyPool.value && apiKeyPool.value.length > 0) {
+            apiKeyPool.value.forEach(item => { item.status = 'active'; item.cooldownUntil = 0; item.failCount = 0; });
+            k = apiKeyPool.value[0];
+        }
+        return k;
+    };
 
-                        while (attempts < maxAttempts) {
-                            if (signal?.aborted) throw new Error('AbortError');
-                            
-                            const currentKey = ensureUsableKey();
-                            if (!currentKey) {
-                                await new Promise(r => setTimeout(r, 300));
-                                attempts++;
-                                continue;
-                            }
+    while (attempts < maxAttempts) {
+        if (signal?.aborted) throw new Error('AbortError');
+        
+        const currentKey = ensureUsableKey();
+        if (!currentKey) {
+            await new Promise(r => setTimeout(r, 300));
+            attempts++;
+            continue;
+        }
 
-                            const currentTargetModel = candidateModels[currentModelIdx] || candidateModels[0];
-                            const reqPayload = JSON.parse(JSON.stringify(payload));
-                            reqPayload.contents = sanitizeHistoryForGemini(reqPayload.contents, true);
-                            reqPayload.safetySettings = SAFETY_SETTINGS;
+        const currentTargetModel = candidateModels[currentModelIdx] || candidateModels[0];
+        const reqPayload = JSON.parse(JSON.stringify(payload));
+        reqPayload.contents = sanitizeHistoryForGemini(reqPayload.contents, true);
+        reqPayload.safetySettings = SAFETY_SETTINGS;
 
-                            if (!reqPayload.contents || reqPayload.contents.length === 0) {
-                                reqPayload.contents = [{ role: 'user', parts: [{ text: "Hãy tiếp tục phản hồi." }] }];
-                            }
+        if (!reqPayload.contents || reqPayload.contents.length === 0) {
+            reqPayload.contents = [{ role: 'user', parts: [{ text: "Hãy tiếp tục phản hồi." }] }];
+        }
 
-                            if (reqPayload.generationConfig?.thinkingConfig && reqPayload.tools) {
-                                delete reqPayload.tools;
-                            }
+        if (reqPayload.generationConfig?.thinkingConfig && reqPayload.tools) {
+            delete reqPayload.tools;
+        }
 
-                            const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
 
-                            // MÀNG CHẮN BẢO VỆ TREO MẠNG (Sliding Window Timeout)
-                            // Xử lý kịch bản Máy chủ nhận Request nhưng treo không gửi Data
-                            const stallAbortController = new AbortController();
-                            const combinedSignal = signal ? 
-                                (signal.aborted ? signal : (
-                                    AbortSignal.any ? AbortSignal.any([signal, stallAbortController.signal]) : stallAbortController.signal
-                                )) : stallAbortController.signal;
-                            
-                            let stallWatchdog = null;
-                            const resetStallWatchdog = () => {
-                                if (stallWatchdog) clearTimeout(stallWatchdog);
-                                stallWatchdog = setTimeout(() => {
-                                    stallAbortController.abort();
-                                }, 20000); // 20 Giây không nhận thêm bit nào -> Cưỡng bức hủy kết nối treo
-                            };
+        const stallAbortController = new AbortController();
+        const combinedSignal = signal ? 
+            (signal.aborted ? signal : (
+                AbortSignal.any ? AbortSignal.any([signal, stallAbortController.signal]) : stallAbortController.signal
+            )) : stallAbortController.signal;
+        
+        let stallWatchdog = null;
+        const resetStallWatchdog = () => {
+            if (stallWatchdog) clearTimeout(stallWatchdog);
+            stallWatchdog = setTimeout(() => {
+                stallAbortController.abort();
+            }, 20000);
+        };
 
-                            try {
-                                resetStallWatchdog(); // Bắt đầu đếm ngược từ lúc gửi
-                                const response = await fetch(url, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(reqPayload),
-                                    signal: combinedSignal
-                                });
+        try {
+            resetStallWatchdog();
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(reqPayload),
+                signal: combinedSignal
+            });
 
-                                if (!response.ok) {
-                                    clearTimeout(stallWatchdog);
-                                    if (response.status === 400) {
-                                        if (reqPayload.generationConfig) {
-                                            delete reqPayload.generationConfig.thinkingConfig;
-                                            delete reqPayload.generationConfig.responseMimeType;
-                                            reqPayload.generationConfig.maxOutputTokens = 65536;
-                                        }
-                                        delete reqPayload.tools;
-                                        delete reqPayload.systemInstruction;
-                                    } else if (response.status === 404 || response.status === 503) {
-                                        currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
-                                    } else if (response.status === 401 || response.status === 403 || response.status === 429) {
-                                        markApiKeyFailure(currentKey, response.status);
-                                    }
-                                    attempts++;
-                                    await new Promise(r => setTimeout(r, Math.min(250 * Math.pow(1.5, attempts), 2000)));
-                                    continue;
-                                }
+            if (!response.ok) {
+                clearTimeout(stallWatchdog);
+                if (response.status === 400) {
+                    if (reqPayload.generationConfig) {
+                        delete reqPayload.generationConfig.responseMimeType;
+                        reqPayload.generationConfig.maxOutputTokens = 65536;
+                    }
+                    if (attempts >= 1 && reqPayload.tools) {
+                        delete reqPayload.tools;
+                    }
+                } else if (response.status === 404 || response.status === 503) {
+                    currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
+                } else if (response.status === 401 || response.status === 403 || response.status === 429) {
+                    markApiKeyFailure(currentKey, response.status);
+                }
+                attempts++;
+                await new Promise(r => setTimeout(r, Math.min(250 * Math.pow(1.5, attempts), 2000)));
+                continue;
+            }
 
-                                let streamChunksReceived = 0;
-                                await readSSEStream(response, combinedSignal, (chunk) => {
-                                    // Chạm vào watchdog bất cứ khi nào có 1 chunk đến thành công
-                                    resetStallWatchdog();
-                                    
-                                    streamChunksReceived++;
-                                    hasReceivedAnyChunkInSession = true;
-                                    if (typeof onPartialDataReceived === 'function') onPartialDataReceived();
-                                    onChunk(chunk);
-                                });
+            let streamChunksReceived = 0;
+            await readSSEStream(response, combinedSignal, (chunk) => {
+                resetStallWatchdog();
+                streamChunksReceived++;
+                hasReceivedAnyChunkInSession = true;
+                if (typeof onPartialDataReceived === 'function') onPartialDataReceived();
+                onChunk(chunk);
+            });
 
-                                clearTimeout(stallWatchdog); // Dọn dẹp sau khi luồng SSE hoàn thành mỹ mãn
-                                if (streamChunksReceived > 0) {
-                                    markApiKeySuccess(currentKey);
-                                    return { success: true, modelUsed: currentTargetModel, chunksCount: streamChunksReceived };
-                                }
-                            } catch (err) {
-                                clearTimeout(stallWatchdog);
-                                if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
-                                
-                                // Nếu đứt gánh giữa chừng nhưng ĐÃ NHẢ được chữ ra UI, ghi nhận thành công nhưng đánh dấu Dropped
-                                // Cỗ máy Continuation sẽ tự động lấy đoạn Text đó ghép vào và nối tiếp (Tiết kiệm Token & Xử lý vô hình với người dùng)
-                                if (hasReceivedAnyChunkInSession) {
-                                    markApiKeySuccess(currentKey);
-                                    return { success: true, isMidStreamDrop: true, modelUsed: currentTargetModel };
-                                }
-                            }
+            clearTimeout(stallWatchdog);
+            if (streamChunksReceived > 0) {
+                markApiKeySuccess(currentKey);
+                return { success: true, modelUsed: currentTargetModel, chunksCount: streamChunksReceived };
+            }
+        } catch (err) {
+            clearTimeout(stallWatchdog);
+            if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
+            
+            if (hasReceivedAnyChunkInSession) {
+                markApiKeySuccess(currentKey);
+                return { success: true, isMidStreamDrop: true, modelUsed: currentTargetModel };
+            }
+        }
 
-                            // CỨU TRỢ PHI STREAMING (DIRECT FETCH)
-                            // Trượt vào đây nếu Stream thất bại ngay từ bước bắt tay TLS
-                            try {
-                                const directUrl = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:generateContent?key=${currentKey.key}`;
-                                const cleanDirectPayload = {
-                                    contents: reqPayload.contents,
-                                    safetySettings: SAFETY_SETTINGS,
-                                    generationConfig: { temperature: 0.2, maxOutputTokens: 65536 }
-                                };
-                                const directRes = await fetch(directUrl, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(cleanDirectPayload),
-                                    signal
-                                });
-                                if (directRes.ok) {
-                                    const directJson = await directRes.json();
-                                    if (directJson.candidates?.[0]?.content) {
-                                        onChunk(directJson);
-                                        markApiKeySuccess(currentKey);
-                                        return { success: true, modelUsed: currentTargetModel, isDirectFallback: true };
-                                    }
-                                }
-                            } catch (_) {}
+        // CỨU TRỢ PHI STREAMING: Bảo toàn nguyên vẹn 100% Tools và 50 Agents
+        try {
+            const directUrl = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:generateContent?key=${currentKey.key}`;
+            const cleanDirectPayload = {
+                systemInstruction: reqPayload.systemInstruction,
+                tools: reqPayload.tools,
+                contents: reqPayload.contents,
+                safetySettings: SAFETY_SETTINGS,
+                generationConfig: { 
+                    ...reqPayload.generationConfig,
+                    temperature: 0.2, 
+                    maxOutputTokens: 65536 
+                }
+            };
+            const directRes = await fetch(directUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cleanDirectPayload),
+                signal
+            });
+            if (directRes.ok) {
+                const directJson = await directRes.json();
+                if (directJson.candidates?.[0]?.content) {
+                    onChunk(directJson);
+                    markApiKeySuccess(currentKey);
+                    return { success: true, modelUsed: currentTargetModel, isDirectFallback: true };
+                }
+            }
+        } catch (_) {}
 
-                            attempts++;
-                            currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
-                            await new Promise(r => setTimeout(r, Math.min(300 * Math.pow(1.5, attempts), 3000)));
-                        }
+        attempts++;
+        currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
+        await new Promise(r => setTimeout(r, Math.min(300 * Math.pow(1.5, attempts), 3000)));
+    }
 
-                        return { success: hasReceivedAnyChunkInSession, isExhausted: true, modelUsed: candidateModels[0] };
-                    };
+    return { success: hasReceivedAnyChunkInSession, isExhausted: true, modelUsed: candidateModels[0] };
+};
 
                     // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI ĐA PHƯƠNG THỨC NÂNG CẤP TOÀN DIỆN
                     const sendMessage = async (isRegenerate = false, existingBotMsgTarget = null) => {
@@ -10741,9 +10751,6 @@ Trả về duy nhất định dạng JSON:
                                 }
                             }
 
-                            // =========================================================================
-                            // [NATIVE 50-AGENT SENATE: TRỰC TIẾP TRONG LUỒNG SUY LUẬN CHÍNH & THINKING CONFIG]
-                            // =========================================================================
                             const SENATE_50_AGENTS = Object.freeze([
                                 "A01 [Ontological Anchor - Bản thể thực tại]", "A02 [Epistemic Auditor - Kiểm toán tri thức]", "A03 [Formal Logic - Logic hình thức]",
                                 "A04 [Devil's Advocate - Biện hộ ác quỷ]", "A05 [Boundary Tester - Thử tải cực hạn]", "A06 [Trench Scanner - Quét rãnh sâu ngữ cảnh giữa]",
@@ -10764,7 +10771,6 @@ Trả về duy nhất định dạng JSON:
                                 "A49 [Groupthink Inquisitor - Phá vỡ bầy đàn]", "A50 [Supreme Architect - Kiến trúc sư đúc kết]"
                             ]);
 
-                            // TRÍCH XUẤT RÃNH SÂU NGỮ CẢNH GIỮA (LOST-IN-THE-MIDDLE TRENCH 20%-80%)
                             let dynamicMiddleContext = "";
                             const currentHistorySnap = currentMessages.value || [];
                             if (currentHistorySnap.length >= 3) {
@@ -10785,18 +10791,17 @@ Trả về duy nhất định dạng JSON:
                             if (enableDeepThinking.value) {
                                 const formattedAgentRoster = SENATE_50_AGENTS.map(a => `- ${a}`).join('\n');
                                 systemPrompt += `\n\n[QUY TRÌNH SUY LUẬN CHUYÊN SÂU NATIVE: ĐẠI HỘI ĐỒNG 50 AGENTS TRANH BIỆN ĐỐI KHÁNG]
-Khi suy luận (luồng suy nghĩ nội tại), bạn BẮT BUỘC phải tổ chức phiên tranh luận nảy lửa và đối soát chéo giữa 50 Agents sau (mỗi Agent phụ trách đúng 1 vai trò duy nhất, không gộp vai trò):
+Khi suy luận, bạn BẮT BUỘC phải tổ chức phiên tranh luận nảy lửa và đối soát chéo giữa 50 Agents sau:
 ${formattedAgentRoster}
 ${dynamicMiddleContext}
 
 CÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢY VỌT LOGIC:
 - Không bao giờ nhảy cóc từ giả thiết tới kết luận.
-- Mọi mắt xích chứng minh đều phải hiển thị tường minh qua 5 giai đoạn:
-  1. Giai đoạn 1 - Khảo sát Rãnh sâu & Tiền đề (A01, A02, A06, A08, A12, A18, A30, A43, A46): Agent 06 & Agent 43 đào sâu rãnh giữa ngữ cảnh, khóa chặt toàn bộ biến số/điều kiện vào bàn nghị sự, Agent 46 thẩm định tiền đề câu hỏi.
-  2. Giai đoạn 2 - Đội Đỏ Công Kích & Thử Tải (A04, A05, A14, A15, A21, A24, A33, A42, A44): Đẩy bài toán về các điều kiện biên cực hạn, triệt tiêu tính nịnh bợ (Anti-Sycophancy) và tấn công vào mọi lỗ hổng logic.
-  3. Giai đoạn 3 - Đội Xanh Phòng Thủ & Tối Ưu (A03, A10, A11, A16, A19, A20, A22, A23, A25, A34): Giải cấu trúc từ nguyên lý tiên khởi (First-Principles), phân tích độ phức tạp Big-O và xây dựng đồ thị nhân quả vững chắc.
-  4. Giai đoạn 4 - Giám Sát & Diệt Ảo Giác (A07, A09, A17, A26, A27, A28, A29, A31, A32, A35, A36, A37, A38, A39, A40, A41, A45, A48): Tuyệt đối không bịa đặt dữ kiện, đối soát 360 độ, phát hiện mâu thuẫn nội tại và cắt tỉa dư thừa.
-  5. Giai đoạn 5 - Hòa Giải & Phán Quyết (A13, A47, A49, A50): Phá vỡ tư duy bầy đàn, điều đình xung đột gay gắt giữa Đội Đỏ và Đội Xanh, Agent 50 Supreme Architect đúc kết phán quyết hoàng kim thành câu trả lời chính thức.`;
+- Mọi mắt xích chứng minh đều phải hiển thị tường minh qua 5 giai đoạn: Khảo sát, Công kích Đội Đỏ, Phòng thủ Đội Xanh, Giám sát Ảo giác, và Hòa giải Phán quyết.
+
+TUYỆT ĐỐI BẮT BUỘC VỀ ĐỊNH DẠNG (FORMATTING COMMANDMENT):
+Toàn bộ quá trình tranh luận dài dòng của 50 Agents NÀY BẮT BUỘC PHẢI NẰM TRỌN VẸN BÊN TRONG CẶP THẺ <think> VÀ </think>.
+Chỉ sau khi đóng thẻ </think>, bạn mới được đưa ra CÂU TRẢ LỜI CUỐI CÙNG (ngắn gọn, trực tiếp, dễ hiểu) cho người dùng. Nếu vi phạm, hệ thống sẽ sụp đổ.`;
                             }
 
                             if (enableImageGen.value) {
@@ -10816,21 +10821,17 @@ CÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢ
                                 systemPrompt += `\n[CHẾ ĐỘ SÁNG TẠO HÌNH ẢNH NGHỆ THUẬT]
 QUY TẮC BẮT BUỘC:
 1. Bạn KHÔNG được dùng công cụ lập trình hay chạy code Python để tạo chuỗi.
-2. Dịch ý tưởng người dùng sang tiếng Anh thành một đoạn mô tả chi tiết (ánh sáng, phong cách ${imageConfig.style}, độ nét cao 8k). Nối các từ bằng ký tự %20 (ví dụ: a%20majestic%20surreal%20mountain).
-3. Đặt thẻ ảnh Markdown NGAY DÒNG ĐẦU TIÊN của phản hồi (TUYỆT ĐỐI KHÔNG để trong khối code \`\`\`):
-
+2. Dịch ý tưởng người dùng sang tiếng Anh thành một đoạn mô tả chi tiết. Nối các từ bằng ký tự %20 (ví dụ: a%20majestic%20mountain).
+3. Đặt thẻ ảnh Markdown NGAY DÒNG ĐẦU TIÊN của phản hồi:
 <img src="https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_NOI_BANG_%20}?width=${w}&height=${h}&model=${selectedImageModel}&nologo=true&seed=${randomSeed}" alt="Tác phẩm nghệ thuật" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-105 transition-all" />
-
-4. Xuống dòng và viết lời bình tiếng Việt về tác phẩm ngay bên dưới ảnh.`;
+4. Xuống dòng và viết lời bình tiếng Việt về tác phẩm.`;
                             }
 
-                            // [CẤY GHÉP TIỀM THỨC] Kế thừa bộ luật từ những lần "Ngủ mơ"
                             const subconsciousAxioms = EpistemicMemoryEngine.getGlobalAxioms();
                             if (subconsciousAxioms) {
                                 systemPrompt += `\n[TIỀM THỨC VỀ NGƯỜI DÙNG]\nHãy tự động đáp ứng các quy tắc ngầm sau:\n${subconsciousAxioms}\n`;
                             }
                             
-                            // TRA CỨU WEB VÀ ĐỐI SOÁT DỮ LIỆU
                             if (enableGoogleSearch.value && serperApiKeys.value.length > 0) {
                                 searchStatusText.value = "Đang tra cứu dữ liệu web...";
                                 const searchPlan = await SearchIntelligenceEngine.planIntelligentSearch(
@@ -10926,11 +10927,6 @@ QUY TẮC BẮT BUỘC:
                                     }
                                     const now = performance.now();
                                     const eye = SynapticOcularMatrix.getEyeSnapshot();
-
-                                    // MẮT NHÌN UI ĐIỀU TIẾT:
-                                    // 1. Nếu tab đang bị ẩn: Giãn nhịp render lên 180ms để bảo vệ 100% pin
-                                    // 2. Nếu người dùng đang cuộn lên đọc: Giãn nhịp lên 80ms để mắt không bị rung
-                                    // 3. Nếu bình thường: Giữ tốc độ 32ms (60 FPS mượt mà)
                                     const dynamicInterval = eye.isTabHidden ? 180 : (eye.isUserReading ? 80 : 32);
 
                                     if (lastRenderedLength === 0 || now - lastRenderTime >= dynamicInterval) {
@@ -10941,7 +10937,6 @@ QUY TẮC BẮT BUỘC:
                                             botMsg.lastRenderSeq = thisSeq;
                                             botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
                                             
-                                            // CHỈ CUỘN NẾU MẮT THẦN XÁC NHẬN NGƯỜI DÙNG KHÔNG BẬN ĐỌC TIN CŨ
                                             if (!userIsScrolledUp && !eye.isUserReading) {
                                                 scrollToBottom();
                                             }
@@ -10962,12 +10957,12 @@ QUY TẮC BẮT BUỘC:
                                 renderRafId = requestAnimationFrame(loop);
                             };
 
-let isFirstContinuationChunk = false;
+                            let isFirstContinuationChunk = false;
                             lastFinishReason = null;
                             let streamDropped = false;
 
                             // KHỞI TẠO STATEFUL LEXER TRACKER CHO LUỒNG STREAMING
-                            const streamLexerState = { inThought: false };
+                            const streamLexerState = { inThought: false, buffer: "" };
 
                             const processChunk = (chunkJson, isContinuation = false) => {
                                 if (chunkJson.promptFeedback?.blockReason) {
@@ -11105,19 +11100,15 @@ let isFirstContinuationChunk = false;
                             const performStreaming = async (basePayload, chunkHandler) => {
                                 const payload = JSON.parse(JSON.stringify(basePayload));
                                 payload.safetySettings = SAFETY_SETTINGS;
+                                
+                                // ĐÃ BỎ thinkingConfig GÂY LỖI HTTP 400. 
+                                // Thay vào đó, Tools luôn được cấp phép nếu user bật Điện toán độc lập.
                                 if (enableCodeExecution.value && !enableImageGen.value) {
                                     payload.tools = [{ codeExecution: {} }];
                                 } else {
                                     delete payload.tools;
                                 }
-                                if (enableDeepThinking.value) {
-                                    payload.generationConfig = payload.generationConfig || {};
-                                    // THIẾT LẬP BUDGET TỐI ĐA CHO PHÉP 50 AGENTS TRANH BIỆN TOÀN DIỆN
-                                    payload.generationConfig.thinkingConfig = {
-                                        includeThoughts: true,
-                                        thinkingBudget: -1
-                                    };
-                                }
+
                                 try {
                                     return await fetchStreamWithFaultTolerance(payload, activeModelId, chunkHandler, abortController.signal);
                                 } catch (err) {
