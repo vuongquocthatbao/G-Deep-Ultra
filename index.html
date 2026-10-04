@@ -2990,95 +2990,85 @@ self.onmessage = async function(e) {
                     })
                 },
                 // =========================================================================
-                // [NƠ-RON PHÂN LUỒNG Ý THỨC TOÀN DIỆN 2026 - STATEFUL STREAMING LEXER] - [TẦNG 4: MÁY TRẠNG THÁI PHÂN LUỒNG Ý THỨC - FINITE STATE LEXER]
+                // [TẦNG 4: TOKENIZER PHÂN LUỒNG Ý THỨC - MULTI-TOKEN LEXER]
+                // Băm nhỏ chunk dữ liệu thành các token độc lập, chống rò rỉ 100%
                 // =========================================================================
-
                 classifyPart(part, state) {
                     if (!state) state = { inThought: false, buffer: "" };
-                    if (!part || typeof part !== 'object') return { type: this.DataTypes.UNKNOWN, payload: null };
+                    let tokens = [];
+
+                    if (!part || typeof part !== 'object') return tokens;
                     
                     // 1. Luồng suy luận Native từ API (Gemini 2.0 Thinking)
                     if (part.thought === true || part.reasoning) {
-                        return { type: this.DataTypes.THOUGHT, payload: String(part.text || part.reasoning || ''), inThought: true };
+                        tokens.push({ type: this.DataTypes.THOUGHT, payload: String(part.text || part.reasoning || '') });
+                        return tokens;
                     }
                     
-                    // 2. Thực thi mã Wasm
+                    // 2. Luồng thực thi mã Wasm
                     if (part.executableCode) {
-                        return { type: this.DataTypes.CODE_INPUT, payload: { language: (part.executableCode.language || 'python').toLowerCase(), code: String(part.executableCode.code || '') } };
+                        tokens.push({ type: this.DataTypes.CODE_INPUT, payload: { language: (part.executableCode.language || 'python').toLowerCase(), code: String(part.executableCode.code || '') } });
+                        return tokens;
                     }
+                    // 3. Luồng kết quả điện toán
                     if (part.codeExecutionResult) {
                         const ok = (part.codeExecutionResult.outcome === 'OUTCOME_OK' || part.codeExecutionResult.outcome === 'COMPLETED');
-                        return { type: this.DataTypes.CODE_OUTPUT, payload: { output: String(part.codeExecutionResult.output || ''), outcome: ok ? 'COMPLETED' : 'ERROR' } };
+                        tokens.push({ type: this.DataTypes.CODE_OUTPUT, payload: { output: String(part.codeExecutionResult.output || ''), outcome: ok ? 'COMPLETED' : 'ERROR' } });
+                        return tokens;
                     }
                     
-                    // 3. Xử lý luồng Text Streaming & Bắt thẻ <think> theo cơ chế FSM (Chống xé rách chunk)
+                    // 4. Tokenizer Xử lý luồng hỗn hợp (Text + Tags)
                     if (part.text !== undefined && part.text !== null) {
-                        const newChunk = String(part.text);
-                        let extractedThought = "";
-                        let extractedText = "";
+                        state.buffer += String(part.text);
 
-                        let streamBuffer = (state.buffer || "") + newChunk;
-
-                        while (streamBuffer.length > 0) {
+                        while (state.buffer.length > 0) {
                             if (!state.inThought) {
-                                const openIdx = streamBuffer.indexOf("<think>");
-                                if (openIdx !== -1) {
-                                    extractedText += streamBuffer.slice(0, openIdx);
+                                // Tìm thẻ mở (Không phân biệt hoa thường)
+                                const match = state.buffer.match(/<think>/i);
+                                if (match) {
+                                    const textPart = state.buffer.slice(0, match.index);
+                                    if (textPart.length > 0) tokens.push({ type: this.DataTypes.TEXT, payload: textPart });
                                     state.inThought = true;
-                                    streamBuffer = streamBuffer.slice(openIdx + 7); 
+                                    state.buffer = state.buffer.slice(match.index + match[0].length);
                                 } else {
-                                    const possiblePartialTagMatch = streamBuffer.match(/<[^>]*$/);
-                                    if (possiblePartialTagMatch && "<think>".startsWith(possiblePartialTagMatch[0])) {
-                                        extractedText += streamBuffer.slice(0, possiblePartialTagMatch.index);
-                                        streamBuffer = possiblePartialTagMatch[0];
+                                    // Bắt thẻ mở bị xé rách giữa chừng (vd: "<thi")
+                                    const partialMatch = state.buffer.match(/<[^>]*$/);
+                                    if (partialMatch && "<think>".startsWith(partialMatch[0].toLowerCase())) {
+                                        const textPart = state.buffer.slice(0, partialMatch.index);
+                                        if (textPart.length > 0) tokens.push({ type: this.DataTypes.TEXT, payload: textPart });
+                                        state.buffer = partialMatch[0]; 
                                         break;
                                     } else {
-                                        extractedText += streamBuffer;
-                                        streamBuffer = "";
+                                        tokens.push({ type: this.DataTypes.TEXT, payload: state.buffer });
+                                        state.buffer = "";
                                     }
                                 }
                             } else {
-                                const closeIdx = streamBuffer.indexOf("</think>");
-                                if (closeIdx !== -1) {
-                                    extractedThought += streamBuffer.slice(0, closeIdx);
+                                // Đang trong luồng suy luận, tìm thẻ đóng
+                                const match = state.buffer.match(/<\/think>/i);
+                                if (match) {
+                                    const thoughtPart = state.buffer.slice(0, match.index);
+                                    if (thoughtPart.length > 0) tokens.push({ type: this.DataTypes.THOUGHT, payload: thoughtPart });
                                     state.inThought = false;
-                                    streamBuffer = streamBuffer.slice(closeIdx + 8);
+                                    state.buffer = state.buffer.slice(match.index + match[0].length);
                                 } else {
-                                    const possiblePartialTagMatch = streamBuffer.match(/<[^>]*$/);
-                                    if (possiblePartialTagMatch && "</think>".startsWith(possiblePartialTagMatch[0])) {
-                                        extractedThought += streamBuffer.slice(0, possiblePartialTagMatch.index);
-                                        streamBuffer = possiblePartialTagMatch[0];
+                                    // Bắt thẻ đóng bị xé rách (vd: "</thi")
+                                    const partialMatch = state.buffer.match(/<[^>]*$/);
+                                    if (partialMatch && "</think>".startsWith(partialMatch[0].toLowerCase())) {
+                                        const thoughtPart = state.buffer.slice(0, partialMatch.index);
+                                        if (thoughtPart.length > 0) tokens.push({ type: this.DataTypes.THOUGHT, payload: thoughtPart });
+                                        state.buffer = partialMatch[0]; 
                                         break;
                                     } else {
-                                        extractedThought += streamBuffer;
-                                        streamBuffer = "";
+                                        tokens.push({ type: this.DataTypes.THOUGHT, payload: state.buffer });
+                                        state.buffer = "";
                                     }
                                 }
                             }
                         }
-
-                        state.buffer = streamBuffer;
-
-                        if (extractedThought.length > 0) {
-                            return { 
-                                type: this.DataTypes.THOUGHT, 
-                                payload: extractedThought, 
-                                remainingText: extractedText.length > 0 ? extractedText : null,
-                                inThought: state.inThought 
-                            };
-                        }
-                        if (extractedText.length > 0) {
-                            return { 
-                                type: this.DataTypes.TEXT, 
-                                payload: extractedText,
-                                inThought: state.inThought 
-                            };
-                        }
-                        return { type: this.DataTypes.UNKNOWN, payload: null };
                     }
-                    return { type: this.DataTypes.UNKNOWN, payload: null };
-                }
-            },
+                    return tokens;
+                },
 
             // 4. An Toàn, Escape & DOMPurify (Security & Content Filtering)
             Security: {
@@ -10943,11 +10933,9 @@ QUY TẮC BẮT BUỘC:
 
 // =========================================================================
                             // [TẦNG 4.5: STREAM DEMULTIPLEXER] BỘ ĐỊNH TUYẾN DỮ LIỆU ĐA KÊNH CHUẨN ENTERPRISE
-                            // Phân rã luồng dữ liệu thô thành các kênh chuyên biệt bằng Strategy Pattern
                             // =========================================================================
                             const streamLexerState = { inThought: false, buffer: "" };
 
-                            // FACTORY: Tự động khởi tạo và chèn tin nhắn hệ thống vào UI nếu chưa tồn tại
                             const ensureSystemMessage = (role, existingRef, setupFn = null) => {
                                 if (!existingRef) {
                                     const newMsg = createMessageRecord({
@@ -10968,7 +10956,6 @@ QUY TẮC BẮT BUỘC:
                             };
 
                             const processChunk = (chunkJson, isContinuation = false) => {
-                                // 1. LÁ CHẮN AN TOÀN (SAFETY BOUNDARY)
                                 if (chunkJson.promptFeedback?.blockReason) {
                                     rawMarkdownBuffer += `\n\n*[Hệ thống an toàn G-Deep đã chặn luồng dữ liệu: ${chunkJson.promptFeedback.blockReason}]*`;
                                     isGenerating.value = false;
@@ -10980,21 +10967,10 @@ QUY TẮC BẮT BUỘC:
                                 if (!candidate) return;
                                 if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
-                                // 2. ĐỊNH TUYẾN SIÊU DỮ LIỆU (METADATA ROUTING: TOKEN & GROUNDING)
-                                if (chunkJson.groundingMetadata?.groundingChunks && botMsg) {
-                                    botMsg.serperMetadata = botMsg.serperMetadata || {};
-                                    if (!botMsg.serperMetadata.results || botMsg.serperMetadata.results.length === 0) {
-                                        botMsg.serperMetadata.results = chunkJson.groundingMetadata.groundingChunks.map(c => ({
-                                            title: c.web?.title || 'Nguồn tham khảo', link: c.web?.uri || '#', snippet: ''
-                                        }));
-                                    }
-                                }
-
                                 if (chunkJson.usageMetadata && chunkJson.usageMetadata.promptTokenCount > 0) {
                                     botMsg.exactTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
                                     botMsg.promptTokens = Number(chunkJson.usageMetadata.promptTokenCount);
                                     botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (botMsg.promptTokens + botMsg.exactTokens);
-
                                     const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                                     if (lastUser && !lastUser.exactTokens) {
                                         lastUser.exactTokens = botMsg.promptTokens;
@@ -11005,75 +10981,66 @@ QUY TẮC BẮT BUỘC:
                                 const parts = candidate.content?.parts || [];
                                 if (parts.length === 0) return;
 
-                                // 3. BỘ ĐỊNH TUYẾN DỮ LIỆU ĐA KÊNH (MULTIPLEXER STRATEGY MATRIX)
+                                // ĐỊNH TUYẾN CHÍNH XÁC: Duyệt qua từng Token đã được băm nhỏ từ Lexer
                                 for (const rawPart of parts) {
-                                    const routing = GDeepDataProtocol.classifyPart(rawPart, streamLexerState);
-                                    const { type, payload, remainingText } = routing;
+                                    const tokens = GDeepDataProtocol.classifyPart(rawPart, streamLexerState);
+                                    
+                                    for (const token of tokens) {
+                                        const { type, payload } = token;
 
-                                    switch (type) {
-                                        case GDeepDataProtocol.DataTypes.THOUGHT:
-                                            thoughtMsg = ensureSystemMessage(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
-                                            thoughtMsg.content += (payload || '');
-                                            if (remainingText) rawMarkdownBuffer += remainingText;
-                                            break;
+                                        switch (type) {
+                                            case GDeepDataProtocol.DataTypes.THOUGHT:
+                                                thoughtMsg = ensureSystemMessage(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
+                                                thoughtMsg.content += (payload || '');
+                                                break;
 
-                                        case GDeepDataProtocol.DataTypes.CODE_INPUT:
-                                            executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
-                                            const codeContent = (payload && payload.code) ? payload.code : String(payload || '');
-                                            
-                                            executionMsg.rawExecutionParts.push({ type: 'code', content: codeContent });
-                                            const targetOutputIdx = executionMsg.rawExecutionParts.length;
-                                            executionMsg.rawExecutionParts.push({ type: 'output', content: 'Đang khởi động Wasm Kernel...', outcome: 'RUNNING' });
-                                            executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
-                                            
-                                            // FIRE-AND-FORGET: Ném tác vụ Python sang Worker độc lập
-                                            PythonEngine.run(codeContent).then(res => {
-                                                if (executionMsg.rawExecutionParts[targetOutputIdx]) {
-                                                    executionMsg.rawExecutionParts[targetOutputIdx] = { 
-                                                        type: 'output', content: res.output || '', outcome: res.outcome, plotBase64: res.plotBase64 || null
-                                                    };
-                                                    executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
-                                                    scheduleDbSave(executionMsg);
-
-                                                    // Đồng bộ log vào version nhánh chính của Bot
-                                                    if (botMsg?.versions?.length > 0) {
-                                                        const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
-                                                        if (activeVer) {
-                                                            activeVer.rawExecutionParts = JSON.parse(JSON.stringify(executionMsg.rawExecutionParts));
-                                                            scheduleDbSave(botMsg);
+                                            case GDeepDataProtocol.DataTypes.CODE_INPUT:
+                                                executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
+                                                const codeContent = (payload && payload.code) ? payload.code : String(payload || '');
+                                                
+                                                executionMsg.rawExecutionParts.push({ type: 'code', content: codeContent });
+                                                const targetOutputIdx = executionMsg.rawExecutionParts.length;
+                                                executionMsg.rawExecutionParts.push({ type: 'output', content: 'Đang khởi động Wasm Kernel...', outcome: 'RUNNING' });
+                                                executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+                                                
+                                                PythonEngine.run(codeContent).then(res => {
+                                                    if (executionMsg.rawExecutionParts[targetOutputIdx]) {
+                                                        executionMsg.rawExecutionParts[targetOutputIdx] = { 
+                                                            type: 'output', content: res.output || '', outcome: res.outcome, plotBase64: res.plotBase64 || null
+                                                        };
+                                                        executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+                                                        scheduleDbSave(executionMsg);
+                                                        if (botMsg?.versions?.length > 0) {
+                                                            const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
+                                                            if (activeVer) {
+                                                                activeVer.rawExecutionParts = JSON.parse(JSON.stringify(executionMsg.rawExecutionParts));
+                                                                scheduleDbSave(botMsg);
+                                                            }
                                                         }
                                                     }
+                                                });
+                                                break;
+
+                                            case GDeepDataProtocol.DataTypes.CODE_OUTPUT:
+                                                executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
+                                                const lastPart = executionMsg.rawExecutionParts[executionMsg.rawExecutionParts.length - 1];
+                                                if (lastPart && lastPart.outcome === 'RUNNING') executionMsg.rawExecutionParts.pop();
+                                                
+                                                const outText = (payload && payload.output !== undefined) ? payload.output : String(payload || '');
+                                                const outStatus = (payload && payload.outcome) ? payload.outcome : 'COMPLETED';
+                                                executionMsg.rawExecutionParts.push({ type: 'output', content: outText, outcome: outStatus });
+                                                executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+                                                break;
+
+                                            case GDeepDataProtocol.DataTypes.TEXT:
+                                                let newText = (payload !== undefined && payload !== null) ? String(payload) : '';
+                                                if (isContinuation && isFirstContinuationChunk && newText) {
+                                                    newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
+                                                    if (newText.length > 0) isFirstContinuationChunk = false;
                                                 }
-                                            });
-                                            break;
-
-                                        case GDeepDataProtocol.DataTypes.CODE_OUTPUT:
-                                            executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
-                                            const lastPart = executionMsg.rawExecutionParts[executionMsg.rawExecutionParts.length - 1];
-                                            if (lastPart && lastPart.outcome === 'RUNNING') {
-                                                executionMsg.rawExecutionParts.pop(); // Thu hồi thông báo Đang chạy
-                                            }
-                                            const outText = (payload && payload.output !== undefined) ? payload.output : String(payload || '');
-                                            const outStatus = (payload && payload.outcome) ? payload.outcome : 'COMPLETED';
-                                            
-                                            executionMsg.rawExecutionParts.push({ type: 'output', content: outText, outcome: outStatus });
-                                            executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
-                                            break;
-
-                                        case GDeepDataProtocol.DataTypes.TEXT:
-                                            let newText = (payload !== undefined && payload !== null) ? String(payload) : '';
-                                            // Khử trùng lặp tại ranh giới khi nối luồng (Continuation Boundary Healing)
-                                            if (isContinuation && isFirstContinuationChunk && newText) {
-                                                newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
-                                                if (newText.length > 0) isFirstContinuationChunk = false;
-                                            }
-                                            rawMarkdownBuffer += newText;
-                                            break;
-
-                                        case GDeepDataProtocol.DataTypes.UNKNOWN:
-                                        default:
-                                            // Trượt qua các tín hiệu rỗng để bảo vệ RAM
-                                            break;
+                                                rawMarkdownBuffer += newText;
+                                                break;
+                                        }
                                     }
                                 }
                             };
@@ -11082,19 +11049,19 @@ QUY TẮC BẮT BUỘC:
                                 const payload = JSON.parse(JSON.stringify(basePayload));
                                 payload.safetySettings = SAFETY_SETTINGS;
                                 
-                                // 1. KÍCH HOẠT NATIVE THINKING CHUẨN GOOGLE API (KHÔNG ĐẶT BUDGET ÂM)
+                                // THỎA HIỆP API: Google cấm dùng Native Thinking cùng lúc với Code Execution
+                                // Nếu người dùng bật cả 2, ta ưu tiên Code Execution và ép AI suy luận qua thẻ <think> (Fake Native)
                                 if (enableDeepThinking.value) {
-                                    payload.generationConfig = payload.generationConfig || {};
-                                    payload.generationConfig.thinkingConfig = {
-                                        includeThoughts: true
-                                    };
-                                } else {
-                                    if (payload.generationConfig?.thinkingConfig) {
-                                        delete payload.generationConfig.thinkingConfig;
+                                    if (enableCodeExecution.value) {
+                                        if (payload.generationConfig?.thinkingConfig) delete payload.generationConfig.thinkingConfig;
+                                    } else {
+                                        payload.generationConfig = payload.generationConfig || {};
+                                        payload.generationConfig.thinkingConfig = { includeThoughts: true };
                                     }
+                                } else {
+                                    if (payload.generationConfig?.thinkingConfig) delete payload.generationConfig.thinkingConfig;
                                 }
 
-                                // 2. KÍCH HOẠT CÔNG CỤ ĐIỆN TOÁN
                                 if (enableCodeExecution.value && !enableImageGen.value) {
                                     payload.tools = [{ codeExecution: {} }];
                                 } else {
