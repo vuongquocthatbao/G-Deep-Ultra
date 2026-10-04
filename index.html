@@ -2914,7 +2914,6 @@ self.onmessage = async function(e) {
                     { id: "gemini-3.5-flash", apiEndpointId: "gemini-3.5-flash", name: "Flash 01", maxContextTokens: 1048576 },
                     { id: "gemini-3-flash-preview", apiEndpointId: "gemini-3-flash-preview", name: "Flash 02", maxContextTokens: 1048576 }
                 ],
-                FALLBACK_CHAIN: ["gemini-2.5-flash", "gemini-2.0-flash"],
                 BACKGROUND: { FAST: "gemini-3.5-flash-lite", LITE: "gemini-3.1-flash-lite" }
             },
 
@@ -5939,72 +5938,44 @@ self.onmessage = async function(e) {
  * NƠ-RON AI GIẢI MÃ LUỒNG SERVER-SENT EVENTS (SSE STREAM NEURON)
  */
 /**
- * [TẦNG 3: NETWORK TRANSPORT & SSE BUFFER MANAGER CHUẨN RFC]
- * Xử lý hoàn hảo cả ranh giới \r\n\r\n lẫn \n\n, không bao giờ nuốt nghẹn gói tin
+ * [TẦNG 3: NETWORK TRANSPORT & SSE PARSER CHUẨN TỐI THƯỢNG]
+ * Miễn nhiễm với đứt gãy giữa chừng, hỗ trợ suy luận sâu không giới hạn thời gian
  */
 const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
     if (!response || !response.body) throw new Error('[readSSEStream] Phản hồi rỗng hoặc không tồn tại.');
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8', { fatal: false });
-    
     let buffer = '';
-    let lastActivityTime = Date.now();
-    const STALL_TIMEOUT = 25000; 
-    const stallInterval = setInterval(() => {
-        if (Date.now() - lastActivityTime > STALL_TIMEOUT) {
-            clearInterval(stallInterval);
-            try { reader.cancel('STALL_TIMEOUT'); } catch (_) {}
-        }
-    }, 2000);
 
     try {
         while (true) {
             if (signal?.aborted) throw new DOMException('AbortError', 'AbortError');
 
-            let done, value;
-            try {
-                ({ done, value } = await reader.read());
-                lastActivityTime = Date.now();
-            } catch (readErr) {
-                if (readErr.message === 'STALL_TIMEOUT') throw new Error('NETWORK_STALLED_TIMEOUT');
-                throw readErr;
+            const { done, value } = await reader.read();
+            if (value) {
+                buffer += decoder.decode(value, { stream: !done });
             }
 
-            if (value) buffer += decoder.decode(value, { stream: !done });
+            // Chuẩn hóa toàn bộ ngắt dòng về LF (\n) duy nhất
+            let normalized = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-            while (true) {
-                let boundaryIndex = -1;
-                let boundaryLength = 0;
-
-                const crlfIndex = buffer.indexOf('\r\n\r\n');
-                const lfIndex = buffer.indexOf('\n\n');
-
-                if (crlfIndex !== -1 && (lfIndex === -1 || crlfIndex < lfIndex)) {
-                    boundaryIndex = crlfIndex;
-                    boundaryLength = 4;
-                } else if (lfIndex !== -1) {
-                    boundaryIndex = lfIndex;
-                    boundaryLength = 2;
-                }
-
-                if (boundaryIndex === -1) break;
-
-                const rawEvent = buffer.slice(0, boundaryIndex).trim();
-                buffer = buffer.slice(boundaryIndex + boundaryLength);
+            let eventEnd;
+            while ((eventEnd = normalized.indexOf('\n\n')) !== -1) {
+                const rawEvent = normalized.slice(0, eventEnd).trim();
+                normalized = normalized.slice(eventEnd + 2);
 
                 if (!rawEvent || rawEvent.startsWith(':')) continue;
 
-                const lines = rawEvent.split(/\r?\n/);
-                let dataPayload = '';
-                
+                const lines = rawEvent.split('\n');
+                let dataLines = [];
                 for (const line of lines) {
                     if (line.startsWith('data:')) {
-                        const content = line.slice(5).trim();
-                        dataPayload += (dataPayload ? '\n' : '') + content;
+                        dataLines.push(line.slice(5).trim());
                     }
                 }
 
+                const dataPayload = dataLines.join('\n');
                 if (!dataPayload || dataPayload === '[DONE]') continue;
 
                 try {
@@ -6016,21 +5987,24 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
                     }
                     if (typeof onChunk === 'function') onChunk(parsed);
                 } catch (jsonErr) {
-                    buffer = rawEvent + (boundaryLength === 4 ? '\r\n\r\n' : '\n\n') + buffer;
-                    break;
+                    // Nếu là lỗi parse của 1 event riêng lẻ, bỏ qua để không gây kẹt vòng lặp vô hạn
+                    console.warn("[SSE Parse Warning]", jsonErr.message);
                 }
             }
 
+            buffer = normalized;
+
             if (done) {
                 if (buffer.trim()) {
-                    const lines = buffer.trim().split(/\r?\n/);
-                    let trailingData = '';
+                    const lines = buffer.trim().split('\n');
+                    let dataLines = [];
                     for (const line of lines) {
-                        if (line.startsWith('data:')) trailingData += (trailingData ? '\n' : '') + line.slice(5).trim();
+                        if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
                     }
-                    if (trailingData && trailingData !== '[DONE]') {
+                    const dataPayload = dataLines.join('\n');
+                    if (dataPayload && dataPayload !== '[DONE]') {
                         try {
-                            const parsed = JSON.parse(trailingData);
+                            const parsed = JSON.parse(dataPayload);
                             if (typeof onChunk === 'function') onChunk(parsed);
                         } catch (_) {}
                     }
@@ -6039,7 +6013,6 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
             }
         }
     } finally {
-        clearInterval(stallInterval);
         try { reader.releaseLock(); } catch (_) {}
     }
 };
@@ -10079,7 +10052,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 
                     const rawExecuteHistorySanitize = (rawHistory, ensureEndsWithUser = false) => {
                         if (!rawHistory?.length) return [];
-                        // 1. Chỉ giữ role user/model và loại bỏ sạch sẽ các part chứa suy luận ngầm (thought: true)
                         const alternating = [];
 
                         for (let i = 0; i < rawHistory.length; i++) {
@@ -10087,18 +10059,22 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             if (cur.role !== 'user' && cur.role !== 'model') continue;
                             if (!Array.isArray(cur.parts) || !cur.parts.length) continue;
 
-                            // LỌC SẠCH 100%: Cấm tuyệt đối gửi lại thought part vào lịch sử Google API
+                            // CHỐNG LỖI 400: Loại bỏ triệt để mọi text part rỗng hoặc chỉ có khoảng trắng
                             const cleanParts = cur.parts.filter(p => {
                                 if (p.thought === true) return false;
-                                if (p.text !== undefined && String(p.text).trim() !== '') return true;
                                 if (p.inlineData && p.inlineData.data) return true;
                                 if (p.fileData && p.fileData.fileUri) return true;
+                                if (p.text !== undefined && p.text !== null) {
+                                    const cleanedText = String(p.text).replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+                                    return cleanedText.length > 0;
+                                }
                                 return false;
                             }).map(p => {
-                                // SỬA LỖI: Dọn dẹp sạch sẽ cặp thẻ <think> trong lịch sử để tiết kiệm Token
-                                if (p.text) return { text: String(p.text).replace(/<think>[\s\S]*?<\/think>/gi, '').trim() };
+                                if (p.text !== undefined && p.text !== null) {
+                                    return { text: String(p.text).replace(/<think>[\s\S]*?<\/think>/gi, '').trim() };
+                                }
                                 return p;
-                            }).filter(p => !p.text || p.text.length > 0);
+                            });
 
                             if (!cleanParts.length) continue;
 
@@ -10114,7 +10090,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             }
                         }
 
-                        // Ép buộc lượt đầu tiên luôn là USER
                         while (alternating.length > 0 && alternating[0].role !== 'user') {
                             alternating.shift();
                         }
@@ -10397,155 +10372,109 @@ Trả về duy nhất định dạng JSON:
                     };
 
                     const rawExecuteStreamTransport = async ({ payload, activeModelId, onChunk, signal, onPartialDataReceived }) => {
-    let attempts = 0;
-    const maxAttempts = 15;
-    
-    const candidateModels = Array.from(new Set([
-        activeModelId,
-        ...(Array.isArray(GDeepMasterConfig.Models.FALLBACK_CHAIN) ? GDeepMasterConfig.Models.FALLBACK_CHAIN : ["gemini-2.5-flash", "gemini-2.0-flash"])
-    ])).filter(Boolean);
-    
-    let currentModelIdx = 0;
-    let hasReceivedAnyChunkInSession = false;
+                        const apiGateways = ['v1beta', 'v1'];
+                        let hasReceivedAnyChunk = false;
 
-    const ensureUsableKey = () => {
-        let k = getNextHealthyApiKey();
-        if (!k && apiKeyPool.value && apiKeyPool.value.length > 0) {
-            apiKeyPool.value.forEach(item => { item.status = 'active'; item.cooldownUntil = 0; item.failCount = 0; });
-            k = apiKeyPool.value[0];
-        }
-        return k;
-    };
+                        const reqPayload = JSON.parse(JSON.stringify(payload));
+                        reqPayload.contents = sanitizeHistoryForGemini(reqPayload.contents, true);
+                        reqPayload.safetySettings = SAFETY_SETTINGS;
 
-    while (attempts < maxAttempts) {
-        if (signal?.aborted) throw new Error('AbortError');
-        
-        const currentKey = ensureUsableKey();
-        if (!currentKey) {
-            await new Promise(r => setTimeout(r, 300));
-            attempts++;
-            continue;
-        }
+                        if (!reqPayload.contents || reqPayload.contents.length === 0) {
+                            reqPayload.contents = [{ role: 'user', parts: [{ text: "Hãy bắt đầu phản hồi." }] }];
+                        }
 
-        const currentTargetModel = candidateModels[currentModelIdx] || candidateModels[0];
-        const reqPayload = JSON.parse(JSON.stringify(payload));
-        reqPayload.contents = sanitizeHistoryForGemini(reqPayload.contents, true);
-        reqPayload.safetySettings = SAFETY_SETTINGS;
+                        const allKeys = (apiKeyPool.value && apiKeyPool.value.length > 0) ? [...apiKeyPool.value] : [];
+                        if (allKeys.length === 0) return { success: false, isExhausted: true };
 
-        if (!reqPayload.contents || reqPayload.contents.length === 0) {
-            reqPayload.contents = [{ role: 'user', parts: [{ text: "Hãy tiếp tục phản hồi." }] }];
-        }
+                        for (const gateway of apiGateways) {
+                            if (signal?.aborted) throw new Error('AbortError');
 
-        if (reqPayload.generationConfig?.thinkingConfig && reqPayload.tools) {
-            delete reqPayload.tools;
-        }
+                            for (let kIdx = 0; kIdx < allKeys.length; kIdx++) {
+                                if (signal?.aborted) throw new Error('AbortError');
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:streamGenerateContent?key=${currentKey.key}&alt=sse`;
+                                const currentKeyObj = allKeys[kIdx];
+                                const currentKey = currentKeyObj.key;
+                                const streamUrl = `https://generativelanguage.googleapis.com/${gateway}/models/${activeModelId}:streamGenerateContent?key=${currentKey}&alt=sse`;
 
-        const stallAbortController = new AbortController();
-        const combinedSignal = signal ? 
-            (signal.aborted ? signal : (
-                AbortSignal.any ? AbortSignal.any([signal, stallAbortController.signal]) : stallAbortController.signal
-            )) : stallAbortController.signal;
-        
-        let stallWatchdog = null;
-        const resetStallWatchdog = () => {
-            if (stallWatchdog) clearTimeout(stallWatchdog);
-            stallWatchdog = setTimeout(() => {
-                stallAbortController.abort();
-            }, 20000);
-        };
+                                const stallAbortController = new AbortController();
+                                const combinedSignal = signal ? 
+                                    (signal.aborted ? signal : (AbortSignal.any ? AbortSignal.any([signal, stallAbortController.signal]) : stallAbortController.signal)) 
+                                    : stallAbortController.signal;
+                                
+                                // NÂNG HẠN ĐỊNH LÊN 90 GIÂY: Cho phép 50 Agents suy luận sâu mà không bao giờ bị ngắt đột ngột
+                                let stallWatchdog = setTimeout(() => {
+                                    stallAbortController.abort();
+                                }, 90000);
 
-        try {
-            resetStallWatchdog();
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(reqPayload),
-                signal: combinedSignal
-            });
+                                try {
+                                    const response = await fetch(streamUrl, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(reqPayload),
+                                        signal: combinedSignal
+                                    });
 
-            if (!response.ok) {
-                clearTimeout(stallWatchdog);
-                if (response.status === 400) {
-                    if (reqPayload.generationConfig) {
-                        delete reqPayload.generationConfig.responseMimeType;
-                        reqPayload.generationConfig.maxOutputTokens = 65536;
-                    }
-                    if (attempts >= 1 && reqPayload.tools) {
-                        delete reqPayload.tools;
-                    }
-                } else if (response.status === 404 || response.status === 503) {
-                    currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
-                } else if (response.status === 401 || response.status === 403 || response.status === 429) {
-                    markApiKeyFailure(currentKey, response.status);
-                }
-                attempts++;
-                await new Promise(r => setTimeout(r, Math.min(250 * Math.pow(1.5, attempts), 2000)));
-                continue;
-            }
+                                    if (!response.ok) {
+                                        clearTimeout(stallWatchdog);
+                                        if (response.status === 400 && reqPayload.generationConfig) {
+                                            delete reqPayload.generationConfig.responseMimeType;
+                                        } else if (response.status === 401 || response.status === 403 || response.status === 429) {
+                                            markApiKeyFailure(currentKeyObj, response.status);
+                                        }
+                                        continue;
+                                    }
 
-            let streamChunksReceived = 0;
-            await readSSEStream(response, combinedSignal, (chunk) => {
-                resetStallWatchdog();
-                streamChunksReceived++;
-                hasReceivedAnyChunkInSession = true;
-                if (typeof onPartialDataReceived === 'function') onPartialDataReceived();
-                onChunk(chunk);
-            });
+                                    let chunkCount = 0;
+                                    await readSSEStream(response, combinedSignal, (chunk) => {
+                                        // Reset watchdog mỗi khi có chunk mới để duy trì kết nối vô tận
+                                        clearTimeout(stallWatchdog);
+                                        stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 60000);
+                                        
+                                        chunkCount++;
+                                        hasReceivedAnyChunk = true;
+                                        if (typeof onPartialDataReceived === 'function') onPartialDataReceived();
+                                        onChunk(chunk);
+                                    });
 
-            clearTimeout(stallWatchdog);
-            if (streamChunksReceived > 0) {
-                markApiKeySuccess(currentKey);
-                return { success: true, modelUsed: currentTargetModel, chunksCount: streamChunksReceived };
-            }
-        } catch (err) {
-            clearTimeout(stallWatchdog);
-            if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
-            
-            if (hasReceivedAnyChunkInSession) {
-                markApiKeySuccess(currentKey);
-                return { success: true, isMidStreamDrop: true, modelUsed: currentTargetModel };
-            }
-        }
+                                    clearTimeout(stallWatchdog);
+                                    if (chunkCount > 0) {
+                                        markApiKeySuccess(currentKeyObj);
+                                        return { success: true, gatewayUsed: gateway, chunksCount: chunkCount };
+                                    }
 
-        // CỨU TRỢ PHI STREAMING: Bảo toàn nguyên vẹn 100% Tools và 50 Agents
-        try {
-            const directUrl = `https://generativelanguage.googleapis.com/v1beta/models/${currentTargetModel}:generateContent?key=${currentKey.key}`;
-            const cleanDirectPayload = {
-                systemInstruction: reqPayload.systemInstruction,
-                tools: reqPayload.tools,
-                contents: reqPayload.contents,
-                safetySettings: SAFETY_SETTINGS,
-                generationConfig: { 
-                    ...reqPayload.generationConfig,
-                    temperature: 0.2, 
-                    maxOutputTokens: 65536 
-                }
-            };
-            const directRes = await fetch(directUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(cleanDirectPayload),
-                signal
-            });
-            if (directRes.ok) {
-                const directJson = await directRes.json();
-                if (directJson.candidates?.[0]?.content) {
-                    onChunk(directJson);
-                    markApiKeySuccess(currentKey);
-                    return { success: true, modelUsed: currentTargetModel, isDirectFallback: true };
-                }
-            }
-        } catch (_) {}
+                                } catch (err) {
+                                    clearTimeout(stallWatchdog);
+                                    if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
+                                    if (hasReceivedAnyChunk) {
+                                        markApiKeySuccess(currentKeyObj);
+                                        return { success: true, isMidStreamDrop: true };
+                                    }
+                                }
 
-        attempts++;
-        currentModelIdx = (currentModelIdx + 1) % candidateModels.length;
-        await new Promise(r => setTimeout(r, Math.min(300 * Math.pow(1.5, attempts), 3000)));
-    }
+                                // DỰ PHÒNG NON-STREAM TRÊN CÙNG CHÌA KHÓA
+                                try {
+                                    const directUrl = `https://generativelanguage.googleapis.com/${gateway}/models/${activeModelId}:generateContent?key=${currentKey}`;
+                                    const directRes = await fetch(directUrl, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(reqPayload),
+                                        signal
+                                    });
 
-    return { success: hasReceivedAnyChunkInSession, isExhausted: true, modelUsed: candidateModels[0] };
-};
+                                    if (directRes.ok) {
+                                        const directJson = await directRes.json();
+                                        if (directJson.candidates?.[0]?.content) {
+                                            onChunk(directJson);
+                                            markApiKeySuccess(currentKeyObj);
+                                            return { success: true, gatewayUsed: gateway, isDirectFallback: true };
+                                        }
+                                    }
+                                } catch (_) {}
+                            }
+                        }
+
+                        return { success: hasReceivedAnyChunk, isExhausted: true };
+                    };
 
                     // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI ĐA PHƯƠNG THỨC NÂNG CẤP TOÀN DIỆN
                     const sendMessage = async (isRegenerate = false, existingBotMsgTarget = null) => {
@@ -11101,8 +11030,19 @@ QUY TẮC BẮT BUỘC:
                                 const payload = JSON.parse(JSON.stringify(basePayload));
                                 payload.safetySettings = SAFETY_SETTINGS;
                                 
-                                // ĐÃ BỎ thinkingConfig GÂY LỖI HTTP 400. 
-                                // Thay vào đó, Tools luôn được cấp phép nếu user bật Điện toán độc lập.
+                                // 1. KÍCH HOẠT NATIVE THINKING CHUẨN GOOGLE API (KHÔNG ĐẶT BUDGET ÂM)
+                                if (enableDeepThinking.value) {
+                                    payload.generationConfig = payload.generationConfig || {};
+                                    payload.generationConfig.thinkingConfig = {
+                                        includeThoughts: true
+                                    };
+                                } else {
+                                    if (payload.generationConfig?.thinkingConfig) {
+                                        delete payload.generationConfig.thinkingConfig;
+                                    }
+                                }
+
+                                // 2. KÍCH HOẠT CÔNG CỤ ĐIỆN TOÁN
                                 if (enableCodeExecution.value && !enableImageGen.value) {
                                     payload.tools = [{ codeExecution: {} }];
                                 } else {
@@ -11284,25 +11224,6 @@ if (!shouldContinue) {
                             }
                         } finally {
                             if (thisRequestToken === activeRequestToken) {
-                                // [NƠ-RON CỨU SINH BẰNG MODEL NỀN]: Nếu luồng stream chính không nhả chữ, Model Nền lập tức sinh câu trả lời trong 1s
-                                if ((!rawMarkdownBuffer || !rawMarkdownBuffer.trim()) && (!botMsg.content || !botMsg.content.trim())) {
-                                    try {
-                                        searchStatusText.value = "Model nền đang tổng hợp câu trả lời hoàn chỉnh...";
-                                        const rescuePrompt = (thoughtMsg && thoughtMsg.content)
-                                            ? `[NHIỆM VỤ CỨU HỘ KHẨN CẤP]\nNgười dùng đã nhắn: "${text}"\nDưới đây là ghi chú suy luận logic:\n"""${thoughtMsg.content.slice(-2000)}"""\n\nHÃY TRẢ LỜI TRỰC TIẾP câu chào/câu hỏi của người dùng bằng tiếng Việt tự nhiên, thân thiện và chuẩn mực (TUYỆT ĐỐI KHÔNG giải thích lại quá trình suy luận):`
-                                            : `Hãy trả lời câu sau của người dùng bằng tiếng Việt tự nhiên, lịch sự:\n"${text}"`;
-
-                                        const rescueRes = await dispatchBackgroundTaskWithFallback({
-                                            contents: [{ role: 'user', parts: [{ text: rescuePrompt }] }],
-                                            generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
-                                        });
-                                        const rescueText = rescueRes?.candidates?.[0]?.content?.parts?.[0]?.text;
-                                        if (rescueText && rescueText.trim()) {
-                                            rawMarkdownBuffer = rescueText.trim();
-                                        }
-                                    } catch (_) {}
-                                }
-
                                 isGenerating.value = false;
                                 searchStatusText.value = "";
                                 currentStreamingMsg.value = null;
@@ -11313,7 +11234,8 @@ if (!shouldContinue) {
                                 
                                 const isMsgAlive = botMsg && currentMessages.value.some(m => m.id === botMsg.id);
                                 if (isMsgAlive) {
-                                    botMsg.content = rawMarkdownBuffer.trim() || "Chào bạn! Tôi là G-Deep Ultra, tôi có thể hỗ trợ gì cho công việc của bạn hôm nay?";
+                                    // THÔNG BÁO TỰ NHIÊN: Lịch sự, chuyên nghiệp, bảo mật 100% lỗi kỹ thuật
+                                    botMsg.content = rawMarkdownBuffer.trim() || "Hiện tại máy chủ đang tiếp nhận lượng phản hồi lớn nên kết nối tạm thời bị gián đoạn. Bạn vui lòng gửi lại câu hỏi sau giây lát nhé!";
                                     botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
                                     botMsg.isTruncated = false;
                                     scheduleDbSave(botMsg);
@@ -11321,7 +11243,7 @@ if (!shouldContinue) {
                                 updateInputTokensDisplay();
                             }
                         }
-                     };
+                    };
 
 // TIẾP TỤC THỦ CÔNG TỐI ƯU HÓA KHÁNG LỖI CỰC HẠN
                     const manualResumeContinuation = async (msg) => {
