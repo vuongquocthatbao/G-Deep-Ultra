@@ -3068,7 +3068,8 @@ self.onmessage = async function(e) {
                         }
                     }
                     return tokens;
-                },
+                }
+            },
 
             // 4. An Toàn, Escape & DOMPurify (Security & Content Filtering)
             Security: {
@@ -10505,7 +10506,6 @@ Trả về duy nhất định dạng JSON:
                     const sendMessage = async (isRegenerate = false, existingBotMsgTarget = null) => {
                         if (isGenerating.value && !isRegenerate) return;
 
-                        // Nếu bật chế độ xưởng phim: Dựng video chuyển động
                         if (enableCinemaStudio.value && !isRegenerate && (inputText.value.trim() || pendingAttachments.value.length > 0)) {
                             const cinemaPrompt = inputText.value.trim();
                             const currentAtts = [...pendingAttachments.value];
@@ -10640,7 +10640,6 @@ Trả về duy nhất định dạng JSON:
                                 }
                             }
 
-                            // OPTIMISTIC ZERO-LATENCY: Chuẩn bị sẵn vỏ tin nhắn, không chèn con trỏ rác khi chưa có text
                             if (existingBotMsgTarget) {
                                 botMsg = existingBotMsgTarget;
                                 botMsg.content = '';
@@ -10666,12 +10665,17 @@ Trả về duy nhất định dạng JSON:
                             limitedHistory = sanitizeHistoryForGemini(limitedHistory, false);
                             const activeGem = currentActiveGemObj.value;
 
-                            let systemPrompt = `[CHỈ DẪN HỆ THỐNG TOÀN DIỆN]\nBạn là G-Deep ${targetModelObj.name}.\n` +
-                                `QUY TẮC CỐT LÕI: TUYỆT ĐỐI CẤM NHẢY VỌT LOGIC (STRICT ZERO-LOGICAL-LEAP PROTOCOL).\n` +
-                                `- Mọi kết luận, nhận định và giải pháp BẮT BUỘC phải đi qua từng bước suy luận diễn dịch vững chắc (Step-by-Step Causal Deductions).\n` +
-                                `- Bước N+1 phải là hệ quả tất yếu có căn cứ vững chắc từ bước N. Tuyệt đối không được bỏ qua các bước chứng minh trung gian hoặc giả định ngầm vô căn cứ.\n` +
-                                `- Quy tắc trình bày thẩm mỹ: Khi liệt kê các thay đổi, đối số, mã lệnh hoặc tính năng kỹ thuật, BẮT BUỘC tổ chức dưới dạng danh sách gạch đầu dòng (- ) hoặc bảng Markdown (Table) có phân cấp rõ ràng hoặc sơ đồ mermaid chuẩn mực. TUYỆT ĐỐI KHÔNG liệt kê dưới dạng các đoạn văn xuôi rời rạc.\n\n` +
-                                `[CHUYÊN GIA: ${activeGem.name}]\n${(activeGem.instruction || "").trim() || 'Tư duy logic, giải cấu trúc từng bước từ nguyên lý tiên khởi và giải quyết triệt để vấn đề.'}\n`;
+                            // BẢO VỆ CHUỖI KHỎI VUE COMPILER: Dùng Array Join thay vì Template Literal
+                            let systemPrompt = [
+                                "[CHỈ DẪN HỆ THỐNG TOÀN DIỆN]",
+                                "Bạn là G-Deep " + targetModelObj.name + ".",
+                                "QUY TẮC CỐT LÕI: TUYỆT ĐỐI CẤM NHẢY VỌT LOGIC (STRICT ZERO-LOGICAL-LEAP PROTOCOL).",
+                                "- Mọi kết luận, nhận định và giải pháp BẮT BUỘC phải đi qua từng bước suy luận diễn dịch vững chắc (Step-by-Step Causal Deductions).",
+                                "- Bước N+1 phải là hệ quả tất yếu có căn cứ vững chắc từ bước N. Tuyệt đối không được bỏ qua các bước chứng minh trung gian hoặc giả định ngầm vô căn cứ.",
+                                "- Quy tắc trình bày thẩm mỹ: Khi liệt kê các thay đổi, đối số, mã lệnh hoặc tính năng kỹ thuật, BẮT BUỘC tổ chức dưới dạng danh sách gạch đầu dòng (- ) hoặc bảng Markdown (Table) có phân cấp rõ ràng hoặc sơ đồ mermaid chuẩn mực. TUYỆT ĐỐI KHÔNG liệt kê dưới dạng các đoạn văn xuôi rời rạc.\n",
+                                "[CHUYÊN GIA: " + activeGem.name + "]",
+                                (activeGem.instruction || "").trim() || "Tư duy logic, giải cấu trúc từng bước từ nguyên lý tiên khởi và giải quyết triệt để vấn đề.\n"
+                            ].join('\n');
 
                             let allSearchResults = [];
                             let detectedEntities = [];
@@ -10679,20 +10683,19 @@ Trả về duy nhất định dạng JSON:
                             let directAnswerBox = "";
                             let urlGroundingSources = [];
 
-                            // ĐỐI SOÁT LIÊN KẾT
                             const detectedUrls = UrlGroundingEngine.extractUrls(text);
                             let webContextToPersist = '';
                             if (detectedUrls.length > 0) {
-                                searchStatusText.value = `Đang giải mã liên kết trực tiếp...`;
+                                searchStatusText.value = "Đang giải mã liên kết trực tiếp...";
                                 const fetchedSources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (status) => {
                                     searchStatusText.value = status;
                                 });
                                 urlGroundingSources = fetchedSources.filter(s => s.success);
 
                                 if (urlGroundingSources.length > 0) {
-                                    let groundingBlock = `\n\n[DỮ LIỆU ĐỐI CHIẾU TRỰC TIẾP TỪ LIÊN KẾT]\n`;
+                                    let groundingBlock = "\n\n[DỮ LIỆU ĐỐI CHIẾU TRỰC TIẾP TỪ LIÊN KẾT]\n";
                                     urlGroundingSources.forEach((src, idx) => {
-                                        groundingBlock += `[${idx + 1}] NGUỒN: ${src.title} (${src.url})\nNỘI DUNG: ${src.text}\n`;
+                                        groundingBlock += "[" + (idx + 1) + "] NGUỒN: " + src.title + " (" + src.url + ")\nNỘI DUNG: " + src.text + "\n";
                                     });
                                     systemPrompt += groundingBlock;
                                     webContextToPersist = groundingBlock;
@@ -10706,23 +10709,19 @@ Trả về duy nhất định dạng JSON:
                             }
 
                             const SENATE_50_AGENTS = Object.freeze([
-                                "A01 [Ontological Anchor - Bản thể thực tại]", "A02 [Epistemic Auditor - Kiểm toán tri thức]", "A03 [Formal Logic - Logic hình thức]",
-                                "A04 [Devil's Advocate - Biện hộ ác quỷ]", "A05 [Boundary Tester - Thử tải cực hạn]", "A06 [Trench Scanner - Quét rãnh sâu ngữ cảnh giữa]",
-                                "A07 [Anti-Hallucination - Tuyệt diệt ảo giác]", "A08 [Context Chronologist - Biên niên sử trật tự]", "A09 [Semantic Drift Neutralizer - Chống trôi ngữ nghĩa]",
-                                "A10 [Root-Cause Diagnostician - Chẩn đoán căn nguyên]", "A11 [Complexity Analyst - Phân tích Big-O]", "A12 [Empirical Assessor - Thực chứng dữ liệu]",
-                                "A13 [Dialectical Synthesizer - Biện chứng hợp đề]", "A14 [Edge-Case Hunter - Săn lùng góc khuất]", "A15 [Risk Quantifier - Định lượng rủi ro]",
-                                "A16 [Causal Graph Mapper - Bản đồ nhân quả]", "A17 [Bias Neutralizer - Khử thiên kiến nhận thức]", "A18 [Data Custodian - Người gác đền dữ liệu]",
-                                "A19 [System Dynamics - Động lực học hệ thống]", "A20 [Occam's Razor - Dao cạo Occam]", "A21 [Red-Team Infiltrator - Đội đỏ thâm nhập]",
-                                "A22 [Blue-Team Shield - Đội xanh gia cố]", "A23 [First-Principles - Nguyên lý tiên khởi]", "A24 [Counterfactual Reasoner - Phản chứng giả thuyết]",
-                                "A25 [Feasibility Critic - Thẩm định khả thi]", "A26 [Long-Horizon Extrapolator - Ngoại suy dài hạn]", "A27 [Redundancy Pruner - Cắt tỉa dư thừa]",
-                                "A28 [Behavioral Analyst - Công thái học hành vi]", "A29 [MECE Hierarchy - Phân loại thứ bậc MECE]", "A30 [Context Resurfacer - Trục vớt ngữ cảnh chìm]",
-                                "A31 [Cross-Domain Analogist - Đối chiếu liên ngành]", "A32 [Entropy Compressor - Cực tiểu hóa entropy]", "A33 [Falsifiability Inquisitor - Thách thức khả sai]",
-                                "A34 [Compliance Sentinel - Vệ binh tiêu chuẩn]", "A35 [Semantic Stylist - Tinh chỉnh ngữ nghĩa]", "A36 [Contradiction Detective - Thám tử mâu thuẫn]",
-                                "A37 [Assumption Interrogator - Thẩm vấn giả định ngầm]", "A38 [Feedback Loop Tracer - Truy vết hồi tiếp]", "A39 [Knowledge Gap Exposer - Vạch trần lỗ hổng]",
-                                "A40 [Micro-Nuance Dissector - Mổ xẻ vi mô]", "A41 [Robustness Arbiter - Trọng tài bền vững]", "A42 [Anchoring Demolisher - Phá hủy điểm neo]",
-                                "A43 [Needle Extractor - Thợ lặn tìm kim]", "A44 [Anti-Sycophancy - Triệt tiêu nịnh bợ]", "A45 [Empirical Calibration - Hiệu chuẩn xác suất]",
-                                "A46 [Premise Verifier - Thẩm định tiền đề]", "A47 [Conflict Arbiter - Hòa giải biện chứng]", "A48 [Coverage Auditor - Kiểm toán 360 độ]",
-                                "A49 [Groupthink Inquisitor - Phá vỡ bầy đàn]", "A50 [Supreme Architect - Kiến trúc sư đúc kết]"
+                                "A01 [Ontological Anchor]", "A02 [Epistemic Auditor]", "A03 [Formal Logic]", "A04 [Devil's Advocate]", 
+                                "A05 [Boundary Tester]", "A06 [Trench Scanner]", "A07 [Anti-Hallucination]", "A08 [Context Chronologist]", 
+                                "A09 [Semantic Drift Neutralizer]", "A10 [Root-Cause Diagnostician]", "A11 [Complexity Analyst]", "A12 [Empirical Assessor]",
+                                "A13 [Dialectical Synthesizer]", "A14 [Edge-Case Hunter]", "A15 [Risk Quantifier]", "A16 [Causal Graph Mapper]", 
+                                "A17 [Bias Neutralizer]", "A18 [Data Custodian]", "A19 [System Dynamics]", "A20 [Occam's Razor]", 
+                                "A21 [Red-Team Infiltrator]", "A22 [Blue-Team Shield]", "A23 [First-Principles]", "A24 [Counterfactual Reasoner]",
+                                "A25 [Feasibility Critic]", "A26 [Long-Horizon Extrapolator]", "A27 [Redundancy Pruner]", "A28 [Behavioral Analyst]", 
+                                "A29 [MECE Hierarchy]", "A30 [Context Resurfacer]", "A31 [Cross-Domain Analogist]", "A32 [Entropy Compressor]", 
+                                "A33 [Falsifiability Inquisitor]", "A34 [Compliance Sentinel]", "A35 [Semantic Stylist]", "A36 [Contradiction Detective]",
+                                "A37 [Assumption Interrogator]", "A38 [Feedback Loop Tracer]", "A39 [Knowledge Gap Exposer]", "A40 [Micro-Nuance Dissector]", 
+                                "A41 [Robustness Arbiter]", "A42 [Anchoring Demolisher]", "A43 [Needle Extractor]", "A44 [Anti-Sycophancy]", 
+                                "A45 [Empirical Calibration]", "A46 [Premise Verifier]", "A47 [Conflict Arbiter]", "A48 [Coverage Auditor]",
+                                "A49 [Groupthink Inquisitor]", "A50 [Supreme Architect]"
                             ]);
 
                             let dynamicMiddleContext = "";
@@ -10734,28 +10733,28 @@ Trả về duy nhất định dạng JSON:
                                 const midPoints = midSlices.map((m, i) => {
                                     const sender = m.role === 'user' ? 'User' : 'Assistant';
                                     const body = (m.promptContent || m.content || '').replace(/\s+/g, ' ').trim().slice(0, 250);
-                                    return `[Vị trí rãnh giữa ${startMid + i + 1} | ${sender}]: ${body}`;
+                                    return "[Vị trí rãnh giữa " + (startMid + i + 1) + " | " + sender + "]: " + body;
                                 }).filter(s => s.length > 20);
 
                                 if (midPoints.length > 0) {
-                                    dynamicMiddleContext = `\n[DỮ LIỆU ĐƯỢC AGENT 06 & AGENT 43 TRÍCH XUẤT TỪ RÃNH GIỮA 20%-80% LỊCH SỬ]:\n${midPoints.join('\n')}\n`;
+                                    dynamicMiddleContext = "\n[DỮ LIỆU ĐƯỢC AGENT 06 & AGENT 43 TRÍCH XUẤT TỪ RÃNH GIỮA 20%-80% LỊCH SỬ]:\n" + midPoints.join('\n') + "\n";
                                 }
                             }
 
                             if (enableDeepThinking.value) {
-                                const formattedAgentRoster = SENATE_50_AGENTS.map(a => `- ${a}`).join('\n');
-                                systemPrompt += `\n\n[QUY TRÌNH SUY LUẬN CHUYÊN SÂU NATIVE: ĐẠI HỘI ĐỒNG 50 AGENTS TRANH BIỆN ĐỐI KHÁNG]
-Khi suy luận, bạn BẮT BUỘC phải tổ chức phiên tranh luận nảy lửa và đối soát chéo giữa 50 Agents sau:
-${formattedAgentRoster}
-${dynamicMiddleContext}
-
-CÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢY VỌT LOGIC:
-- Không bao giờ nhảy cóc từ giả thiết tới kết luận.
-- Mọi mắt xích chứng minh đều phải hiển thị tường minh qua 5 giai đoạn: Khảo sát, Công kích Đội Đỏ, Phòng thủ Đội Xanh, Giám sát Ảo giác, và Hòa giải Phán quyết.
-
-TUYỆT ĐỐI BẮT BUỘC VỀ ĐỊNH DẠNG (FORMATTING COMMANDMENT):
-Toàn bộ quá trình tranh luận dài dòng của 50 Agents NÀY BẮT BUỘC PHẢI NẰM TRỌN VẸN BÊN TRONG CẶP THẺ <think> VÀ </think>.
-Chỉ sau khi đóng thẻ </think>, bạn mới được đưa ra CÂU TRẢ LỜI CUỐI CÙNG (ngắn gọn, trực tiếp, dễ hiểu) cho người dùng. Nếu vi phạm, hệ thống sẽ sụp đổ.`;
+                                const formattedAgentRoster = SENATE_50_AGENTS.map(a => "- " + a).join('\n');
+                                systemPrompt += [
+                                    "\n\n[QUY TRÌNH SUY LUẬN CHUYÊN SÂU NATIVE: ĐẠI HỘI ĐỒNG 50 AGENTS TRANH BIỆN ĐỐI KHÁNG]",
+                                    "Khi suy luận, bạn BẮT BUỘC phải tổ chức phiên tranh luận nảy lửa và đối soát chéo giữa 50 Agents sau:",
+                                    formattedAgentRoster,
+                                    dynamicMiddleContext,
+                                    "CÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢY VỌT LOGIC:",
+                                    "- Không bao giờ nhảy cóc từ giả thiết tới kết luận.",
+                                    "- Mọi mắt xích chứng minh đều phải hiển thị tường minh qua 5 giai đoạn: Khảo sát, Công kích Đội Đỏ, Phòng thủ Đội Xanh, Giám sát Ảo giác, và Hòa giải Phán quyết.",
+                                    "TUYỆT ĐỐI BẮT BUỘC VỀ ĐỊNH DẠNG (FORMATTING COMMANDMENT):",
+                                    "Toàn bộ quá trình tranh luận dài dòng của 50 Agents NÀY BẮT BUỘC PHẢI NẰM TRỌN VẸN BÊN TRONG CẶP THẺ <think> VÀ </think>.",
+                                    "Chỉ sau khi đóng thẻ </think>, bạn mới được đưa ra CÂU TRẢ LỜI CUỐI CÙNG (ngắn gọn, trực tiếp, dễ hiểu) cho người dùng. Nếu vi phạm, hệ thống sẽ sụp đổ."
+                                ].join('\n');
                             }
 
                             if (enableImageGen.value) {
@@ -10766,24 +10765,24 @@ Chỉ sau khi đóng thẻ </think>, bạn mới được đưa ra CÂU TRẢ L�
                                 else if (imageConfig.aspectRatio === "4:3") { w = 1152; h = 864; }
                                 else if (imageConfig.aspectRatio === "3:4") { w = 864; h = 1152; }
                                 else if (imageConfig.aspectRatio === "21:9") { w = 1344; h = 576; }
-
                                 w = Math.round(w / 16) * 16;
                                 h = Math.round(h / 16) * 16;
 
                                 const selectedImageModel = getImageGenModel(imageConfig.style);
-
-                                systemPrompt += `\n[CHẾ ĐỘ SÁNG TẠO HÌNH ẢNH NGHỆ THUẬT]
-QUY TẮC BẮT BUỘC:
-1. Bạn KHÔNG được dùng công cụ lập trình hay chạy code Python để tạo chuỗi.
-2. Dịch ý tưởng người dùng sang tiếng Anh thành một đoạn mô tả chi tiết. Nối các từ bằng ký tự %20 (ví dụ: a%20majestic%20mountain).
-3. Đặt thẻ ảnh Markdown NGAY DÒNG ĐẦU TIÊN của phản hồi:
-<img src="https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_NOI_BANG_%20}?width=${w}&height=${h}&model=${selectedImageModel}&nologo=true&seed=${randomSeed}" alt="Tác phẩm nghệ thuật" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-105 transition-all" />
-4. Xuống dòng và viết lời bình tiếng Việt về tác phẩm.`;
+                                systemPrompt += [
+                                    "\n[CHẾ ĐỘ SÁNG TẠO HÌNH ẢNH NGHỆ THUẬT]",
+                                    "QUY TẮC BẮT BUỘC:",
+                                    "1. Bạn KHÔNG được dùng công cụ lập trình hay chạy code Python để tạo chuỗi.",
+                                    "2. Dịch ý tưởng người dùng sang tiếng Anh thành một đoạn mô tả chi tiết. Nối các từ bằng ký tự %20 (ví dụ: a%20majestic%20mountain).",
+                                    "3. Đặt thẻ ảnh Markdown NGAY DÒNG ĐẦU TIÊN của phản hồi:",
+                                    '<img src="https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_NOI_BANG_%20}?width=' + w + '&height=' + h + '&model=' + selectedImageModel + '&nologo=true&seed=' + randomSeed + '" alt="Tác phẩm nghệ thuật" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-105 transition-all" />',
+                                    "4. Xuống dòng và viết lời bình tiếng Việt về tác phẩm."
+                                ].join('\n');
                             }
 
                             const subconsciousAxioms = EpistemicMemoryEngine.getGlobalAxioms();
                             if (subconsciousAxioms) {
-                                systemPrompt += `\n[TIỀM THỨC VỀ NGƯỜI DÙNG]\nHãy tự động đáp ứng các quy tắc ngầm sau:\n${subconsciousAxioms}\n`;
+                                systemPrompt += "\n[TIỀM THỨC VỀ NGƯỜI DÙNG]\nHãy tự động đáp ứng các quy tắc ngầm sau:\n" + subconsciousAxioms + "\n";
                             }
                             
                             if (enableGoogleSearch.value && serperApiKeys.value.length > 0) {
@@ -10825,13 +10824,13 @@ QUY TẮC BẮT BUỘC:
                             }
 
                             if (allSearchResults.length > 0 || directAnswerBox || detectedEntities.length > 0) {
-                                let groundingBlock = `\n\n[DỮ LIỆU TÌM KIẾM THỜI GIAN THỰC]`;
-                                if (detectedEntities.length > 0) groundingBlock += `\n- THỰC THỂ: ${detectedEntities.join(', ')}`;
-                                if (directAnswerBox) groundingBlock += `\n- TÓM TẮT: ${directAnswerBox}`;
+                                let groundingBlock = "\n\n[DỮ LIỆU TÌM KIẾM THỜI GIAN THỰC]";
+                                if (detectedEntities.length > 0) groundingBlock += "\n- THỰC THỂ: " + detectedEntities.join(', ');
+                                if (directAnswerBox) groundingBlock += "\n- TÓM TẮT: " + directAnswerBox;
                                 if (allSearchResults.length > 0) {
-                                    groundingBlock += `\n- NGUỒN THAM KHẢO:`;
+                                    groundingBlock += "\n- NGUỒN THAM KHẢO:";
                                     allSearchResults.forEach((r, idx) => {
-                                        groundingBlock += `\n[${idx + 1}] ${r.title}: ${r.snippet || ''} (${r.link})\n`;
+                                        groundingBlock += "\n[" + (idx + 1) + "] " + r.title + ": " + (r.snippet || '') + " (" + r.link + ")\n";
                                     });
                                 }
                                 systemPrompt += groundingBlock;
@@ -10866,10 +10865,7 @@ QUY TẮC BẮT BUỘC:
                             abortController = new AbortController();
                             currentStreamingMsg.value = botMsg;
 
-                            // =========================================================================
-                            // [TẦNG 5: REACTIVE MUTATION] ĐỘNG CƠ CẬP NHẬT GIAO DIỆN THÍCH ỨNG (ADAPTIVE RENDER LOOP)
-                            // Tự động điều tốc khung hình để không bao giờ bóp nghẹt CPU Main Thread
-                            // =========================================================================
+                            // [TẦNG 5: REACTIVE MUTATION] ĐỘNG CƠ CẬP NHẬT GIAO DIỆN THÍCH ỨNG
                             let lastRenderedLength = 0;
                             let lastRenderTime = 0;
                             let lastThoughtRenderLength = 0;
@@ -10880,7 +10876,6 @@ QUY TẮC BẮT BUỘC:
 
                                 const loop = () => {
                                     if (!isGenerating.value && (!botMsg || !botMsg.isContinuing)) {
-                                        // QUAN TRỌNG: Đảm bảo nhịp quét cuối cùng cập nhật 100% văn bản trước khi tắt máy
                                         if (botMsg && rawMarkdownBuffer.length !== lastRenderedLength) {
                                             botMsg.content = rawMarkdownBuffer;
                                             botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, true);
@@ -10897,24 +10892,17 @@ QUY TẮC BẮT BUỘC:
 
                                     const now = performance.now();
                                     const eye = SynapticOcularMatrix.getEyeSnapshot();
-                                    
-                                    // THUẬT TOÁN ĐIỀU TỐC CPU (DYNAMIC THROTTLING)
-                                    // Văn bản càng dài, Markdown compiler càng tốn CPU. Chúng ta giãn nhịp render để UI không bị đơ.
                                     const lengthPenalty = Math.floor(rawMarkdownBuffer.length / 4000) * 16;
                                     const dynamicInterval = eye.isTabHidden ? 300 : (eye.isUserReading ? 100 : Math.max(32, 48 + lengthPenalty));
 
                                     if (lastRenderedLength === 0 || now - lastRenderTime >= dynamicInterval) {
-                                        // 1. Render Luồng Text chính
                                         if (botMsg && rawMarkdownBuffer.length !== lastRenderedLength) {
                                             botMsg.content = rawMarkdownBuffer;
                                             botMsg.lastRenderSeq = ++globalStreamSeq;
-                                            // Cờ false: Tối ưu hóa compile lược bỏ DOMPurify khi đang stream
                                             botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
-                                            
                                             if (!userIsScrolledUp && !eye.isUserReading) scrollToBottom();
                                             lastRenderedLength = rawMarkdownBuffer.length;
                                         }
-                                        // 2. Render Luồng Suy Luận (50 Agents)
                                         if (thoughtMsg?.isThinking && thoughtMsg.content.length !== lastThoughtRenderLength) {
                                             thoughtMsg.htmlContent = compileMarkdownSync(thoughtMsg.content, false);
                                             lastThoughtRenderLength = thoughtMsg.content.length;
@@ -10931,13 +10919,9 @@ QUY TẮC BẮT BUỘC:
                             lastFinishReason = null;
                             let streamDropped = false;
 
-// =========================================================================
                             // [TẦNG 4.5: STREAM DEMULTIPLEXER] BỘ ĐỊNH TUYẾN DỮ LIỆU ĐA KÊNH CHUẨN ENTERPRISE
-                            // Phân rã luồng dữ liệu thô thành các kênh chuyên biệt bằng Strategy Pattern
-                            // =========================================================================
                             const streamLexerState = { inThought: false, buffer: "" };
 
-                            // FACTORY: Tự động khởi tạo và chèn tin nhắn hệ thống vào UI nếu chưa tồn tại
                             const ensureSystemMessage = (role, existingRef, setupFn = null) => {
                                 if (!existingRef) {
                                     const newMsg = createMessageRecord({
@@ -10948,7 +10932,6 @@ QUY TẮC BẮT BUỘC:
                                     });
                                     newMsg.createdAt = botMsg.createdAt - (role === GDeepDataProtocol.Roles.THOUGHT ? 2 : 1);
                                     if (setupFn) setupFn(newMsg);
-                                    
                                     const botIdx = currentMessages.value.findIndex(m => m.id === botMsg.id);
                                     if (botIdx !== -1) currentMessages.value.splice(botIdx, 0, newMsg);
                                     else currentMessages.value.push(newMsg);
@@ -10958,9 +10941,8 @@ QUY TẮC BẮT BUỘC:
                             };
 
                             const processChunk = (chunkJson, isContinuation = false) => {
-                                // 1. LÁ CHẮN AN TOÀN (SAFETY BOUNDARY)
                                 if (chunkJson.promptFeedback?.blockReason) {
-                                    rawMarkdownBuffer += `\n\n*[Hệ thống an toàn G-Deep đã chặn luồng dữ liệu: ${chunkJson.promptFeedback.blockReason}]*`;
+                                    rawMarkdownBuffer += "\n\n*[Hệ thống an toàn G-Deep đã chặn luồng dữ liệu: " + chunkJson.promptFeedback.blockReason + "]*";
                                     isGenerating.value = false;
                                     abortController?.abort();
                                     return;
@@ -10970,21 +10952,10 @@ QUY TẮC BẮT BUỘC:
                                 if (!candidate) return;
                                 if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
-                                // 2. ĐỊNH TUYẾN SIÊU DỮ LIỆU (METADATA ROUTING)
-                                if (chunkJson.groundingMetadata?.groundingChunks && botMsg) {
-                                    botMsg.serperMetadata = botMsg.serperMetadata || {};
-                                    if (!botMsg.serperMetadata.results || botMsg.serperMetadata.results.length === 0) {
-                                        botMsg.serperMetadata.results = chunkJson.groundingMetadata.groundingChunks.map(c => ({
-                                            title: c.web?.title || 'Nguồn tham khảo', link: c.web?.uri || '#', snippet: ''
-                                        }));
-                                    }
-                                }
-
                                 if (chunkJson.usageMetadata && chunkJson.usageMetadata.promptTokenCount > 0) {
                                     botMsg.exactTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
                                     botMsg.promptTokens = Number(chunkJson.usageMetadata.promptTokenCount);
                                     botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (botMsg.promptTokens + botMsg.exactTokens);
-
                                     const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                                     if (lastUser && !lastUser.exactTokens) {
                                         lastUser.exactTokens = botMsg.promptTokens;
@@ -10995,30 +10966,25 @@ QUY TẮC BẮT BUỘC:
                                 const parts = candidate.content?.parts || [];
                                 if (parts.length === 0) return;
 
-                                // 3. BỘ ĐỊNH TUYẾN DỮ LIỆU ĐA KÊNH (MULTIPLEXER STRATEGY MATRIX)
                                 for (const rawPart of parts) {
                                     const tokens = GDeepDataProtocol.classifyPart(rawPart, streamLexerState);
                                     
                                     for (const token of tokens) {
                                         const { type, payload } = token;
 
-                                        // SỬA LỖI CÚ PHÁP: Bọc mỗi case trong block {} để khai báo biến cục bộ an toàn
                                         switch (type) {
                                             case GDeepDataProtocol.DataTypes.THOUGHT: {
                                                 thoughtMsg = ensureSystemMessage(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
                                                 thoughtMsg.content += (payload || '');
                                                 break;
                                             }
-
                                             case GDeepDataProtocol.DataTypes.CODE_INPUT: {
                                                 executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                                 const codeContent = (payload && payload.code) ? payload.code : String(payload || '');
-                                                
                                                 executionMsg.rawExecutionParts.push({ type: 'code', content: codeContent });
                                                 const targetOutputIdx = executionMsg.rawExecutionParts.length;
                                                 executionMsg.rawExecutionParts.push({ type: 'output', content: 'Đang khởi động Wasm Kernel...', outcome: 'RUNNING' });
                                                 executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
-                                                
                                                 PythonEngine.run(codeContent).then(res => {
                                                     if (executionMsg.rawExecutionParts[targetOutputIdx]) {
                                                         executionMsg.rawExecutionParts[targetOutputIdx] = { 
@@ -11026,7 +10992,6 @@ QUY TẮC BẮT BUỘC:
                                                         };
                                                         executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                                         scheduleDbSave(executionMsg);
-
                                                         if (botMsg?.versions?.length > 0) {
                                                             const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
                                                             if (activeVer) {
@@ -11038,20 +11003,16 @@ QUY TẮC BẮT BUỘC:
                                                 });
                                                 break;
                                             }
-
                                             case GDeepDataProtocol.DataTypes.CODE_OUTPUT: {
                                                 executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                                 const lastPart = executionMsg.rawExecutionParts[executionMsg.rawExecutionParts.length - 1];
                                                 if (lastPart && lastPart.outcome === 'RUNNING') executionMsg.rawExecutionParts.pop();
-                                                
                                                 const outText = (payload && payload.output !== undefined) ? payload.output : String(payload || '');
                                                 const outStatus = (payload && payload.outcome) ? payload.outcome : 'COMPLETED';
-                                                
                                                 executionMsg.rawExecutionParts.push({ type: 'output', content: outText, outcome: outStatus });
                                                 executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                                 break;
                                             }
-
                                             case GDeepDataProtocol.DataTypes.TEXT: {
                                                 let newText = (payload !== undefined && payload !== null) ? String(payload) : '';
                                                 if (isContinuation && isFirstContinuationChunk && newText) {
@@ -11070,7 +11031,6 @@ QUY TẮC BẮT BUỘC:
                                 const payload = JSON.parse(JSON.stringify(basePayload));
                                 payload.safetySettings = SAFETY_SETTINGS;
                                 
-                                // THỎA HIỆP API: Google cấm dùng Native Thinking cùng lúc với Code Execution
                                 if (enableDeepThinking.value) {
                                     if (enableCodeExecution.value) {
                                         if (payload.generationConfig?.thinkingConfig) delete payload.generationConfig.thinkingConfig;
@@ -11105,7 +11065,6 @@ QUY TẮC BẮT BUỘC:
 
                             startRenderLoop();
 
-                            // THỰC THI KHỞI ĐẦU
                             const initialStreamRes = await performStreaming(initialPayload, (chunk) => {
                                 processChunk(chunk, false);
                             });
@@ -11114,7 +11073,6 @@ QUY TẮC BẮT BUỘC:
                                 streamDropped = true;
                             }
 
-                            // CỖ MÁY NỐI TIẾP VÔ TẬN (ĐÃ TỐI ƯU HÓA HOÀN TOÀN)
                             let continueAttempts = 0;
                             const MAX_CONTINUE_ATTEMPTS = 50;
 
@@ -11184,7 +11142,7 @@ QUY TẮC BẮT BUỘC:
 
                             renderLoopActive = false;
                             if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
-                            botMsg.content = rawMarkdownBuffer || 'Đã hoàn tất quá trình suy luận.';
+                            botMsg.content = rawMarkdownBuffer || 'Đã hoàn tất quá trình phản hồi.';
 
                             if (thoughtMsg && !thoughtMsg.content?.trim()) {
                                 currentMessages.value = currentMessages.value.filter(m => m.id !== thoughtMsg.id);
