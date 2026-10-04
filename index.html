@@ -10933,9 +10933,11 @@ QUY TẮC BẮT BUỘC:
 
 // =========================================================================
                             // [TẦNG 4.5: STREAM DEMULTIPLEXER] BỘ ĐỊNH TUYẾN DỮ LIỆU ĐA KÊNH CHUẨN ENTERPRISE
+                            // Phân rã luồng dữ liệu thô thành các kênh chuyên biệt bằng Strategy Pattern
                             // =========================================================================
                             const streamLexerState = { inThought: false, buffer: "" };
 
+                            // FACTORY: Tự động khởi tạo và chèn tin nhắn hệ thống vào UI nếu chưa tồn tại
                             const ensureSystemMessage = (role, existingRef, setupFn = null) => {
                                 if (!existingRef) {
                                     const newMsg = createMessageRecord({
@@ -10956,6 +10958,7 @@ QUY TẮC BẮT BUỘC:
                             };
 
                             const processChunk = (chunkJson, isContinuation = false) => {
+                                // 1. LÁ CHẮN AN TOÀN (SAFETY BOUNDARY)
                                 if (chunkJson.promptFeedback?.blockReason) {
                                     rawMarkdownBuffer += `\n\n*[Hệ thống an toàn G-Deep đã chặn luồng dữ liệu: ${chunkJson.promptFeedback.blockReason}]*`;
                                     isGenerating.value = false;
@@ -10967,10 +10970,21 @@ QUY TẮC BẮT BUỘC:
                                 if (!candidate) return;
                                 if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
+                                // 2. ĐỊNH TUYẾN SIÊU DỮ LIỆU (METADATA ROUTING)
+                                if (chunkJson.groundingMetadata?.groundingChunks && botMsg) {
+                                    botMsg.serperMetadata = botMsg.serperMetadata || {};
+                                    if (!botMsg.serperMetadata.results || botMsg.serperMetadata.results.length === 0) {
+                                        botMsg.serperMetadata.results = chunkJson.groundingMetadata.groundingChunks.map(c => ({
+                                            title: c.web?.title || 'Nguồn tham khảo', link: c.web?.uri || '#', snippet: ''
+                                        }));
+                                    }
+                                }
+
                                 if (chunkJson.usageMetadata && chunkJson.usageMetadata.promptTokenCount > 0) {
                                     botMsg.exactTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
                                     botMsg.promptTokens = Number(chunkJson.usageMetadata.promptTokenCount);
                                     botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (botMsg.promptTokens + botMsg.exactTokens);
+
                                     const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                                     if (lastUser && !lastUser.exactTokens) {
                                         lastUser.exactTokens = botMsg.promptTokens;
@@ -10981,20 +10995,22 @@ QUY TẮC BẮT BUỘC:
                                 const parts = candidate.content?.parts || [];
                                 if (parts.length === 0) return;
 
-                                // ĐỊNH TUYẾN CHÍNH XÁC: Duyệt qua từng Token đã được băm nhỏ từ Lexer
+                                // 3. BỘ ĐỊNH TUYẾN DỮ LIỆU ĐA KÊNH (MULTIPLEXER STRATEGY MATRIX)
                                 for (const rawPart of parts) {
                                     const tokens = GDeepDataProtocol.classifyPart(rawPart, streamLexerState);
                                     
                                     for (const token of tokens) {
                                         const { type, payload } = token;
 
+                                        // SỬA LỖI CÚ PHÁP: Bọc mỗi case trong block {} để khai báo biến cục bộ an toàn
                                         switch (type) {
-                                            case GDeepDataProtocol.DataTypes.THOUGHT:
+                                            case GDeepDataProtocol.DataTypes.THOUGHT: {
                                                 thoughtMsg = ensureSystemMessage(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
                                                 thoughtMsg.content += (payload || '');
                                                 break;
+                                            }
 
-                                            case GDeepDataProtocol.DataTypes.CODE_INPUT:
+                                            case GDeepDataProtocol.DataTypes.CODE_INPUT: {
                                                 executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                                 const codeContent = (payload && payload.code) ? payload.code : String(payload || '');
                                                 
@@ -11010,6 +11026,7 @@ QUY TẮC BẮT BUỘC:
                                                         };
                                                         executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                                         scheduleDbSave(executionMsg);
+
                                                         if (botMsg?.versions?.length > 0) {
                                                             const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
                                                             if (activeVer) {
@@ -11020,19 +11037,22 @@ QUY TẮC BẮT BUỘC:
                                                     }
                                                 });
                                                 break;
+                                            }
 
-                                            case GDeepDataProtocol.DataTypes.CODE_OUTPUT:
+                                            case GDeepDataProtocol.DataTypes.CODE_OUTPUT: {
                                                 executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                                 const lastPart = executionMsg.rawExecutionParts[executionMsg.rawExecutionParts.length - 1];
                                                 if (lastPart && lastPart.outcome === 'RUNNING') executionMsg.rawExecutionParts.pop();
                                                 
                                                 const outText = (payload && payload.output !== undefined) ? payload.output : String(payload || '');
                                                 const outStatus = (payload && payload.outcome) ? payload.outcome : 'COMPLETED';
+                                                
                                                 executionMsg.rawExecutionParts.push({ type: 'output', content: outText, outcome: outStatus });
                                                 executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                                 break;
+                                            }
 
-                                            case GDeepDataProtocol.DataTypes.TEXT:
+                                            case GDeepDataProtocol.DataTypes.TEXT: {
                                                 let newText = (payload !== undefined && payload !== null) ? String(payload) : '';
                                                 if (isContinuation && isFirstContinuationChunk && newText) {
                                                     newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
@@ -11040,6 +11060,7 @@ QUY TẮC BẮT BUỘC:
                                                 }
                                                 rawMarkdownBuffer += newText;
                                                 break;
+                                            }
                                         }
                                     }
                                 }
@@ -11050,7 +11071,6 @@ QUY TẮC BẮT BUỘC:
                                 payload.safetySettings = SAFETY_SETTINGS;
                                 
                                 // THỎA HIỆP API: Google cấm dùng Native Thinking cùng lúc với Code Execution
-                                // Nếu người dùng bật cả 2, ta ưu tiên Code Execution và ép AI suy luận qua thẻ <think> (Fake Native)
                                 if (enableDeepThinking.value) {
                                     if (enableCodeExecution.value) {
                                         if (payload.generationConfig?.thinkingConfig) delete payload.generationConfig.thinkingConfig;
@@ -11099,20 +11119,17 @@ QUY TẮC BẮT BUỘC:
                             const MAX_CONTINUE_ATTEMPTS = 50;
 
                             while (continueAttempts < MAX_CONTINUE_ATTEMPTS && abortController && !abortController.signal.aborted) {
-// THẨM ĐỊNH KẾT CẤU LOGIC TỪNG BƯỚC: Chỉ dừng lại khi chuỗi lập luận đã trọn vẹn tuyệt đối
-const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
-const isDangling = (typeof isStructurallyIncomplete === 'function') ? isStructurallyIncomplete(rawMarkdownBuffer) : false;
+                                const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
+                                const isDangling = (typeof isStructurallyIncomplete === 'function') ? isStructurallyIncomplete(rawMarkdownBuffer) : false;
 
-// Nếu API báo STOP nhưng câu văn, khối code, công thức toán hoặc danh sách đang dang dở -> BẮT BUỘC tiếp tục
-if (lastFinishReason === 'STOP' && !boundary.isCodeOpen && !boundary.isMathOpen && !isDangling && !streamDropped) {
-    break;
-}
+                                if (lastFinishReason === 'STOP' && !boundary.isCodeOpen && !boundary.isMathOpen && !isDangling && !streamDropped) {
+                                    break;
+                                }
 
-// Kích hoạt nối mạch nếu chạm trần token, mở dở thẻ cú pháp hoặc logic chưa hoàn tất
-const shouldContinue = (lastFinishReason === 'MAX_TOKENS') || boundary.isCodeOpen || boundary.isMathOpen || isDangling || streamDropped;
-if (!shouldContinue) {
-    break;
-}
+                                const shouldContinue = (lastFinishReason === 'MAX_TOKENS') || boundary.isCodeOpen || boundary.isMathOpen || isDangling || streamDropped;
+                                if (!shouldContinue) {
+                                    break;
+                                }
 
                                 continueAttempts++;
                                 botMsg.isContinuing = true;
@@ -11229,7 +11246,7 @@ if (!shouldContinue) {
                                 triggerHaptic('light');
                                 triggerGenerateFollowUps(botMsg);
                             }
-                       } catch (error) {
+                        } catch (error) {
                             const isMsgAlive = botMsg && currentMessages.value.some(m => m.id === botMsg.id);
                             if (error.message === 'AbortError' || error.name === 'AbortError') {
                                 if (isMsgAlive) {
@@ -11253,7 +11270,6 @@ if (!shouldContinue) {
                                 
                                 const isMsgAlive = botMsg && currentMessages.value.some(m => m.id === botMsg.id);
                                 if (isMsgAlive) {
-                                    // THÔNG BÁO TỰ NHIÊN: Lịch sự, chuyên nghiệp, bảo mật 100% lỗi kỹ thuật
                                     botMsg.content = rawMarkdownBuffer.trim() || "Hiện tại máy chủ đang tiếp nhận lượng phản hồi lớn nên kết nối tạm thời bị gián đoạn. Bạn vui lòng gửi lại câu hỏi sau giây lát nhé!";
                                     botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
                                     botMsg.isTruncated = false;
@@ -11264,7 +11280,7 @@ if (!shouldContinue) {
                         }
                     };
 
-// TIẾP TỤC THỦ CÔNG TỐI ƯU HÓA KHÁNG LỖI CỰC HẠN
+                    // TIẾP TỤC THỦ CÔNG TỐI ƯU HÓA KHÁNG LỖI CỰC HẠN
                     const manualResumeContinuation = async (msg) => {
                         if (isGenerating.value || !msg) return;
                         triggerHaptic('light');
@@ -11303,7 +11319,7 @@ if (!shouldContinue) {
                         let isFirstManualChunk = true;
                         let lastRenderTime = 0;
                         const startManualRenderLoop = () => {
-                            if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; } // TIÊU DIỆT LOOP BÓNG MA
+                            if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; } 
                             const loop = () => {
                                 if (!isGenerating.value && !msg.isContinuing) return;
                                 const now = performance.now();
@@ -11320,18 +11336,24 @@ if (!shouldContinue) {
 
                         startManualRenderLoop();
 
+                        // ĐỒNG BỘ LEXER MỚI VÀO MANUAL RESUME
+                        const resumeLexerState = { inThought: false, buffer: "" };
+
                         try {
                             const streamRes = await fetchStreamWithFaultTolerance(continuationPayload, modelId, (chunk) => {
                                 const parts = chunk.candidates?.[0]?.content?.parts || [];
                                 for (const rawPart of parts) {
-                                    const routing = GDeepDataProtocol.classifyPart(rawPart);
-                                    if (routing.type === GDeepDataProtocol.DataTypes.TEXT || routing.remainingText) {
-                                        let newText = routing.payload || routing.remainingText || '';
-                                        if (isFirstManualChunk && newText) {
-                                            newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
-                                            if (newText.length > 0) isFirstManualChunk = false;
+                                    // SỬA LỖI: Dùng Lexer trả mảng Tokens thay vì trả Object đơn
+                                    const tokens = GDeepDataProtocol.classifyPart(rawPart, resumeLexerState);
+                                    for (const token of tokens) {
+                                        if (token.type === GDeepDataProtocol.DataTypes.TEXT) {
+                                            let newText = token.payload || '';
+                                            if (isFirstManualChunk && newText) {
+                                                newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
+                                                if (newText.length > 0) isFirstManualChunk = false;
+                                            }
+                                            rawMarkdownBuffer += newText;
                                         }
-                                        rawMarkdownBuffer += newText;
                                     }
                                 }
                             }, abortController.signal);
