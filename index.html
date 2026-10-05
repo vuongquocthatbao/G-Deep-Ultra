@@ -2904,8 +2904,8 @@ self.onmessage = async function(e) {
         const rawScenesList = Array.isArray(masterScript.scenes) ? masterScript.scenes : [masterScript];
         const totalScenes = rawScenesList.length;
 
-        // KIỂM TRA HỖ TRỢ VÀ THIẾT LẬP BỘ MÃ HÓA ÂM THANH
-        let supportsAudio = (typeof AudioEncoder !== 'undefined');
+        // KIỂM TRA TOÀN DIỆN CẢ AUDIOENCODER VÀ AUDIODATA CHỐNG SẬP TRÊN SAFARI
+        let supportsAudio = (typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined');
 
         // MUXER MP4 TOÀN CẢNH
         let muxerTarget = null;
@@ -2982,7 +2982,8 @@ self.onmessage = async function(e) {
         sharedRenderer.setSize(width, height, false);
 
         const quadScene = new THREE.Scene();
-        const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+        const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+        quadCamera.position.z = 1;
         const quadGeo = new THREE.PlaneGeometry(2, 2);
 
         let cumulativeGlobalFrameCount = 0;
@@ -8447,7 +8448,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
             function useMultimediaStudio({ 
                 currentModel, isGenerating, searchStatusText, currentThreadId, 
                 currentMessages, scheduleDbSave, scrollToBottom, notify, 
-                triggerHaptic, getNextHealthyApiKey, apiKeyPool, dispatchBackgroundTask 
+                triggerHaptic, getNextHealthyApiKey, apiKeyPool, dispatchBackgroundTask,
+                inputText, pendingAttachments
             }) {
                 const enableImageGen = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.FEAT_IMAGE_GEN, false));
                 const imageConfig = reactive({
@@ -8565,7 +8567,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     notify(`Mã nhận diện mới: #${newSeed}`);
                 };
 
-                // DỰNG PHIM ĐIỆN ẢNH CHUẨN XÁC
+                // DỰNG PHIM ĐIỆN ẢNH CHUẨN XÁC (ĐÃ SỬA LỖI TRÍCH XUẤT ẢNH & ĐỘC LẬP TIN NHẮN)
                 const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null, inputTextRef = null, pendingAttachmentsRef = null) => {
                     if (isGenerating.value) return;
                     isGenerating.value = true;
@@ -8576,16 +8578,32 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
                     } catch (_) {}
 
-                    const targetMsg = msg || createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
-                    if (!msg) currentMessages.value.push(targetMsg);
+                    // Tự động bóc tách URL ảnh nếu được bấm từ thẻ tin nhắn chứa ảnh
+                    let resolvedImageInput = directImageInput;
+                    if (!resolvedImageInput && msg?.content) {
+                        const htmlMatch = msg.content.match(/<img[^>]+src=["']([^"']+)["']/i);
+                        if (htmlMatch && htmlMatch[1]) {
+                            resolvedImageInput = unescapeHTML(htmlMatch[1]);
+                        } else {
+                            const mdMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+                            if (mdMatch && mdMatch[2]) resolvedImageInput = unescapeHTML(mdMatch[2]);
+                        }
+                    }
+
+                    // Tạo tin nhắn Model mới độc lập để không ghi đè mất thẻ ảnh của người dùng
+                    const targetMsg = createMessageRecord({ threadId: currentThreadId.value, role: 'model' });
+                    currentMessages.value.push(targetMsg);
 
                     try {
                         const requestedDuration = Number(cinemaConfig.duration) || 15;
                         const userAspectRatio = cinemaConfig.aspectRatio || "16:9";
                         const userSeed = cinemaConfig.characterSeed;
-                        const userPrompt = (customPrompt || (inputTextRef ? inputTextRef.value : '') || '').trim();
+                        let userPrompt = (customPrompt || (inputTextRef ? inputTextRef.value : '') || '').trim();
+                        if (!userPrompt && resolvedImageInput) {
+                            userPrompt = "Chuyển động điện ảnh nghệ thuật mượt mà và sống động từ hình ảnh gốc";
+                        }
 
-                        if (!userPrompt && !directImageInput && !msg?.content) {
+                        if (!userPrompt && !resolvedImageInput) {
                             throw new Error("Vui lòng cung cấp chủ đề hoặc ý tưởng cú máy điện ảnh.");
                         }
 
@@ -8650,6 +8668,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         if (!masterScript) throw new Error("G-Deep Core không thiết lập được kịch bản phân cảnh.");
                         masterScript.base_seed = userSeed;
 
+                        // Nạp chính xác đường dẫn ảnh gốc vào cú máy đầu tiên của kịch bản
+                        if (resolvedImageInput && masterScript.scenes && masterScript.scenes.length > 0) {
+                            masterScript.scenes[0].directImageDataUrl = resolvedImageInput;
+                        }
+
                         searchStatusText.value = `Đang kích hoạt G-Deep Two-Layer Engine...`;
 
                         const allAvailableKeys = (apiKeyPool.value || []).map(k => k.key).filter(Boolean);
@@ -8692,7 +8715,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                 };
 
                 const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
-                    return await SynapticNeuralMesh.fire('CinemaStudioNeuron', { msg, customPrompt, directImageInput });
+                    return await rawExecuteCinemaProduction(msg, customPrompt, directImageInput, inputText, pendingAttachments);
                 };
 
                 return {
@@ -8983,7 +9006,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         triggerHaptic,
                         getNextHealthyApiKey,
                         apiKeyPool,
-                        dispatchBackgroundTask: dispatchBackgroundTaskWithFallback
+                        dispatchBackgroundTask: dispatchBackgroundTaskWithFallback,
+                        inputText,
+                        pendingAttachments
                     });
 
                     // =========================================================================
@@ -10620,10 +10645,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         }
                     };
 
-                    const buildCleanHistory = async (upToMessageId = null) => {
+                    const buildCleanHistory = async (upToMessageId = null, queryText = null) => {
+                        const effectiveQuery = (queryText !== null && queryText !== undefined) 
+                            ? queryText 
+                            : (inputText.value || "");
                         return await TokenBudgetManager.assembleInfiniteContextPayload(
                             currentMessages.value,
-                            inputText.value,
+                            effectiveQuery,
                             upToMessageId,
                             currentModel.value,
                             getNextHealthyApiKey()?.key || null
@@ -10748,7 +10776,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                     };
 
                     // =========================================================================
-                    // HÀM ĐIỀU PHỐI GỬI TIN NHẮN TRUNG TÂM (CORE SEND MESSAGE ENGINE)
+                    // HÀM ĐIỀU PHỐI GỬI TIN NHẮN TRUNG TÂM (CORE SEND MESSAGE ENGINE - ĐÃ FIX TOÀN DIỆN)
                     // =========================================================================
                     const sendMessage = async (isRegenerate = false, targetMsgForRegen = null) => {
                         if (isGenerating.value) return;
@@ -10771,20 +10799,25 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             return;
                         }
 
-                        // 2. Chuẩn bị ngữ cảnh và nội dung gửi
-                        const text = inputText.value ? inputText.value.trim() : "";
-                        const attachments = [...pendingAttachments.value];
+                        // 2. Xác định văn bản và đính kèm thực tế (Hỗ trợ hoàn hảo cho cả lượt gửi mới lẫn Tạo lại / Sửa tin nhắn)
+                        const lastUserMsg = isRegenerate ? [...currentMessages.value].reverse().find(m => m.role === 'user') : null;
+                        const effectiveText = !isRegenerate 
+                            ? (inputText.value ? inputText.value.trim() : "") 
+                            : (lastUserMsg?.promptContent || lastUserMsg?.content || "");
+                        const effectiveAttachments = !isRegenerate 
+                            ? [...pendingAttachments.value] 
+                            : (lastUserMsg?.attachments || []);
 
-                        if (!isRegenerate && !text && attachments.length === 0) return;
+                        if (!effectiveText && effectiveAttachments.length === 0) return;
 
-                        // 3. Phân nhánh Xưởng phim nghệ thuật nếu đang kích hoạt
+                        // 3. Phân nhánh Xưởng phim nghệ thuật (ĐÃ SỬA: Gọi trực tiếp rawExecuteCinemaProduction)
                         if (!isRegenerate && enableCinemaStudio.value) {
-                            const promptForCinema = text || (attachments.length > 0 ? attachments[0].name : "Tác phẩm điện ảnh nghệ thuật");
+                            const promptForCinema = effectiveText || (effectiveAttachments.length > 0 ? effectiveAttachments[0].name : "Tác phẩm điện ảnh nghệ thuật");
                             inputText.value = "";
                             pendingAttachments.value = [];
                             sessionStorage.removeItem('gdeep_draft_input');
                             resizeTextarea();
-                            await studioModule.rawExecuteCinemaProduction(null, promptForCinema, null, inputText, pendingAttachments);
+                            await rawExecuteCinemaProduction(null, promptForCinema, null, inputText, pendingAttachments);
                             return;
                         }
 
@@ -10800,9 +10833,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             userMsg = createMessageRecord({
                                 threadId: targetThreadId,
                                 role: 'user',
-                                content: text,
-                                promptContent: text,
-                                attachments: attachments
+                                content: effectiveText,
+                                promptContent: effectiveText,
+                                attachments: effectiveAttachments
                             });
                             currentMessages.value.push(userMsg);
                             scheduleDbSave(userMsg, true);
@@ -10813,7 +10846,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             sessionStorage.removeItem('gdeep_draft_input');
                             resizeTextarea();
                         }
-
+                      
                         const thisRequestToken = ++activeRequestToken;
                         isGenerating.value = true;
                         triggerHaptic('light');
@@ -10841,7 +10874,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         try {
                             // 5. Kiểm tra và cào dữ liệu URL tự động nếu có
                             searchStatusText.value = "Đang kiểm tra tài liệu tham chiếu...";
-                            const extractedUrls = UrlGroundingEngine.extractUrls(text);
+                            const extractedUrls = UrlGroundingEngine.extractUrls(effectiveText);
                             let urlGroundingSources = [];
                             if (extractedUrls.length > 0) {
                                 urlGroundingSources = await UrlGroundingEngine.inspectAllUrls(extractedUrls, (status) => {
@@ -10849,9 +10882,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                 });
                             }
 
-                            // 6. Xây dựng lịch sử hội thoại chuẩn an toàn Token
+                            // 6. Xây dựng lịch sử hội thoại chuẩn an toàn Token (Nạp đúng effectiveText vào BM25)
                             searchStatusText.value = "Đang nén và chuẩn bị bộ nhớ...";
-                            const limitedHistory = await buildCleanHistory(botMsg.id);
+                            const limitedHistory = await TokenBudgetManager.assembleInfiniteContextPayload(
+                                currentMessages.value,
+                                effectiveText,
+                                botMsg.id,
+                                currentModel.value,
+                                getNextHealthyApiKey()?.key || null
+                            );
 
                             // 7. Lập kế hoạch tìm kiếm trực tuyến Serper nếu được bật
                             let detectedEntities = [];
@@ -10928,8 +10967,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             if (enableGoogleSearch.value && serperApiKeys.value.length > 0) {
                                 searchStatusText.value = "Đang tra cứu dữ liệu web...";
                                 const searchPlan = await SearchIntelligenceEngine.planIntelligentSearch(
-                                    text,
-                                    attachments,
+                                    effectiveText,
+                                    effectiveAttachments,
                                     dispatchBackgroundTaskWithFallback
                                 );
                                 detectedEntities = searchPlan.entities || [];
@@ -10980,7 +11019,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 
                             if (allSearchResults.length > 0 || detectedEntities.length > 0 || directAnswerBox) {
                                 botMsg.serperMetadata = {
-                                    query: text || 'Tìm kiếm dữ liệu',
+                                    query: effectiveText || 'Tìm kiếm dữ liệu',
                                     queries: executedQueries,
                                     entities: detectedEntities,
                                     answerBox: directAnswerBox,
@@ -11135,6 +11174,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                                 break;
                                             }
                                             case GDeepDataProtocol.DataTypes.TEXT: {
+                                                // Tắt ngay trạng thái isThinking để mở khóa nút đóng mở cho người dùng
+                                                if (thoughtMsg && thoughtMsg.isThinking) {
+                                                    thoughtMsg.isThinking = false;
+                                                    if (!thoughtMsg.thoughtTime) {
+                                                        thoughtMsg.thoughtTime = ((Date.now() - (thoughtMsg.createdAt || Date.now())) / 1000).toFixed(1);
+                                                    }
+                                                    thoughtMsg.htmlContent = compileMarkdownSync(thoughtMsg.content, true);
+                                                    scheduleDbSave(thoughtMsg);
+                                                }
+
                                                 let newText = (payload !== undefined && payload !== null) ? String(payload) : '';
                                                 if (isContinuation && isFirstContinuationChunk && newText) {
                                                     newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
@@ -11373,7 +11422,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         let rawMarkdownBuffer = msg.content || '';
                         const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
                         const continuationPrompt = buildSeamlessContinuationPrompt(boundary);
-                        const limitedHistory = await buildCleanHistory(msg.id);
+                        const limitedHistory = await buildCleanHistory(msg.id, msg.promptContent || msg.content || "");
                         const continuationHistory = sanitizeHistoryForGemini([
                             ...limitedHistory,
                             { role: 'model', parts: [{ text: rawMarkdownBuffer }] },
