@@ -1865,7 +1865,7 @@
                                     <button type="button" @click.stop="copyFullMessage(msg.content)" title="Sao chép toàn bộ" class="btn-instant action-btn shrink-0"><lucide-icon name="copy" class="w-3.5 h-3.5"></lucide-icon></button>
 
                                     <!-- NÚT CHUYỂN ẢNH THÀNH VIDEO NGHỆ THUẬT -->
-                                    <button type="button" v-if="msg.content && (msg.content.includes('![') || msg.content.includes('<img') || msg.content.includes('image.pollinations.ai'))" @click.stop="animateImageToVideo(msg)"
+                                    <button type="button" v-if="msg.content && (msg.content.includes('![') || msg.content.includes('&lt;img') || msg.content.includes('<img') || msg.content.includes('image.pollinations.ai'))" @click.stop="animateImageToVideo(msg)"
                                             class="btn-instant action-btn shrink-0 !text-purple-300 !bg-purple-500/15 hover:!bg-purple-500/30 border-purple-500/30"
                                             title="Tạo video chuyển động từ ảnh này">
                                         <lucide-icon name="film" class="w-3.5 h-3.5 text-purple-400"></lucide-icon>
@@ -3398,18 +3398,14 @@ self.onmessage = async function(e) {
                     })
                 },
                 // =========================================================================
-                // [TẦNG 4: TOKENIZER PHÂN LUỒNG Ý THỨC - MULTI-TOKEN LEXER]
-                // Băm nhỏ chunk dữ liệu thành các token độc lập, chống rò rỉ 100%
-                // =========================================================================
-                // =========================================================================
-                // [TẦNG 4: TOKENIZER PHÂN LUỒNG Ý THỨC - MULTI-TOKEN LEXER CHUẨN XÁC]
+                // [TẦNG 4: TOKENIZER PHÂN LUỒNG Ý THỨC - MULTI-TOKEN LEXER CHUẨN XÁC 100%]
                 // =========================================================================
                 classifyPart(part, state) {
                     if (!state) state = { inThought: false, buffer: "" };
                     const tokens = [];
                     if (!part || typeof part !== 'object') return tokens;
 
-                    // 1. Luồng suy luận Native từ API
+                    // 1. Luồng suy luận Native từ API (Gemini 2.0 / 2.5 / 3.x Flash Thinking)
                     if (part.thought === true || part.reasoning) {
                         tokens.push({ 
                             type: this.DataTypes.THOUGHT, 
@@ -3419,26 +3415,32 @@ self.onmessage = async function(e) {
                         return tokens;
                     }
 
-                    // 2. Luồng thực thi mã Python WASM
+                    // 2. Luồng thực thi mã Python WASM (Code Input)
                     if (part.executableCode) {
                         tokens.push({ 
                             type: this.DataTypes.CODE_INPUT, 
-                            payload: { language: (part.executableCode.language || 'python').toLowerCase(), code: String(part.executableCode.code || '') } 
+                            payload: { 
+                                language: (part.executableCode.language || 'python').toLowerCase(), 
+                                code: String(part.executableCode.code || '') 
+                            } 
                         });
                         return tokens;
                     }
 
-                    // 3. Luồng kết quả tính toán độc lập
+                    // 3. Luồng kết quả tính toán độc lập (Code Output)
                     if (part.codeExecutionResult) {
                         const ok = (part.codeExecutionResult.outcome === 'OUTCOME_OK' || part.codeExecutionResult.outcome === 'COMPLETED');
                         tokens.push({ 
                             type: this.DataTypes.CODE_OUTPUT, 
-                            payload: { output: String(part.codeExecutionResult.output || ''), outcome: ok ? 'COMPLETED' : 'ERROR' } 
+                            payload: { 
+                                output: String(part.codeExecutionResult.output || ''), 
+                                outcome: ok ? 'COMPLETED' : 'ERROR' 
+                            } 
                         });
                         return tokens;
                     }
 
-                    // 4. Tokenizer phân tích thẻ suy luận dạng text hỗn hợp (<think>...</think>)
+                    // 4. Tokenizer phân tích thẻ suy luận dạng text hỗn hợp ()
                     if (part.text !== undefined && part.text !== null) {
                         state.buffer += String(part.text);
 
@@ -3453,6 +3455,7 @@ self.onmessage = async function(e) {
                                     state.inThought = true;
                                     state.buffer = state.buffer.slice(openTagMatch.index + openTagMatch[0].length);
                                 } else {
+                                    // Kiểm tra ranh giới thẻ mở bị chẻ đôi giữa 2 gói tin TCP (ví dụ: "<th" hoặc "<think")
                                     const partialOpenMatch = state.buffer.match(/<t?(h(i(n(k)?)?)?)?$/i);
                                     if (partialOpenMatch && partialOpenMatch.index !== -1 && partialOpenMatch[0].length > 0) {
                                         const safeChunk = state.buffer.slice(0, partialOpenMatch.index);
@@ -3470,16 +3473,16 @@ self.onmessage = async function(e) {
                                 const closeTagMatch = state.buffer.match(/<\/(think|thought)>/i);
                                 if (closeTagMatch) {
                                     const thoughtChunk = state.buffer.slice(0, closeTagMatch.index);
-                                    if (thoughtChunk.length > 0) {
-                                        tokens.push({ 
-                                            type: this.DataTypes.THOUGHT, 
-                                            payload: thoughtChunk,
-                                            inThought: false // TẮT NGAY TRẠNG THÁI SUY LUẬN KHI THẤY THẺ ĐÓNG
-                                        });
-                                    }
+                                    // Luôn phát tín hiệu inThought: false để tắt cờ isThinking ngay cả khi thoughtChunk rỗng
+                                    tokens.push({ 
+                                        type: this.DataTypes.THOUGHT, 
+                                        payload: thoughtChunk,
+                                        inThought: false 
+                                    });
                                     state.inThought = false;
                                     state.buffer = state.buffer.slice(closeTagMatch.index + closeTagMatch[0].length);
                                 } else {
+                                    // Kiểm tra ranh giới thẻ đóng bị chẻ đôi (ví dụ: "</" hoặc "</th")
                                     const partialCloseMatch = state.buffer.match(/<\/(t(h(i(n(k)?)?)?)?)?$/i);
                                     if (partialCloseMatch && partialCloseMatch.index !== -1 && partialCloseMatch[0].length > 0) {
                                         const safeThoughtChunk = state.buffer.slice(0, partialCloseMatch.index);
@@ -3505,8 +3508,24 @@ self.onmessage = async function(e) {
                         }
                     }
                     return tokens;
-                }
-            },
+                },
+
+                // Xả sạch đệm khi kết thúc luồng dữ liệu (Flush Residual Buffer)
+                flushLexer(state) {
+                    if (!state || !state.buffer) return [];
+                    const tokens = [];
+                    if (state.buffer.length > 0) {
+                        tokens.push({
+                            type: state.inThought ? this.DataTypes.THOUGHT : this.DataTypes.TEXT,
+                            payload: state.buffer,
+                            inThought: false
+                        });
+                        state.buffer = "";
+                    }
+                    state.inThought = false;
+                    return tokens;
+                    }
+                },
 
             // 4. An Toàn, Escape & DOMPurify (Security & Content Filtering)
             Security: {
