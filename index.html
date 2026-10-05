@@ -10775,33 +10775,50 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                     };
 
                     // =========================================================================
-                    // TẦNG VẬN CHUYỂN BỌC THÉP (BULLETPROOF NETWORK TRANSPORT)
+                    // TẦNG VẬN CHUYỂN BỌC THÉP CHUẨN XÁC (ZERO INFINITE LOOP - AUTO RESILIENT)
                     // =========================================================================
                     const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal) => {
-                        try {
-                            const apiGateways = ['v1beta', 'v1'];
-                            let hasReceivedAnyChunk = false;
+                        const apiGateways = ['v1beta', 'v1'];
+                        let hasReceivedAnyChunk = false;
+                        let lastErrorMessage = "";
 
-                            const reqPayload = JSON.parse(JSON.stringify(payload));
-                            const allKeys = (apiKeyPool.value && apiKeyPool.value.length > 0) ? [...apiKeyPool.value] : [];
-                            
-                            if (allKeys.length === 0) {
-                                console.warn("[Network] Không tìm thấy API Key khả dụng.");
-                                return { success: false, isMidStreamDrop: true };
-                            }
+                        const allKeys = (apiKeyPool.value && apiKeyPool.value.length > 0) ? [...apiKeyPool.value] : [];
+                        if (allKeys.length === 0) {
+                            return { success: false, errorMessage: "Chưa cấu hình chìa khóa API trong Cài đặt." };
+                        }
 
-                            for (const gateway of apiGateways) {
+                        for (const gateway of apiGateways) {
+                            if (signal?.aborted) return { success: false, isMidStreamDrop: true };
+
+                            for (let kIdx = 0; kIdx < allKeys.length; kIdx++) {
                                 if (signal?.aborted) return { success: false, isMidStreamDrop: true };
 
-                                for (let kIdx = 0; kIdx < allKeys.length; kIdx++) {
+                                const keyObj = allKeys[kIdx];
+                                const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${activeModelId}:streamGenerateContent?alt=sse&key=${keyObj.key}`;
+
+                                // Thử tối đa 2 lượt cho mỗi key: Lượt 1 đầy đủ tính năng, Lượt 2 gọt sạch tham số nếu dính 400
+                                for (let attempt = 0; attempt < 2; attempt++) {
                                     if (signal?.aborted) return { success: false, isMidStreamDrop: true };
 
-                                    const keyObj = allKeys[kIdx];
-                                    const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${activeModelId}:streamGenerateContent?alt=sse&key=${keyObj.key}`;
+                                    const reqPayload = JSON.parse(JSON.stringify(payload));
+
+                                    // Lượt 2 (Cứu hộ): Gỡ bỏ triệt để các tham số có thể gây xung đột với model
+                                    if (attempt === 1) {
+                                        if (reqPayload.generationConfig) {
+                                            delete reqPayload.generationConfig.thinkingConfig;
+                                            delete reqPayload.generationConfig.responseMimeType;
+                                            delete reqPayload.generationConfig.maxOutputTokens;
+                                        }
+                                        delete reqPayload.tools;
+                                    }
+
+                                    // Cổng v1 không hỗ trợ thinkingConfig và tools beta
+                                    if (gateway === 'v1') {
+                                        if (reqPayload.generationConfig?.thinkingConfig) delete reqPayload.generationConfig.thinkingConfig;
+                                        delete reqPayload.tools;
+                                    }
 
                                     const stallAbortController = new AbortController();
-                                    
-                                    // SỬA LỖI 0 ĐỘ TRỄ: Gộp tín hiệu hủy an toàn tuyệt đối trên mọi trình duyệt cũ/mới
                                     let combinedSignal = stallAbortController.signal;
                                     if (signal) {
                                         if (signal.aborted) return { success: false, isMidStreamDrop: true };
@@ -10813,7 +10830,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                         }
                                     }
 
-                                    // Watchdog 90 giây bảo vệ 50 Agents suy luận
                                     let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 90000);
 
                                     try {
@@ -10838,21 +10854,28 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 
                                             clearTimeout(stallWatchdog);
                                             if (chunkCount > 0) return { success: true, isMidStreamDrop: false };
-                                            
                                         } else {
                                             clearTimeout(stallWatchdog);
-                                            markApiKeyFailure(keyObj, response.status);
                                             
-                                            // SỬA LỖI 400: Gỡ bỏ xung đột API và LÙI LẠI THỬ LẠI TRÊN CHÍNH KEY VỪA RỒI
-                                            if (response.status === 400) {
-                                                if (reqPayload.generationConfig?.responseMimeType) delete reqPayload.generationConfig.responseMimeType;
-                                                if (reqPayload.generationConfig?.thinkingConfig) delete reqPayload.generationConfig.thinkingConfig;
-                                                if (reqPayload.tools) delete reqPayload.tools;
-                                                
-                                                // Lùi index để vòng lặp thử lại chính chìa khóa này với payload đã sửa
-                                                kIdx--; 
+                                            // Đọc chính xác thông điệp lỗi của Google để hiển thị minh bạch
+                                            const errJson = await response.json().catch(() => ({}));
+                                            const serverMsg = errJson?.error?.message || response.statusText;
+                                            lastErrorMessage = `[${activeModelId} - Cổng ${gateway}]: ${serverMsg}`;
+                                            console.warn(`[G-Deep Network Error] ${lastErrorMessage}`);
+
+                                            if (response.status === 401 || response.status === 403 || response.status === 429) {
+                                                markApiKeyFailure(keyObj, response.status);
+                                                break; // Hết hạn ngạch hoặc sai key -> Bỏ qua key này ngay
                                             }
-                                            continue;
+
+                                            if (response.status === 404) {
+                                                break; // Model không tồn tại trên gateway này -> Đổi gateway tiếp theo
+                                            }
+
+                                            if (response.status === 400 && attempt === 0) {
+                                                continue; // Thử lại lần 2 với payload sạch
+                                            }
+                                            break;
                                         }
                                     } catch (netErr) {
                                         clearTimeout(stallWatchdog);
@@ -10861,14 +10884,17 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                             markApiKeySuccess(keyObj);
                                             return { success: true, isMidStreamDrop: true };
                                         }
+                                        break;
                                     }
-                                }
-                            }
-                            return { success: hasReceivedAnyChunk, isMidStreamDrop: !hasReceivedAnyChunk };
-                        } catch (fatalErr) {
-                            console.error("[FetchStream Fatal]", fatalErr);
-                            return { success: false, isError: true };
-                        }
+                                } // Hết lượt 0/1
+                            } // Hết mảng keys
+                        } // Hết mảng gateways
+
+                        return { 
+                            success: hasReceivedAnyChunk, 
+                            isMidStreamDrop: !hasReceivedAnyChunk,
+                            errorMessage: lastErrorMessage 
+                        };
                     };
 
                     const performStreaming = async (basePayload, chunkHandler) => {
@@ -11617,7 +11643,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                 
                                 const isMsgAlive = botMsg && currentMessages.value.some(m => m.id === botMsg.id);
                                 if (isMsgAlive) {
-                                    botMsg.content = rawMarkdownBuffer.trim() || "Hiện tại máy chủ đang tiếp nhận lượng phản hồi lớn nên kết nối tạm thời bị gián đoạn. Bạn vui lòng gửi lại câu hỏi sau giây lát nhé!";
+                                    if (rawMarkdownBuffer.trim()) {
+                                        botMsg.content = rawMarkdownBuffer.trim();
+                                    } else if (initialStreamRes?.errorMessage) {
+                                        // Hiển thị chính xác lý do Google từ chối kết nối
+                                        botMsg.content = `⚠️ **Kết nối gián đoạn:** ${initialStreamRes.errorMessage}\n\n*Gợi ý: Hãy thử chuyển sang model khác trong danh sách hoặc kiểm tra quyền hạn của khóa API.*`;
+                                    } else {
+                                        botMsg.content = "Hiện tại máy chủ đang tiếp nhận lượng phản hồi lớn nên kết nối tạm thời bị gián đoạn. Bạn vui lòng gửi lại câu hỏi sau giây lát nhé!";
+                                    }
                                     botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
                                     botMsg.isTruncated = false;
                                     scheduleDbSave(botMsg);
