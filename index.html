@@ -1823,7 +1823,7 @@
                             <!-- TL;DR SUMMARY BOX -->
                             <div v-if="msg.summaryText" class="my-3 p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-1.5 shadow-sm">
                                 <div class="flex items-center justify-between text-[11px] font-bold text-amber-300 uppercase tracking-wider">
-                                    <span class="flex items-center gap-1.5"><lucide-icon name="zap" class="w-3.5 h-3.5"></lucide-icon> Tóm Tắt Trọng Tâm (TL;DR)</span>
+                                    <span class="flex items-center gap-1.5"><lucide-icon name="zap" class="w-3.5 h-3.5"></lucide-icon> Tóm Tắt Trọng Tâm</span>
                                     <button type="button" @click.stop="msg.summaryText = ''" class="btn-instant text-textMuted hover:text-white">&times;</button>
                                 </div>
                                 <div class="text-[13px] leading-relaxed text-amber-100 markdown-body" v-html="compileMarkdown(msg.summaryText)"></div>
@@ -6326,50 +6326,39 @@ self.onmessage = async function(e) {
  * NƠ-RON AI GIẢI MÃ LUỒNG SERVER-SENT EVENTS (SSE STREAM NEURON)
  */
 // =========================================================================
-// [TẦNG 3: NETWORK TRANSPORT] CHUỖI ĐƯỜNG ỐNG WEB STREAMS API CHUẨN 2026
-// Tự động điều phối áp lực ngược (Backpressure), chống rách gói tin TCP
+// [TẦNG 3: NETWORK TRANSPORT] BỘ ĐỆM SSE CHUẨN XÁC TUYỆT ĐỐI (ROCK-SOLID BUFFER)
+// Miễn nhiễm với hiện tượng xé rách gói tin TCP và lỗi mạng chập chờn
 // =========================================================================
 
-/**
- * 1. TransformStream bóc tách ranh giới sự kiện SSE (Tự động nhận diện cả CRLF và LF)
- */
-class SSEEventTransformStream extends TransformStream {
-    constructor() {
-        let buffer = '';
-        super({
-            transform(chunk, controller) {
-                buffer += chunk;
-                // Chuẩn hóa toàn bộ ngắt dòng về \n duy nhất
-                buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-                let eventBoundary;
-                while ((eventBoundary = buffer.indexOf('\n\n')) !== -1) {
-                    const eventText = buffer.slice(0, eventBoundary).trim();
-                    buffer = buffer.slice(eventBoundary + 2);
-                    if (eventText) {
-                        controller.enqueue(eventText);
-                    }
-                }
-            },
-            flush(controller) {
-                if (buffer.trim()) {
-                    controller.enqueue(buffer.trim());
-                }
-            }
-        });
+const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
+    if (!response || !response.body) {
+        throw new Error('[readSSEStream] Phản hồi rỗng hoặc không tồn tại.');
     }
-}
 
-/**
- * 2. TransformStream phân giải dữ liệu JSON của Google Gemini API
- */
-class GeminiPayloadTransformStream extends TransformStream {
-    constructor() {
-        super({
-            transform(eventText, controller) {
-                if (!eventText || eventText.startsWith(':')) return;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    let buffer = '';
 
-                const lines = eventText.split('\n');
+    try {
+        while (true) {
+            if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
+            
+            const { done, value } = await reader.read();
+            if (value) {
+                buffer += decoder.decode(value, { stream: !done });
+            }
+
+            // Chuẩn hóa toàn bộ ngắt dòng về LF (\n) duy nhất
+            let normalized = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+            let eventBoundary;
+            while ((eventBoundary = normalized.indexOf('\n\n')) !== -1) {
+                const rawEvent = normalized.slice(0, eventBoundary).trim();
+                normalized = normalized.slice(eventBoundary + 2);
+
+                if (!rawEvent || rawEvent.startsWith(':')) continue;
+
+                const lines = rawEvent.split('\n');
                 let dataString = '';
 
                 for (const line of lines) {
@@ -6379,54 +6368,28 @@ class GeminiPayloadTransformStream extends TransformStream {
                     }
                 }
 
-                if (!dataString || dataString === '[DONE]') return;
+                if (!dataString || dataString === '[DONE]') continue;
 
                 try {
                     const parsed = JSON.parse(dataString);
                     if (parsed.error) {
-                        controller.error(new Error(parsed.error.message || 'Lỗi từ máy chủ Google'));
-                        return;
+                        throw new Error(parsed.error.message || 'Lỗi từ máy chủ Google');
                     }
-                    controller.enqueue(parsed);
-                } catch (err) {
-                    console.warn('[GeminiStreamParser] Bỏ qua chunk JSON lỗi cú pháp:', err.message);
+                    if (typeof onChunk === 'function') onChunk(parsed);
+                } catch (jsonErr) {
+                    // CƠ CHẾ SỐNG CÒN: Nếu gói JSON bị xé làm đôi giữa đường truyền mạng,
+                    // HOÀN TRẢ LẠI buffer nguyên vẹn để chờ gói tiếp theo nối vào, KHÔNG BAO GIỜ VỨT BỎ!
+                    normalized = rawEvent + '\n\n' + normalized;
+                    break;
                 }
             }
-        });
-    }
-}
 
-/**
- * 3. Hàm điều phối luồng Stream hướng đối tượng, tự động giải phóng tài nguyên
- */
-const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
-    if (!response || !response.body) {
-        throw new Error('[readSSEStream] Phản hồi rỗng hoặc không tồn tại.');
-    }
+            buffer = normalized;
 
-    // Xây dựng chuỗi ống dẫn (Pipeline): Response Body -> TextDecoder -> SSE Parser -> JSON Transformer
-    const streamPipeline = response.body
-        .pipeThrough(new TextDecoderStream(), { signal })
-        .pipeThrough(new SSEEventTransformStream(), { signal })
-        .pipeThrough(new GeminiPayloadTransformStream(), { signal });
-
-    const reader = streamPipeline.getReader();
-
-    try {
-        while (true) {
-            if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
-            
-            const { done, value } = await reader.read();
             if (done) break;
-
-            if (value && typeof onChunk === 'function') {
-                onChunk(value);
-            }
         }
     } finally {
-        try {
-            reader.releaseLock();
-        } catch (_) {}
+        try { reader.releaseLock(); } catch (_) {}
     }
 };
 
@@ -10595,42 +10558,58 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         return alternating;
                     };
 
-                    // =========================================================================
-                    // 6. BỘ ĐIỀU PHỐI TÁC VỤ NỀN DỰ PHÒNG & KHỞI TẠO XƯỞNG PHIM
+// =========================================================================
+                    // 6. BỘ ĐIỀU PHỐI TÁC VỤ NỀN DỰ PHÒNG CHUẨN ENTERPRISE (AUTO FAILOVER)
+                    // (Cấp nguồn cho Tìm kiếm Web, Gợi ý câu hỏi, Tóm tắt TL;DR)
                     // =========================================================================
                     async function dispatchBackgroundTaskWithFallback(requestPayload) {
                         const bgCandidates = [
                             GDeepSystemConfig.Models.BACKGROUND.FAST,
                             GDeepSystemConfig.Models.BACKGROUND.LITE,
-                            "gemini-2.5-flash"
-                        ];
+                            "gemini-2.5-flash",
+                            "gemini-2.0-flash"
+                        ].filter(Boolean);
+                        
                         const pool = apiKeyPool.value.length > 0 ? apiKeyPool.value : [];
                         if (!pool.length) return null;
 
-                        for (const modelId of bgCandidates) {
-                            for (let attempt = 0; attempt < 3; attempt++) {
-                                const healthyKeyObj = getNextHealthyApiKey();
-                                if (!healthyKeyObj) break;
+                        const apiGateways = ['v1beta', 'v1'];
+                        const reqPayload = JSON.parse(JSON.stringify(requestPayload));
 
-                                try {
-                                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${healthyKeyObj.key}`, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(requestPayload)
-                                    });
+                        for (const gateway of apiGateways) {
+                            for (const modelId of bgCandidates) {
+                                for (let attempt = 0; attempt < 2; attempt++) {
+                                    const healthyKeyObj = getNextHealthyApiKey();
+                                    if (!healthyKeyObj) return null;
 
-                                    if (res.ok) {
-                                        markApiKeySuccess(healthyKeyObj);
-                                        return await res.json();
-                                    } else {
-                                        markApiKeyFailure(healthyKeyObj, res.status);
-                                        if (res.status === 429 || res.status === 403 || res.status === 503) {
-                                            await new Promise(r => setTimeout(r, 600));
+                                    try {
+                                        const res = await fetch(`https://generativelanguage.googleapis.com/${gateway}/models/${modelId}:generateContent?key=${healthyKeyObj.key}`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify(reqPayload)
+                                        });
+
+                                        if (res.ok) {
+                                            markApiKeySuccess(healthyKeyObj);
+                                            return await res.json();
+                                        } else {
+                                            markApiKeyFailure(healthyKeyObj, res.status);
+                                            
+                                            // Tự chữa lành lỗi 400 (Xung đột schema / mimetype) trên tác vụ nền
+                                            if (res.status === 400 && reqPayload.generationConfig?.responseMimeType) {
+                                                delete reqPayload.generationConfig.responseMimeType;
+                                                attempt--; // Thử lại ngay lập tức
+                                                continue;
+                                            }
+                                            
+                                            if (res.status === 429 || res.status === 403 || res.status === 503) {
+                                                await new Promise(r => setTimeout(r, 600));
+                                            }
                                         }
+                                    } catch (_) {
+                                        markApiKeyFailure(healthyKeyObj);
+                                        await new Promise(r => setTimeout(r, 600));
                                     }
-                                } catch (_) {
-                                    markApiKeyFailure(healthyKeyObj);
-                                    await new Promise(r => setTimeout(r, 600));
                                 }
                             }
                         }
@@ -10677,281 +10656,517 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         );
                     };
 
-                    const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal) => {
-                        let attempts = 0;
-                        const maxAttempts = Math.max(3, apiKeyPool.value.length);
+                    // =========================================================================
+                    // [HỒI SINH NƠ-RON AI]: 4 TÁC VỤ NỀN TỰ HÀNH (AUTO-TITLE, TL;DR, TRANSLATE, FOLLOW-UP)
+                    // =========================================================================
 
-                        while (attempts < maxAttempts) {
-                            attempts++;
-                            if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-
-                            const keyObj = getNextHealthyApiKey();
-                            if (!keyObj) {
-                                throw new Error("Không có sẵn chìa khóa API hợp lệ trong hệ thống.");
-                            }
-
-                            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${activeModelId}:streamGenerateContent?alt=sse&key=${keyObj.key}`;
-
-                            try {
-                                const response = await fetch(endpoint, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify(payload),
-                                    signal
-                                });
-
-                                if (response.ok) {
-                                    markApiKeySuccess(keyObj);
-                                    let receivedAnyChunk = false;
-
-                                    await readSSEStream(response, signal, (chunk) => {
-                                        receivedAnyChunk = true;
-                                        onChunk(chunk);
-                                    });
-
-                                    return { success: true, isMidStreamDrop: !receivedAnyChunk };
-                                } else {
-                                    markApiKeyFailure(keyObj, response.status);
-                                    if (response.status === 400) {
-                                        // Nếu payload có lỗi cấu trúc, không lặp lại vô ích
-                                        const errJson = await response.json().catch(() => ({}));
-                                        throw new Error(`Google API 400: ${errJson.error?.message || 'Yêu cầu không hợp lệ'}`);
-                                    }
-                                    await new Promise(r => setTimeout(r, 600));
+                    // 1. TỰ ĐỘNG ĐẶT TÊN PHIÊN TRÒ CHUYỆN (AUTO TITLE NEURON)
+                    const AutoTitleNeuron = SynapticNeuralMesh.register(
+                        'AutoTitleNeuron',
+                        (p) => p && typeof p.snippet === 'string' && p.threadId,
+                        async ({ snippet, threadId }) => {
+                            const prompt = `[NHIỆM VỤ ĐẶT TÊN PHIÊN TRÒ CHUYỆN]\nNội dung mở đầu: """${snippet}"""\nHãy đặt một tiêu đề ngắn gọn (dưới 6 từ, tiếng Việt tự nhiên) phản ánh đúng trọng tâm cuộc trò chuyện. Chỉ trả về tiêu đề, không ngoặc kép, không giải thích.`;
+                            const res = await dispatchBackgroundTaskWithFallback({
+                                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                                generationConfig: { temperature: 0.2, maxOutputTokens: 60 }
+                            });
+                            const title = res?.candidates?.[0]?.content?.parts?.[0]?.text?.trim()?.replace(/["'`]/g, '');
+                            if (title && title.length > 1) {
+                                const target = threads.value.find(t => t.id === threadId);
+                                if (target && target.title === 'Phiên trò chuyện mới') {
+                                    target.title = title.slice(0, 40);
+                                    target.isAutoGenerated = true;
+                                    saveThreadToLocalStorageBackup(target);
+                                    if (db) await db.threads.put(cleanForDb(target));
                                 }
-                            } catch (netErr) {
-                                if (netErr.name === 'AbortError') throw netErr;
-                                markApiKeyFailure(keyObj);
-                                await new Promise(r => setTimeout(r, 800));
                             }
-                        }
+                            return title;
+                        },
+                        null,
+                        { tags: ['ai', 'titling'] }
+                    );
 
-                        return { success: false, isMidStreamDrop: true };
+                    const autoNameThread = async (snippet, threadId) => {
+                        return await AutoTitleNeuron.fire({ snippet, threadId }, 'AutoTitleWatcher');
                     };
+
+                    // 2. TÓM TẮT TRỌNG TÂM TL;DR (SUMMARY NEURON)
+                    const SummaryNeuron = SynapticNeuralMesh.register(
+                        'SummaryNeuron',
+                        (msg) => msg && typeof msg.content === 'string' && msg.content.length > 50,
+                        async (msg) => {
+                            notify("Đang tóm tắt trọng tâm...");
+                            triggerHaptic('light');
+                            const prompt = `[NHIỆM VỤ TÓM TẮT TRỌNG TÂM TL;DR]\nVăn bản cần tóm tắt:\n"""${msg.content}"""\nHãy tóm tắt nội dung trên thành 2-3 gạch đầu dòng cô đọng nhất bằng tiếng Việt.`;
+                            const res = await dispatchBackgroundTaskWithFallback({
+                                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                                generationConfig: { temperature: 0.1, maxOutputTokens: 300 }
+                            });
+                            const summary = res?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                            if (summary) {
+                                msg.summaryText = summary;
+                                scheduleDbSave(msg);
+                                notify("Đã tạo bản tóm tắt!");
+                            }
+                            return summary;
+                        },
+                        null,
+                        { tags: ['ai', 'summary'] }
+                    );
 
                     const extractMsgSummary = async (msg) => {
-                        if (!msg?.content || isGenerating.value) return;
-                        triggerHaptic('light');
-                        notify("Đang tổng hợp tóm tắt trọng tâm (TL;DR)...");
+                        return await SummaryNeuron.fire(msg, 'SummaryAction');
+                    };
 
-                        const prompt = `[TÓM TẮT TRỌNG TÂM - TL;DR]\nHãy tóm tắt nội dung sau thành 3 gạch đầu dòng súc tích, làm nổi bật thông điệp cốt lõi:\n\n"""${msg.content.slice(0, 12000)}"""`;
-                        
-                        try {
+                    // 3. DỊCH THUẬT TỨC THÌ (TRANSLATION NEURON)
+                    const TranslatorNeuron = SynapticNeuralMesh.register(
+                        'TranslatorNeuron',
+                        (msg) => msg && typeof msg.content === 'string',
+                        async (msg) => {
+                            notify("Đang dịch tức thì...");
+                            triggerHaptic('light');
+                            const isVietnamese = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(msg.content);
+                            const targetLang = isVietnamese ? "tiếng Anh (English)" : "tiếng Việt";
+                            const prompt = `[NHIỆM VỤ DỊCH THUẬT CHUYÊN SÂU]\nDịch chính xác văn bản sau sang ${targetLang}:\n"""${msg.content}"""\nChỉ trả về bản dịch, không giải thích.`;
                             const res = await dispatchBackgroundTaskWithFallback({
                                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                                generationConfig: { temperature: 0.2, maxOutputTokens: 512 }
+                                generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
                             });
-                            const summary = res?.candidates?.[0]?.content?.parts?.[0]?.text;
-                            if (summary) {
-                                msg.summaryText = summary.trim();
+                            const translated = res?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                            if (translated) {
+                                msg.translatedText = translated;
                                 scheduleDbSave(msg);
-                                notify("Đã hoàn tất tóm tắt!");
+                                notify(`Đã dịch sang ${targetLang}!`);
                             }
-                        } catch (err) {
-                            notify("Không thể tạo tóm tắt lúc này.", true);
-                        }
-                    };
+                            return translated;
+                        },
+                        null,
+                        { tags: ['ai', 'translator'] }
+                    );
 
                     const translateMsg = async (msg) => {
-                        if (!msg?.content || isGenerating.value) return;
-                        triggerHaptic('light');
-                        notify("Đang dịch văn bản tức thì...");
-
-                        const prompt = `[DỊCH VĂN BẢN ĐA NGỮ CAO CẤP]\nNếu nội dung sau là Tiếng Việt, hãy dịch sang Tiếng Anh học thuật chuẩn mực. Nếu là ngôn ngữ khác, hãy dịch sang Tiếng Việt chuẩn mực. Chỉ trả về bản dịch hoàn chỉnh:\n\n"""${msg.content.slice(0, 12000)}"""`;
-                        
-                        try {
-                            const res = await dispatchBackgroundTaskWithFallback({
-                                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                                generationConfig: { temperature: 0.2, maxOutputTokens: 2048 }
-                            });
-                            const translation = res?.candidates?.[0]?.content?.parts?.[0]?.text;
-                            if (translation) {
-                                msg.translatedText = translation.trim();
-                                scheduleDbSave(msg);
-                                notify("Đã dịch văn bản thành công!");
-                            }
-                        } catch (err) {
-                            notify("Không thể dịch văn bản lúc này.", true);
-                        }
+                        return await TranslatorNeuron.fire(msg, 'TranslateAction');
                     };
 
-                    const triggerGenerateFollowUps = async (msg) => {
-                        if (!msg?.content || msg.content.length < 50) return;
-                        
-                        const prompt = `[GỢI Ý TƯƠNG TÁC TIẾP NỐI]\nDựa trên nội dung phản hồi sau:\n"""${msg.content.slice(-2000)}"""\nHãy gợi ý đúng 3 câu hỏi ngắn (dưới 12 từ mỗi câu) mà người dùng có thể muốn hỏi tiếp theo.\nTrả về duy nhất JSON array dạng: ["Câu 1", "Câu 2", "Câu 3"]`;
-
-                        try {
+                    // 4. GỢI Ý CÂU HỎI TIẾP NỐI (FOLLOW-UP GENERATOR NEURON)
+                    const FollowUpGeneratorNeuron = SynapticNeuralMesh.register(
+                        'FollowUpGeneratorNeuron',
+                        (msg) => msg && typeof msg.content === 'string' && msg.content.length > 30,
+                        async (msg) => {
+                            const prompt = `[GỢI Ý TƯƠNG TÁC TIẾP NỐI]\nDựa trên câu trả lời sau:\n"""${msg.content.slice(-1500)}"""\nHãy gợi ý đúng 3 câu hỏi hoặc hướng đi tiếp theo tự nhiên nhất mà người dùng có thể muốn hỏi tiếp. Trả về định dạng JSON mảng chuỗi: ["Câu 1", "Câu 2", "Câu 3"]`;
                             const res = await dispatchBackgroundTaskWithFallback({
                                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                                generationConfig: { temperature: 0.3, maxOutputTokens: 256, responseMimeType: "application/json" }
+                                generationConfig: { temperature: 0.3, maxOutputTokens: 250, responseMimeType: "application/json" }
                             });
                             const raw = res?.candidates?.[0]?.content?.parts?.[0]?.text;
                             const parsed = SearchIntelligenceEngine.robustJsonRepair(raw);
                             if (Array.isArray(parsed) && parsed.length > 0) {
-                                msg.followUps = parsed.slice(0, 3);
+                                msg.followUps = parsed.slice(0, 3).map(s => String(s).trim()).filter(Boolean);
                                 scheduleDbSave(msg);
                             }
-                        } catch (_) {}
+                            return msg.followUps || [];
+                        },
+                        () => [],
+                        { tags: ['ai', 'followup'] }
+                    );
+
+                    const triggerGenerateFollowUps = async (msg) => {
+                        return await FollowUpGeneratorNeuron.fire(msg, 'FollowUpAction');
                     };
 
                     // =========================================================================
-                    // HÀM ĐIỀU PHỐI GỬI TIN NHẮN TRUNG TÂM (CORE SEND MESSAGE ENGINE - ĐÃ FIX TOÀN DIỆN)
+                    // TẦNG VẬN CHUYỂN BỌC THÉP (BULLETPROOF NETWORK TRANSPORT)
                     // =========================================================================
-                    const sendMessage = async (isRegenerate = false, targetMsgForRegen = null) => {
-                        if (isGenerating.value) return;
-                        
-                        // 1. Kiểm tra trạng thái ngoại tuyến (Offline Queue)
-                        if (!isOnline.value) {
-                            if (inputText.value.trim() || pendingAttachments.value.length > 0) {
-                                if (db) {
-                                    await db.offlineQueue.add({
-                                        text: inputText.value,
-                                        attachments: pendingAttachments.value,
-                                        createdAt: getMonotonicTimestamp()
-                                    });
-                                    inputText.value = "";
-                                    pendingAttachments.value = [];
-                                    sessionStorage.removeItem('gdeep_draft_input');
-                                    notify("Mất kết nối mạng. Tin nhắn đã được lưu vào hàng đợi ngoại tuyến.");
+                    const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal) => {
+                        try {
+                            const apiGateways = ['v1beta', 'v1'];
+                            let hasReceivedAnyChunk = false;
+
+                            const reqPayload = JSON.parse(JSON.stringify(payload));
+                            const allKeys = (apiKeyPool.value && apiKeyPool.value.length > 0) ? [...apiKeyPool.value] : [];
+                            
+                            if (allKeys.length === 0) {
+                                console.warn("[Network] Không tìm thấy API Key khả dụng.");
+                                return { success: false, isMidStreamDrop: true };
+                            }
+
+                            for (const gateway of apiGateways) {
+                                if (signal?.aborted) return { success: false, isMidStreamDrop: true };
+
+                                for (let kIdx = 0; kIdx < allKeys.length; kIdx++) {
+                                    if (signal?.aborted) return { success: false, isMidStreamDrop: true };
+
+                                    const keyObj = allKeys[kIdx];
+                                    const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${activeModelId}:streamGenerateContent?alt=sse&key=${keyObj.key}`;
+
+                                    const stallAbortController = new AbortController();
+                                    
+                                    // SỬA LỖI 0 ĐỘ TRỄ: Gộp tín hiệu hủy an toàn tuyệt đối trên mọi trình duyệt cũ/mới
+                                    let combinedSignal = stallAbortController.signal;
+                                    if (signal) {
+                                        if (signal.aborted) return { success: false, isMidStreamDrop: true };
+                                        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
+                                            try { combinedSignal = AbortSignal.any([signal, stallAbortController.signal]); } 
+                                            catch (_) { combinedSignal = signal; }
+                                        } else {
+                                            combinedSignal = signal;
+                                        }
+                                    }
+
+                                    // Watchdog 90 giây bảo vệ 50 Agents suy luận
+                                    let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 90000);
+
+                                    try {
+                                        const response = await fetch(endpoint, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify(reqPayload),
+                                            signal: combinedSignal
+                                        });
+
+                                        if (response.ok) {
+                                            markApiKeySuccess(keyObj);
+                                            let chunkCount = 0;
+
+                                            await readSSEStream(response, combinedSignal, (chunk) => {
+                                                clearTimeout(stallWatchdog);
+                                                stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 45000);
+                                                chunkCount++;
+                                                hasReceivedAnyChunk = true;
+                                                onChunk(chunk);
+                                            });
+
+                                            clearTimeout(stallWatchdog);
+                                            if (chunkCount > 0) return { success: true, isMidStreamDrop: false };
+                                            
+                                        } else {
+                                            clearTimeout(stallWatchdog);
+                                            markApiKeyFailure(keyObj, response.status);
+                                            
+                                            // SỬA LỖI 400: Gỡ bỏ xung đột API và LÙI LẠI THỬ LẠI TRÊN CHÍNH KEY VỪA RỒI
+                                            if (response.status === 400) {
+                                                if (reqPayload.generationConfig?.responseMimeType) delete reqPayload.generationConfig.responseMimeType;
+                                                if (reqPayload.generationConfig?.thinkingConfig) delete reqPayload.generationConfig.thinkingConfig;
+                                                if (reqPayload.tools) delete reqPayload.tools;
+                                                
+                                                // Lùi index để vòng lặp thử lại chính chìa khóa này với payload đã sửa
+                                                kIdx--; 
+                                            }
+                                            continue;
+                                        }
+                                    } catch (netErr) {
+                                        clearTimeout(stallWatchdog);
+                                        if (signal?.aborted || netErr.name === 'AbortError') return { success: false, isMidStreamDrop: true };
+                                        if (hasReceivedAnyChunk) {
+                                            markApiKeySuccess(keyObj);
+                                            return { success: true, isMidStreamDrop: true };
+                                        }
+                                    }
                                 }
                             }
-                            return;
+                            return { success: hasReceivedAnyChunk, isMidStreamDrop: !hasReceivedAnyChunk };
+                        } catch (fatalErr) {
+                            console.error("[FetchStream Fatal]", fatalErr);
+                            return { success: false, isError: true };
                         }
+                    };
 
-                        // 2. Xác định văn bản và đính kèm thực tế (Hỗ trợ hoàn hảo cho cả lượt gửi mới lẫn Tạo lại / Sửa tin nhắn)
-                        const lastUserMsg = isRegenerate ? [...currentMessages.value].reverse().find(m => m.role === 'user') : null;
-                        const effectiveText = !isRegenerate 
-                            ? (inputText.value ? inputText.value.trim() : "") 
-                            : (lastUserMsg?.promptContent || lastUserMsg?.content || "");
-                        const effectiveAttachments = !isRegenerate 
-                            ? [...pendingAttachments.value] 
-                            : (lastUserMsg?.attachments || []);
+                    const performStreaming = async (basePayload, chunkHandler) => {
+                        try {
+                            const payload = JSON.parse(JSON.stringify(basePayload));
+                            payload.safetySettings = SAFETY_SETTINGS;
+                            
+                            // SỬA LỖI GÁN UNDEFINED: Đảm bảo generationConfig luôn tồn tại trước khi thao tác
+                            if (!payload.generationConfig) payload.generationConfig = {};
+                            
+                            // THỎA HIỆP API: Ưu tiên Code Execution, ẩn Native Thinking nếu bật cả hai
+                            if (enableDeepThinking.value) {
+                                if (enableCodeExecution.value) {
+                                    if (payload.generationConfig.thinkingConfig) delete payload.generationConfig.thinkingConfig;
+                                } else {
+                                    payload.generationConfig.thinkingConfig = { includeThoughts: true };
+                                }
+                            } else {
+                                if (payload.generationConfig.thinkingConfig) delete payload.generationConfig.thinkingConfig;
+                            }
 
-                        if (!effectiveText && effectiveAttachments.length === 0) return;
+                            if (enableCodeExecution.value && !enableImageGen.value) {
+                                payload.tools = [{ codeExecution: {} }];
+                            } else {
+                                delete payload.tools;
+                            }
 
-                        // 3. Phân nhánh Xưởng phim nghệ thuật (ĐÃ SỬA: Gọi trực tiếp rawExecuteCinemaProduction)
-                        if (!isRegenerate && enableCinemaStudio.value) {
-                            const promptForCinema = effectiveText || (effectiveAttachments.length > 0 ? effectiveAttachments[0].name : "Tác phẩm điện ảnh nghệ thuật");
+                            return await fetchStreamWithFaultTolerance(payload, activeModelId, chunkHandler, abortController.signal);
+                        } catch (err) {
+                            console.error("[PerformStreaming Error]", err);
+                            return { success: false, isError: true };
+                        }
+                    };
+
+// =========================================================================
+                    // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI ĐA PHƯƠNG THỨC NÂNG CẤP TOÀN DIỆN
+                    // =========================================================================
+                    const sendMessage = async (isRegenerate = false, existingBotMsgTarget = null) => {
+                        if (isGenerating.value && !isRegenerate) return;
+
+                        if (enableCinemaStudio.value && !isRegenerate && (inputText.value.trim() || pendingAttachments.value.length > 0)) {
+                            const cinemaPrompt = inputText.value.trim();
+                            const currentAtts = [...pendingAttachments.value];
                             inputText.value = "";
-                            pendingAttachments.value = [];
                             sessionStorage.removeItem('gdeep_draft_input');
+                            pendingAttachments.value = [];
                             resizeTextarea();
-                            await rawExecuteCinemaProduction(null, promptForCinema, null, inputText, pendingAttachments);
-                            return;
-                        }
 
-                        // 4. Khởi tạo / Tái sử dụng tin nhắn
-                        let targetThreadId = currentThreadId.value;
-                        if (!targetThreadId) {
-                            await createNewThread();
-                            targetThreadId = currentThreadId.value;
-                        }
-
-                        let userMsg = null;
-                        if (!isRegenerate) {
-                            userMsg = createMessageRecord({
-                                threadId: targetThreadId,
+                            const attachedImg = currentAtts.find(a => a.mimeType && a.mimeType.startsWith('image/'));
+                            const userMsg = createMessageRecord({
+                                threadId: currentThreadId.value,
                                 role: 'user',
-                                content: effectiveText,
-                                promptContent: effectiveText,
-                                attachments: effectiveAttachments
+                                content: `🎬 Cảnh quay nghệ thuật: ${cinemaPrompt || (attachedImg ? 'Tạo video từ hình ảnh' : '')}`,
+                                attachments: currentAtts,
+                                htmlContent: compileMarkdownSync(`🎬 **Cảnh quay nghệ thuật:** ${cinemaPrompt || (attachedImg ? 'Tạo video từ hình ảnh' : '')}`, true)
                             });
                             currentMessages.value.push(userMsg);
-                            scheduleDbSave(userMsg, true);
+                            scheduleDbSave(userMsg);
+                            scrollToBottom();
 
-                            // Xóa draft và tệp đính kèm chờ
-                            inputText.value = "";
-                            pendingAttachments.value = [];
-                            sessionStorage.removeItem('gdeep_draft_input');
-                            resizeTextarea();
+                            await animateImageToVideo(null, cinemaPrompt, attachedImg || null);
+                            return;
                         }
-                      
+
+                        if (apiKeyCount.value === 0) {
+                            notify("Vui lòng thiết lập chìa khóa hệ thống trong mục Cài đặt", true);
+                            activeTab.value = 'settings';
+                            isSidebarOpen.value = true;
+                            return;
+                        }
+
+                        if (!isOnline.value) {
+                            if (!db) { notify("Lỗi kết nối cơ sở dữ liệu", true); return; }
+                            if ((await db.offlineQueue.count()) >= 50) { notify("Bộ nhớ ngoại tuyến đã đầy", true); return; }
+                            const safeAtts = toRaw(pendingAttachments.value).map(a => { const c = { ...a }; delete c.videoUrl; return c; });
+                            await db.offlineQueue.add({ text: inputText.value, attachments: JSON.parse(JSON.stringify(safeAtts)), createdAt: getMonotonicTimestamp() });
+                            inputText.value = "";
+                            sessionStorage.removeItem('gdeep_draft_input');
+                            pendingAttachments.value = [];
+                            resizeTextarea();
+                            notify("Đã lưu vào danh sách chờ ngoại tuyến");
+                            return;
+                        }
+
+                        let text = inputText.value.trim();
+                        let attachments = [...pendingAttachments.value];
+
+                        if (isRegenerate) {
+                            const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
+                            if (lastUser) { text = lastUser.content || ''; attachments = lastUser.attachments || []; }
+                        } else if (!text && !attachments.length) return;
+
+                        if (isListening.value && speechRecognition) {
+                            try { speechRecognition.stop(); } catch (_) {}
+                            isListening.value = false;
+                            speechRecognition = null;
+                        }
+                        showInputMenu.value = false;
+
+                        if (abortController) { try { abortController.abort(); } catch (_) {} abortController = null; }
                         const thisRequestToken = ++activeRequestToken;
                         isGenerating.value = true;
                         triggerHaptic('light');
 
-                        let botMsg = null;
-                        let thoughtMsg = null;
-                        let executionMsg = null;
-                        let rawMarkdownBuffer = "";
-                        let lastFinishReason = null;
-
-                        if (isRegenerate && targetMsgForRegen) {
-                            botMsg = targetMsgForRegen;
-                            botMsg.content = "";
-                            botMsg.htmlContent = "";
-                        } else {
-                            botMsg = createMessageRecord({
-                                threadId: targetThreadId,
-                                role: 'model',
-                                content: "",
-                                htmlContent: ""
-                            });
-                            currentMessages.value.push(botMsg);
+                        if (!isRegenerate) {
+                            inputText.value = "";
+                            sessionStorage.removeItem('gdeep_draft_input');
+                            pendingAttachments.value = [];
                         }
+                        resizeTextarea();
+
+                        if (!currentThreadId.value) await createNewThread();
+                        const targetThreadId = currentThreadId.value;
+                        const isFirstPrompt = (currentMessages.value.length === 0);
+
+                        let thoughtMsg = null, executionMsg = null, botMsg = null;
+                        let rawMarkdownBuffer = "", globalStreamSeq = 0;
+                        let lastFinishReason = null;
+                        const targetModelObj = currentModel.value;
+                        let activeModelId = targetModelObj.apiEndpointId || targetModelObj.id;
 
                         try {
-                            // 5. Kiểm tra và cào dữ liệu URL tự động nếu có
-                            searchStatusText.value = "Đang kiểm tra tài liệu tham chiếu...";
-                            const extractedUrls = UrlGroundingEngine.extractUrls(effectiveText);
-                            let urlGroundingSources = [];
-                            if (extractedUrls.length > 0) {
-                                urlGroundingSources = await UrlGroundingEngine.inspectAllUrls(extractedUrls, (status) => {
-                                    searchStatusText.value = status;
+                            let limitedHistory = [];
+                            if (!isRegenerate) {
+                                limitedHistory = await buildCleanHistory(null, text);
+                                const newUserParts = buildTurnParts(text, attachments);
+
+                                const userMsg = createMessageRecord({
+                                    threadId: targetThreadId,
+                                    role: 'user',
+                                    content: text || (attachments.length > 0 ? `Đã gửi ${attachments.length} tệp đính kèm` : ''),
+                                    attachments,
+                                    promptContent: (newUserParts.find(p => p.text)?.text) || text || '',
+                                    htmlContent: compileMarkdownSync(text || (attachments.length > 0 ? `Đã gửi ${attachments.length} tệp đính kèm` : ''), true)
                                 });
+                                currentMessages.value.push(userMsg);
+                                scheduleDbSave(userMsg);
+                                scrollToBottom();
+                                
+                                if (isFirstPrompt || currentMessages.value.filter(m => m.role === 'user').length === 1) {
+                                    const threadTarget = threads.value.find(t => t.id === targetThreadId);
+                                    if (threadTarget && threadTarget.title === 'Phiên trò chuyện mới') {
+                                        const snippetText = (text || (attachments.length > 0 ? attachments[0].name : '')).trim();
+                                        autoNameThread(snippetText, targetThreadId);
+                                    }
+                                }
+
+                                limitedHistory.push({ role: 'user', parts: newUserParts });
+                            } else {
+                                if (existingBotMsgTarget) {
+                                    const targetIdx = currentMessages.value.findIndex(m => m.id === existingBotMsgTarget.id);
+                                    if (targetIdx !== -1) {
+                                        const toPurge = [];
+                                        for (let i = targetIdx - 1; i >= 0; i--) {
+                                            const m = currentMessages.value[i];
+                                            if (m.role === 'system_thought' || m.role === 'system_execution') toPurge.push(m);
+                                            else break;
+                                        }
+                                        if (db) dbWriteQueue.enqueue(async () => { for (const m of toPurge) await db.messages.delete(m.id); });
+                                        currentMessages.value = currentMessages.value.slice(0, targetIdx);
+                                    }
+                                    limitedHistory = await buildCleanHistory(existingBotMsgTarget.id);
+                                } else {
+                                    const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
+                                    if (lastUser) {
+                                        limitedHistory = await buildCleanHistory(lastUser.id, lastUser.content || '');
+                                        const userParts = buildTurnParts(lastUser.promptContent || lastUser.content || '', lastUser.attachments || []);
+                                        limitedHistory.push({ role: 'user', parts: userParts });
+                                    } else {
+                                        limitedHistory = await buildCleanHistory();
+                                    }
+                                }
                             }
 
-                            // 6. Xây dựng lịch sử hội thoại chuẩn an toàn Token (Nạp đúng effectiveText vào BM25)
-                            searchStatusText.value = "Đang nén và chuẩn bị bộ nhớ...";
-                            const limitedHistory = await TokenBudgetManager.assembleInfiniteContextPayload(
-                                currentMessages.value,
-                                effectiveText,
-                                botMsg.id,
-                                currentModel.value,
-                                getNextHealthyApiKey()?.key || null
-                            );
+                            if (existingBotMsgTarget) {
+                                botMsg = existingBotMsgTarget;
+                                botMsg.content = '';
+                                botMsg.htmlContent = '';
+                                botMsg.serperMetadata = null;
+                                botMsg.urlSources = [];
+                                botMsg.isContinuing = false;
+                                botMsg.isTruncated = false;
+                                botMsg.lastRenderSeq = 0;
+                            } else {
+                                botMsg = createMessageRecord({ 
+                                    threadId: targetThreadId, 
+                                    role: GDeepDataProtocol.Roles.MODEL, 
+                                    htmlContent: '',
+                                    searchExpanded: true, 
+                                    urlSourcesExpanded: true 
+                                });
+                                currentMessages.value.push(botMsg);
+                            }
+                            currentStreamingMsg.value = botMsg;
+                            scrollToBottom();
 
-                            // 7. Lập kế hoạch tìm kiếm trực tuyến Serper nếu được bật
-                            let detectedEntities = [];
-                            let executedQueries = [];
-                            let directAnswerBox = "";
-                            let allSearchResults = [];
-
-                            const activeModelObj = currentModel.value;
-                            const activeModelId = activeModelObj.apiEndpointId || activeModelObj.id;
+                            limitedHistory = sanitizeHistoryForGemini(limitedHistory, false);
                             const activeGem = currentActiveGemObj.value;
 
                             let systemPrompt = [
-                                `[CHỈ DẪN HỆ THỐNG TOÀN DIỆN]`,
-                                `Bạn là G-Deep Ultra (${activeModelObj.name}).`,
-                                `QUY TẮC CỐT LÕI: TUYỆT ĐỐI CẤM NHẢY VỌT LOGIC (STRICT ZERO-LOGICAL-LEAP PROTOCOL).`,
-                                `- Mọi kết luận, nhận định và giải pháp BẮT BUỘC phải đi qua từng bước suy luận diễn dịch vững chắc (Step-by-Step Causal Deductions).`,
-                                `- Bước N+1 phải là hệ quả tất yếu có căn cứ vững chắc từ bước N. Tuyệt đối không được bỏ qua các bước chứng minh trung gian hoặc giả định ngầm vô căn cứ.`,
-                                `- Quy tắc trình bày thẩm mỹ: Khi liệt kê các thay đổi, đối số, mã lệnh hoặc tính năng kỹ thuật, BẮT BUỘC tổ chức dưới dạng danh sách gạch đầu dòng (- ) hoặc bảng Markdown (Table) có phân cấp rõ ràng hoặc sơ đồ mermaid chuẩn mực. TUYỆT ĐỐI KHÔNG liệt kê dưới dạng các đoạn văn xuôi rời rạc.`,
-                                `\n[CHUYÊN GIA: ${activeGem.name}]`,
-                                activeGem.instruction || "Cố vấn chuyên sâu, tư duy logic, phản biện độc lập và giải quyết triệt để vấn đề."
+                                "[CHỈ DẪN HỆ THỐNG TOÀN DIỆN]",
+                                "Bạn là G-Deep " + targetModelObj.name + ".",
+                                "QUY TẮC CỐT LÕI: TUYỆT ĐỐI CẤM NHẢY VỌT LOGIC (STRICT ZERO-LOGICAL-LEAP PROTOCOL).",
+                                "- Mọi kết luận, nhận định và giải pháp BẮT BUỘC phải đi qua từng bước suy luận diễn dịch vững chắc (Step-by-Step Causal Deductions).",
+                                "- Bước N+1 phải là hệ quả tất yếu có căn cứ vững chắc từ bước N. Tuyệt đối không được bỏ qua các bước chứng minh trung gian hoặc giả định ngầm vô căn cứ.",
+                                "- Quy tắc trình bày thẩm mỹ: Khi liệt kê các thay đổi, đối số, mã lệnh hoặc tính năng kỹ thuật, BẮT BUỘC tổ chức dưới dạng danh sách gạch đầu dòng (- ) hoặc bảng Markdown (Table) có phân cấp rõ ràng hoặc sơ đồ mermaid chuẩn mực. TUYỆT ĐỐI KHÔNG liệt kê dưới dạng các đoạn văn xuôi rời rạc.\n",
+                                "[CHUYÊN GIA: " + activeGem.name + "]",
+                                (activeGem.instruction || "").trim() || "Tư duy logic, giải cấu trúc từng bước từ nguyên lý tiên khởi và giải quyết triệt để vấn đề.\n"
                             ].join('\n');
 
+                            let allSearchResults = [];
+                            let detectedEntities = [];
+                            let executedQueries = [];
+                            let directAnswerBox = "";
+                            let urlGroundingSources = [];
+
+                            const detectedUrls = UrlGroundingEngine.extractUrls(text);
+                            let webContextToPersist = '';
+                            if (detectedUrls.length > 0) {
+                                searchStatusText.value = "Đang giải mã liên kết trực tiếp...";
+                                const fetchedSources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (status) => {
+                                    searchStatusText.value = status;
+                                });
+                                urlGroundingSources = fetchedSources.filter(s => s.success);
+
+                                if (urlGroundingSources.length > 0) {
+                                    let groundingBlock = "\n\n[DỮ LIỆU ĐỐI CHIẾU TRỰC TIẾP TỪ LIÊN KẾT]\n";
+                                    urlGroundingSources.forEach((src, idx) => {
+                                        groundingBlock += "[" + (idx + 1) + "] NGUỒN: " + src.title + " (" + src.url + ")\nNỘI DUNG: " + src.text + "\n";
+                                    });
+                                    systemPrompt += groundingBlock;
+                                    webContextToPersist = groundingBlock;
+
+                                    const curUserMsg = currentMessages.value.find(m => m.role === 'user' && m.content === text);
+                                    if (curUserMsg) {
+                                        curUserMsg.promptContent = (curUserMsg.promptContent || curUserMsg.content || '') + webContextToPersist;
+                                        scheduleDbSave(curUserMsg);
+                                    }
+                                }
+                            }
+
+                            const SENATE_50_AGENTS = Object.freeze([
+                                "A01 [Ontological Anchor]", "A02 [Epistemic Auditor]", "A03 [Formal Logic]", "A04 [Devil's Advocate]", 
+                                "A05 [Boundary Tester]", "A06 [Trench Scanner]", "A07 [Anti-Hallucination]", "A08 [Context Chronologist]", 
+                                "A09 [Semantic Drift Neutralizer]", "A10 [Root-Cause Diagnostician]", "A11 [Complexity Analyst]", "A12 [Empirical Assessor]",
+                                "A13 [Dialectical Synthesizer]", "A14 [Edge-Case Hunter]", "A15 [Risk Quantifier]", "A16 [Causal Graph Mapper]", 
+                                "A17 [Bias Neutralizer]", "A18 [Data Custodian]", "A19 [System Dynamics]", "A20 [Occam's Razor]", 
+                                "A21 [Red-Team Infiltrator]", "A22 [Blue-Team Shield]", "A23 [First-Principles]", "A24 [Counterfactual Reasoner]",
+                                "A25 [Feasibility Critic]", "A26 [Long-Horizon Extrapolator]", "A27 [Redundancy Pruner]", "A28 [Behavioral Analyst]", 
+                                "A29 [MECE Hierarchy]", "A30 [Context Resurfacer]", "A31 [Cross-Domain Analogist]", "A32 [Entropy Compressor]", 
+                                "A33 [Falsifiability Inquisitor]", "A34 [Compliance Sentinel]", "A35 [Semantic Stylist]", "A36 [Contradiction Detective]",
+                                "A37 [Assumption Interrogator]", "A38 [Feedback Loop Tracer]", "A39 [Knowledge Gap Exposer]", "A40 [Micro-Nuance Dissector]", 
+                                "A41 [Robustness Arbiter]", "A42 [Anchoring Demolisher]", "A43 [Needle Extractor]", "A44 [Anti-Sycophancy]", 
+                                "A45 [Empirical Calibration]", "A46 [Premise Verifier]", "A47 [Conflict Arbiter]", "A48 [Coverage Auditor]",
+                                "A49 [Groupthink Inquisitor]", "A50 [Supreme Architect]"
+                            ]);
+
+                            let dynamicMiddleContext = "";
+                            const currentHistorySnap = currentMessages.value || [];
+                            if (currentHistorySnap.length >= 3) {
+                                const startMid = Math.floor(currentHistorySnap.length * 0.2);
+                                const endMid = Math.ceil(currentHistorySnap.length * 0.8);
+                                const midSlices = currentHistorySnap.slice(startMid, endMid);
+                                const midPoints = midSlices.map((m, i) => {
+                                    const sender = m.role === 'user' ? 'User' : 'Assistant';
+                                    const body = (m.promptContent || m.content || '').replace(/\s+/g, ' ').trim().slice(0, 250);
+                                    return "[Vị trí rãnh giữa " + (startMid + i + 1) + " | " + sender + "]: " + body;
+                                }).filter(s => s.length > 20);
+
+                                if (midPoints.length > 0) {
+                                    dynamicMiddleContext = "\n[DỮ LIỆU ĐƯỢC AGENT 06 & AGENT 43 TRÍCH XUẤT TỪ RÃNH GIỮA 20%-80% LỊCH SỬ]:\n" + midPoints.join('\n') + "\n";
+                                }
+                            }
+
+                            const tOpen = "<th" + "ink>";
+                            const tClose = "</th" + "ink>";
+
                             if (enableDeepThinking.value) {
+                                const formattedAgentRoster = SENATE_50_AGENTS.map(a => "- " + a).join('\n');
                                 systemPrompt += [
                                     "\n\n[QUY TRÌNH SUY LUẬN CHUYÊN SÂU NATIVE: ĐẠI HỘI ĐỒNG 50 AGENTS TRANH BIỆN ĐỐI KHÁNG]",
                                     "Khi suy luận, bạn BẮT BUỘC phải tổ chức phiên tranh luận nảy lửa và đối soát chéo giữa 50 Agents sau:",
-                                    "- A01 [Ontological Anchor] - A02 [Epistemic Auditor] - A03 [Formal Logic] - A04 [Devil's Advocate] - A05 [Boundary Tester]",
-                                    "- A06 [Trench Scanner] - A07 [Anti-Hallucination] - A08 [Context Chronologist] - A09 [Semantic Drift Neutralizer] - A10 [Root-Cause Diagnostician]",
-                                    "- A11 [Complexity Analyst] - A12 [Empirical Assessor] - A13 [Dialectical Synthesizer] - A14 [Edge-Case Hunter] - A15 [Risk Quantifier]",
-                                    "- A16 [Causal Graph Mapper] - A17 [Bias Neutralizer] - A18 [Data Custodian] - A19 [System Dynamics] - A20 [Occam's Razor]",
-                                    "- A21 [Red-Team Infiltrator] - A22 [Blue-Team Shield] - A23 [First-Principles] - A24 [Counterfactual Reasoner] - A25 [Feasibility Critic]",
-                                    "- A26 [Long-Horizon Extrapolator] - A27 [Redundancy Pruner] - A28 [Behavioral Analyst] - A29 [MECE Hierarchy] - A30 [Context Resurfacer]",
-                                    "- A31 [Cross-Domain Analogist] - A32 [Entropy Compressor] - A33 [Falsifiability Inquisitor] - A34 [Compliance Sentinel] - A35 [Semantic Stylist]",
-                                    "- A36 [Contradiction Detective] - A37 [Assumption Interrogator] - A38 [Feedback Loop Tracer] - A39 [Knowledge Gap Exposer] - A40 [Micro-Nuance Dissector]",
-                                    "- A41 [Robustness Arbiter] - A42 [Anchoring Demolisher] - A43 [Needle Extractor] - A44 [Anti-Sycophancy] - A45 [Empirical Calibration]",
-                                    "- A46 [Premise Verifier] - A47 [Conflict Arbiter] - A48 [Coverage Auditor] - A49 [Groupthink Inquisitor] - A50 [Supreme Architect]",
-                                    "\nCÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢY VỌT LOGIC:",
+                                    formattedAgentRoster,
+                                    dynamicMiddleContext,
+                                    "CÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢY VỌT LOGIC:",
                                     "- Không bao giờ nhảy cóc từ giả thiết tới kết luận.",
                                     "- Mọi mắt xích chứng minh đều phải hiển thị tường minh qua 5 giai đoạn: Khảo sát, Công kích Đội Đỏ, Phòng thủ Đội Xanh, Giám sát Ảo giác, và Hòa giải Phán quyết.",
                                     "TUYỆT ĐỐI BẮT BUỘC VỀ ĐỊNH DẠNG (FORMATTING COMMANDMENT):",
-                                    "Toàn bộ quá trình tranh luận dài dòng của 50 Agents NÀY BẮT BUỘC PHẢI NẰM TRỌN VẸN BÊN TRONG CẶP THẺ .",
-                                    "Chỉ sau khi đóng thẻ </think>, bạn mới được đưa ra CÂU TRẢ LỜI CUỐI CÙNG (ngắn gọn, trực tiếp, dễ hiểu) cho người dùng. Nếu vi phạm, hệ thống sẽ sụp đổ."
+                                    "Toàn bộ quá trình tranh luận dài dòng của 50 Agents NÀY BẮT BUỘC PHẢI NẰM TRỌN VẸN BÊN TRONG CẶP THẺ " + tOpen + " VÀ " + tClose + ".",
+                                    "Chỉ sau khi đóng thẻ " + tClose + ", bạn mới được đưa ra CÂU TRẢ LỜI CUỐI CÙNG (ngắn gọn, trực tiếp, dễ hiểu) cho người dùng. Nếu vi phạm, hệ thống sẽ sụp đổ."
+                                ].join('\n');
+                            }
+
+                            if (enableCodeExecution.value && !enableImageGen.value) {
+                                systemPrompt += [
+                                    "\n\n[ĐIỆN TOÁN ĐỘC LẬP PYTHON WASM]",
+                                    "Khi được yêu cầu giải toán, tính toán dữ liệu hoặc lập trình, bạn BẮT BUỘC phải sử dụng công cụ Code Execution (Chạy mã) để thực thi mã Python và lấy kết quả.",
+                                    "TUYỆT ĐỐI KHÔNG CHỈ VIẾT MÃ THUẦN TÚY (MARKDOWN) MÀ KHÔNG CHẠY THỬ."
                                 ].join('\n');
                             }
 
@@ -10986,8 +11201,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             if (enableGoogleSearch.value && serperApiKeys.value.length > 0) {
                                 searchStatusText.value = "Đang tra cứu dữ liệu web...";
                                 const searchPlan = await SearchIntelligenceEngine.planIntelligentSearch(
-                                    effectiveText,
-                                    effectiveAttachments,
+                                    text,
+                                    attachments,
                                     dispatchBackgroundTaskWithFallback
                                 );
                                 detectedEntities = searchPlan.entities || [];
@@ -11038,7 +11253,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 
                             if (allSearchResults.length > 0 || detectedEntities.length > 0 || directAnswerBox) {
                                 botMsg.serperMetadata = {
-                                    query: effectiveText || 'Tìm kiếm dữ liệu',
+                                    query: text || 'Tìm kiếm dữ liệu',
                                     queries: executedQueries,
                                     entities: detectedEntities,
                                     answerBox: directAnswerBox,
@@ -11063,7 +11278,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             abortController = new AbortController();
                             currentStreamingMsg.value = botMsg;
 
-                            // 8. Động cơ cập nhật giao diện thích ứng nhịp nhàng
                             let lastRenderedLength = 0;
                             let lastRenderTime = 0;
                             let lastThoughtRenderLength = 0;
@@ -11117,7 +11331,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             lastFinishReason = null;
                             let streamDropped = false;
 
-                            // 9. Bộ giải mã và định tuyến đa kênh chuẩn xác
                             const streamLexerState = { inThought: false, buffer: "" };
 
                             const ensureSystemMessage = (role, existingRef, setupFn = null) => {
@@ -11182,6 +11395,31 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                                 }
                                                 break;
                                             }
+                                            case GDeepDataProtocol.DataTypes.CODE_INPUT: {
+                                                executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
+                                                const codeContent = (payload && payload.code) ? payload.code : String(payload || '');
+                                                executionMsg.rawExecutionParts.push({ type: 'code', content: codeContent });
+                                                const targetOutputIdx = executionMsg.rawExecutionParts.length;
+                                                executionMsg.rawExecutionParts.push({ type: 'output', content: 'Đang khởi động Wasm Kernel...', outcome: 'RUNNING' });
+                                                executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+                                                PythonEngine.run(codeContent).then(res => {
+                                                    if (executionMsg.rawExecutionParts[targetOutputIdx]) {
+                                                        executionMsg.rawExecutionParts[targetOutputIdx] = { 
+                                                            type: 'output', content: res.output || '', outcome: res.outcome, plotBase64: res.plotBase64 || null
+                                                        };
+                                                        executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+                                                        scheduleDbSave(executionMsg);
+                                                        if (botMsg?.versions?.length > 0) {
+                                                            const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
+                                                            if (activeVer) {
+                                                                activeVer.rawExecutionParts = JSON.parse(JSON.stringify(executionMsg.rawExecutionParts));
+                                                                scheduleDbSave(botMsg);
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                                break;
+                                            }
                                             case GDeepDataProtocol.DataTypes.CODE_OUTPUT: {
                                                 executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                                 const lastPart = executionMsg.rawExecutionParts[executionMsg.rawExecutionParts.length - 1];
@@ -11193,16 +11431,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                                 break;
                                             }
                                             case GDeepDataProtocol.DataTypes.TEXT: {
-                                                // Tắt ngay trạng thái isThinking để mở khóa nút đóng mở cho người dùng
-                                                if (thoughtMsg && thoughtMsg.isThinking) {
-                                                    thoughtMsg.isThinking = false;
-                                                    if (!thoughtMsg.thoughtTime) {
-                                                        thoughtMsg.thoughtTime = ((Date.now() - (thoughtMsg.createdAt || Date.now())) / 1000).toFixed(1);
-                                                    }
-                                                    thoughtMsg.htmlContent = compileMarkdownSync(thoughtMsg.content, true);
-                                                    scheduleDbSave(thoughtMsg);
-                                                }
-
                                                 let newText = (payload !== undefined && payload !== null) ? String(payload) : '';
                                                 if (isContinuation && isFirstContinuationChunk && newText) {
                                                     newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
@@ -11213,35 +11441,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                             }
                                         }
                                     }
-                                }
-                            };
-
-                            const performStreaming = async (basePayload, chunkHandler) => {
-                                const payload = JSON.parse(JSON.stringify(basePayload));
-                                payload.safetySettings = SAFETY_SETTINGS;
-                                
-                                if (enableDeepThinking.value) {
-                                    if (enableCodeExecution.value) {
-                                        if (payload.generationConfig?.thinkingConfig) delete payload.generationConfig.thinkingConfig;
-                                    } else {
-                                        payload.generationConfig = payload.generationConfig || {};
-                                        payload.generationConfig.thinkingConfig = { includeThoughts: true };
-                                    }
-                                } else {
-                                    if (payload.generationConfig?.thinkingConfig) delete payload.generationConfig.thinkingConfig;
-                                }
-
-                                if (enableCodeExecution.value && !enableImageGen.value) {
-                                    payload.tools = [{ codeExecution: {} }];
-                                } else {
-                                    delete payload.tools;
-                                }
-
-                                try {
-                                    return await fetchStreamWithFaultTolerance(payload, activeModelId, chunkHandler, abortController.signal);
-                                } catch (err) {
-                                    if (err.message === 'AbortError' || err.name === 'AbortError') throw err;
-                                    return { success: false, isError: true };
                                 }
                             };
 
@@ -11262,7 +11461,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                                 streamDropped = true;
                             }
 
-                            // 10. Vòng lặp viết tiếp tự động không tì vết (Autonomous Continuation Loop)
+                            // VÒNG LẶP NỐI TIẾP VÔ TẬN
                             let continueAttempts = 0;
                             const MAX_CONTINUE_ATTEMPTS = 50;
 
@@ -11458,9 +11657,23 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                             generationConfig: { temperature: 0.1, maxOutputTokens: 65536 },
                             safetySettings: SAFETY_SETTINGS
                         };
-                        if (enableCodeExecution.value) continuationPayload.tools = [{ codeExecution: {} }];
+
+                        // [THỎA HIỆP API BẢO MẬT]: Xử lý xung đột 400 Bad Request khi nối tiếp
                         if (enableDeepThinking.value) {
-                            continuationPayload.generationConfig.thinkingConfig = { includeThoughts: true };
+                            if (enableCodeExecution.value) {
+                                // Ưu tiên Python, tắt cờ Native Thinking để tránh lỗi 400
+                                if (continuationPayload.generationConfig.thinkingConfig) delete continuationPayload.generationConfig.thinkingConfig;
+                            } else {
+                                continuationPayload.generationConfig.thinkingConfig = { includeThoughts: true };
+                            }
+                        } else {
+                            if (continuationPayload.generationConfig.thinkingConfig) delete continuationPayload.generationConfig.thinkingConfig;
+                        }
+
+                        if (enableCodeExecution.value && !enableImageGen.value) {
+                            continuationPayload.tools = [{ codeExecution: {} }];
+                        } else {
+                            delete continuationPayload.tools;
                         }
 
                         const modelId = targetModelObj.apiEndpointId || targetModelObj.id;
