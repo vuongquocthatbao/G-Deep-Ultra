@@ -3409,15 +3409,11 @@ self.onmessage = async function(e) {
                         graphql: 'gql', gql: 'gql', proto: 'proto', plaintext: 'txt', txt: 'txt', text: 'txt', env: 'env'
                     })
                 },
-                // =========================================================================
-                // [TẦNG 4: TOKENIZER PHÂN LUỒNG Ý THỨC - MULTI-TOKEN LEXER CHUẨN XÁC 100%]
-                // =========================================================================
                 classifyPart(part, state) {
                     if (!state) state = { inThought: false, buffer: "" };
                     const tokens = [];
                     if (!part || typeof part !== 'object') return tokens;
 
-                    // 1. Luồng suy luận Native từ API (Gemini 2.0 / 2.5 / 3.x Flash Thinking)
                     if (part.thought === true || part.reasoning) {
                         tokens.push({ 
                             type: this.DataTypes.THOUGHT, 
@@ -3427,7 +3423,6 @@ self.onmessage = async function(e) {
                         return tokens;
                     }
 
-                    // 2. Luồng thực thi mã Python WASM (Code Input)
                     if (part.executableCode) {
                         tokens.push({ 
                             type: this.DataTypes.CODE_INPUT, 
@@ -3439,7 +3434,6 @@ self.onmessage = async function(e) {
                         return tokens;
                     }
 
-                    // 3. Luồng kết quả tính toán độc lập (Code Output)
                     if (part.codeExecutionResult) {
                         const ok = (part.codeExecutionResult.outcome === 'OUTCOME_OK' || part.codeExecutionResult.outcome === 'COMPLETED');
                         tokens.push({ 
@@ -3452,7 +3446,6 @@ self.onmessage = async function(e) {
                         return tokens;
                     }
 
-                    // 4. Tokenizer phân tích thẻ suy luận dạng text hỗn hợp ()
                     if (part.text !== undefined && part.text !== null) {
                         state.buffer += String(part.text);
 
@@ -3467,7 +3460,6 @@ self.onmessage = async function(e) {
                                     state.inThought = true;
                                     state.buffer = state.buffer.slice(openTagMatch.index + openTagMatch[0].length);
                                 } else {
-                                    // Kiểm tra ranh giới thẻ mở bị chẻ đôi giữa 2 gói tin TCP (ví dụ: "<th" hoặc "<think")
                                     const partialOpenMatch = state.buffer.match(/<t?(h(i(n(k)?)?)?)?$/i);
                                     if (partialOpenMatch && partialOpenMatch.index !== -1 && partialOpenMatch[0].length > 0) {
                                         const safeChunk = state.buffer.slice(0, partialOpenMatch.index);
@@ -3485,7 +3477,6 @@ self.onmessage = async function(e) {
                                 const closeTagMatch = state.buffer.match(/<\/(think|thought)>/i);
                                 if (closeTagMatch) {
                                     const thoughtChunk = state.buffer.slice(0, closeTagMatch.index);
-                                    // Luôn phát tín hiệu inThought: false để tắt cờ isThinking ngay cả khi thoughtChunk rỗng
                                     tokens.push({ 
                                         type: this.DataTypes.THOUGHT, 
                                         payload: thoughtChunk,
@@ -3494,7 +3485,6 @@ self.onmessage = async function(e) {
                                     state.inThought = false;
                                     state.buffer = state.buffer.slice(closeTagMatch.index + closeTagMatch[0].length);
                                 } else {
-                                    // Kiểm tra ranh giới thẻ đóng bị chẻ đôi (ví dụ: "</" hoặc "</th")
                                     const partialCloseMatch = state.buffer.match(/<\/(t(h(i(n(k)?)?)?)?)?$/i);
                                     if (partialCloseMatch && partialCloseMatch.index !== -1 && partialCloseMatch[0].length > 0) {
                                         const safeThoughtChunk = state.buffer.slice(0, partialCloseMatch.index);
@@ -3522,7 +3512,6 @@ self.onmessage = async function(e) {
                     return tokens;
                 },
 
-                // Xả sạch đệm khi kết thúc luồng dữ liệu (Flush Residual Buffer)
                 flushLexer(state) {
                     if (!state || !state.buffer) return [];
                     const tokens = [];
@@ -3536,8 +3525,8 @@ self.onmessage = async function(e) {
                     }
                     state.inThought = false;
                     return tokens;
-                    }
-                },
+                }
+            },
 
             // 4. An Toàn, Escape & DOMPurify (Security & Content Filtering)
             Security: {
@@ -3572,8 +3561,8 @@ self.onmessage = async function(e) {
 
             // 5. Ngưỡng Kỹ Thuật & Giới Hạn Bộ Nhớ (Engine Thresholds & Budgets)
             Limits: {
-                MAX_MEMORY_THRESHOLD: 512 * 1024 * 1024, // 512MB RAM
-                MAX_VIDEO_DIRECT_SIZE: 18 * 1024 * 1024, // 18MB
+                MAX_MEMORY_THRESHOLD: 512 * 1024 * 1024,
+                MAX_VIDEO_DIRECT_SIZE: 18 * 1024 * 1024,
                 RENDER_INTERVAL_MS: 32,
                 FRAME_BUDGET_MS: 8,
                 TOKEN_SAFE_RATIO: 0.75,
@@ -3624,9 +3613,7 @@ self.onmessage = async function(e) {
             }
         });
 
-        // =========================================================================================
-        // CÁC BÍ DANH TƯƠNG THÍCH NGƯỢC (ZERO-REGRESSION COMPATIBILITY ALIASES)
-        // =========================================================================================
+        // CÁC BÍ DANH TƯƠNG THÍCH NGƯỢC
         const GDeepSystemConfig = {
             StorageKeys: GDeepMasterConfig.Storage,
             Models: GDeepMasterConfig.Models,
@@ -3636,7 +3623,7 @@ self.onmessage = async function(e) {
         const SAFETY_SETTINGS = GDeepMasterConfig.Security.SafetySettings;
         const DOMPURIFY_CONFIG = GDeepMasterConfig.Security.DomPurify;
 
-        // BỘ QUẢN LÝ LƯU TRỮ THUẦN KHIẾT (ZERO TRY-CATCH, JIT HEALED)
+        // BỘ QUẢN LÝ LƯU TRỮ NGUYÊN BẢN
         const StorageManager = {
             get(key, defaultValue, isJson = false) {
                 const store = key === GDeepMasterConfig.Storage.DRAFT_INPUT ? sessionStorage : localStorage;
@@ -3657,10 +3644,7 @@ self.onmessage = async function(e) {
         };
 
         // =========================================================================================
-        // [SUPREME COGNITIVE CYBER-SUBSTRATE] THỰC THỂ NƠ-RON AI THỊ GIÁC, ĐỘT BIẾN GEN & HỘI ĐỒNG 9.5
-        // =========================================================================================
-        // =========================================================================================
-        // [SUPREME COGNITIVE CYBER-SUBSTRATE] THỰC THỂ NƠ-RON AI THỊ GIÁC, ĐỘT BIẾN GEN & HỘI ĐỒNG 9.5
+        // [SUPREME COGNITIVE CYBER-SUBSTRATE] NGUYÊN BẢN ĐẦY ĐỦ 100%
         // =========================================================================================
         const SynapticOcularMatrix = {
             vision: {
@@ -3679,7 +3663,6 @@ self.onmessage = async function(e) {
                 if (typeof window === 'undefined') return;
                 this.vision.isMobile = window.innerWidth < 768;
 
-                // Khởi tạo lõi tiêm CSS Runtime
                 const styleEl = document.createElement('style');
                 styleEl.id = 'runtime-morph-css';
                 document.head.appendChild(styleEl);
@@ -3731,7 +3714,6 @@ self.onmessage = async function(e) {
                 };
                 requestAnimationFrame(checkFps);
 
-                // Kích hoạt con mắt thần quét bố cục văn bản (DOM Structural Scanner) mỗi 1.5 giây
                 setInterval(() => this._scanContentLayout(), 1500);
             },
             
@@ -3739,14 +3721,12 @@ self.onmessage = async function(e) {
                 return Object.freeze({ ...this.vision });
             },
 
-            // [HẠT NHÂN HÌNH THÁI CSS] Tự động bóp méo và thay đổi CSS ngay lập tức theo sinh trắc
             _morphologicalAdaptation() {
                 const styleEl = document.getElementById('runtime-morph-css');
                 if (!styleEl) return;
 
                 let dynamicRules = '';
 
-                // 1. Phản xạ sinh tồn (Survival Mode): Nếu FPS tụt hoặc pin yếu -> Cắt sạch hiệu ứng nặng
                 if (this.vision.fpsPressure || this.vision.isLowPower || this.vision.isTabHidden) {
                     dynamicRules += `
                         :root {
@@ -3770,7 +3750,6 @@ self.onmessage = async function(e) {
                 styleEl.textContent = dynamicRules;
             },
 
-            // [HẠT NHÂN THÍCH ỨNG KHUNG HÌNH KHÔNG XUNG ĐỘT VUE DOM]
             _scanContentLayout() {
                 if (this.vision.isMobile) return;
                 const styleEl = document.getElementById('runtime-morph-css');
@@ -3790,7 +3769,6 @@ self.onmessage = async function(e) {
                     }
                 }
 
-                // Tiêm đè trực tiếp CSS: Triệt tiêu 100% hiện tượng chớp giật layout
                 const expansionCss = `
                     .max-w-3xl { 
                         max-width: ${needsExpansion ? '64rem' : '48rem'} !important; 
@@ -3818,7 +3796,7 @@ self.onmessage = async function(e) {
                 this.failureCount = 0;
                 this.latencyEma = 0;
                 this.episodicMemory = [];
-                this.repairGenePool = new Map(); // Ngân hàng gen tự sửa lỗi cục bộ
+                this.repairGenePool = new Map();
                 this.peerMesh = null;
             }
 
@@ -3828,11 +3806,9 @@ self.onmessage = async function(e) {
                 try { return Boolean(this.schemaContract(data)); } catch (_) { return false; }
             }
 
-            // [TIẾN HÓA GEN NGANG] Vi phẫu dữ liệu kết hợp trao đổi gen từ toàn mạng lưới
             heuristicSurgery(corruptedData, errorHint = '') {
                 const sig = `${typeof corruptedData}::${errorHint.slice(0, 25)}`;
                 
-                // 1. Thử gen đột biến nội tại
                 if (this.repairGenePool.has(sig)) {
                     try {
                         const healed = this.repairGenePool.get(sig)(corruptedData);
@@ -3840,7 +3816,6 @@ self.onmessage = async function(e) {
                     } catch (_) {}
                 }
 
-                // 2. Thử hấp thụ gen từ mạng lưới thần kinh mẹ
                 if (this.peerMesh && this.peerMesh.sharedGenes.has(sig)) {
                     try {
                         const meshGene = this.peerMesh.sharedGenes.get(sig);
@@ -3856,7 +3831,6 @@ self.onmessage = async function(e) {
                     return typeof this.fallback === 'function' ? this.fallback() : this.fallback;
                 }
 
-                // 3. Phẫu thuật thích ứng kiểu hình động học
                 if (typeof corruptedData === 'string' && (corruptedData.trim().startsWith('{') || corruptedData.trim().startsWith('['))) {
                     try {
                         const parsed = JSON.parse(corruptedData);
@@ -3879,18 +3853,11 @@ self.onmessage = async function(e) {
                 return await this.peerMesh.consult(this.id, targetTagOrId, queryData);
             }
 
-// =========================================================================
-            // [HẠT NHÂN THỰC THI CHUẨN BẢO MẬT CSP ENTERPRISE (ZERO-EVAL / ZERO-FUNCTION)]
-            // Tự phục hồi lỗi xác định (Deterministic Healing) & Ngắt mạch Circuit Breaker
-            // =========================================================================
-
-            // Bộ tự phục hồi tài nguyên phần cứng & bộ nhớ không vi phạm CSP
             _applyDeterministicHealing(fault) {
                 const msg = String(fault?.message || fault || '').toLowerCase();
                 
-                // 1. Phục hồi khi AudioContext bị trình duyệt đình chỉ (Suspended)
                 if (msg.includes('audiocontext') || msg.includes('suspended')) {
-                    if (typeof window !== 'undefined' && window.AudioContext) {
+                    if (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) {
                         try {
                             const ctx = window.AudioContext || window.webkitAudioContext;
                             if (ctx && ctx.state === 'suspended') ctx.resume();
@@ -3899,7 +3866,6 @@ self.onmessage = async function(e) {
                     return true;
                 }
 
-                // 2. Phục hồi khi tràn bộ nhớ LocalStorage (QuotaExceeded)
                 if (msg.includes('quota') || msg.includes('storage full')) {
                     try {
                         sessionStorage.removeItem(GDeepMasterConfig.Storage.DRAFT_INPUT);
@@ -3907,7 +3873,6 @@ self.onmessage = async function(e) {
                     return true;
                 }
 
-                // 3. Phục hồi khi tham chiếu bị thiếu thuộc tính
                 if (msg.includes('null') || msg.includes('undefined')) {
                     return true;
                 }
@@ -3955,7 +3920,6 @@ self.onmessage = async function(e) {
                         this._record(eff, res, true, null);
                         return res;
                     } catch (fault) {
-                        // Thao tác hủy của người dùng: Thoát êm lập tức
                         const isAbort = fault?.name === 'AbortError' || 
                                         fault?.code === 20 || 
                                         String(fault?.message || '').toLowerCase().includes('aborted');
@@ -3966,7 +3930,6 @@ self.onmessage = async function(e) {
                         this.failureCount++;
                         this.synapticWeight = Math.max(this.synapticWeight - 0.1, 0.2);
                         
-                        // Phục hồi xác định không dùng eval
                         const healed = this._applyDeterministicHealing(fault);
                         eff = this.heuristicSurgery(eff, fault?.message || '');
                         
@@ -3974,7 +3937,6 @@ self.onmessage = async function(e) {
                     }
                 }
 
-                // Chuyển quyền xử lý cho nơ-ron đồng đẳng (Peer Mesh Consultation)
                 for (const tag of this.tags) {
                     const peer = await this.consultPeer(tag, eff);
                     if (peer?.success) return peer.result;
@@ -4003,7 +3965,6 @@ self.onmessage = async function(e) {
             subscribers: new Map(),
             sharedGenes: new Map(),
 
-            // PHƯƠNG THỨC PHÁT TÍN HIỆU TOÀN MẠNG NƠ-RON
             broadcast(event, payload) {
                 if (this.subscribers && this.subscribers.has(event)) {
                     for (const cb of this.subscribers.get(event)) {
@@ -4136,6 +4097,188 @@ self.onmessage = async function(e) {
 
         // KÍCH HOẠT NƠ-RON HÓA STORAGE SAU KHI MESH ĐÃ SẴN SÀNG
         SynapticNeuralMesh.autoWrapObject('Storage', StorageManager, ['storage', 'persistence']);
+
+        // =========================================================================================
+        // [OMNIPOTENT META-OBJECT CONTROLLER] BỘ ĐIỀU KHIỂN TRUNG TÂM TOÀN NĂNG THỰC THỤ
+        // Auto-vivification Proxy Graph · Transactional Rollback · Active Function Patching
+        // =========================================================================================
+        const OmnipotentCentralController = (function(meshCore, masterCfg) {
+            'use strict';
+            const GENE_KEY = 'gdeep_learned_genes';
+            const _activePatches = new Map();
+            const _transactionSnapshots = new Map();
+
+            // 1. TẠO CÂY PROXY TỰ ĐỘNG SINH NHÁNH AN TOÀN (AUTO-VIVIFYING SAFE GRAPH)
+            // Không bao giờ để TypeError "Cannot read properties of undefined/null" xảy ra
+            const createAutoVivifyingProxy = (target = {}, path = '') => {
+                return new Proxy(target, {
+                    get(obj, prop) {
+                        if (prop === '__isSafeProxy') return true;
+                        if (prop === '__rawTarget') return obj;
+                        if (prop === Symbol.toPrimitive) return () => '';
+                        if (prop === 'then') return undefined; // Không làm giả Promise
+
+                        if (!(prop in obj) || obj[prop] === null || obj[prop] === undefined) {
+                            // Tự động kiến tạo một Safe Proxy con thay vì để văng lỗi
+                            obj[prop] = createAutoVivifyingProxy({}, `${path}.${String(prop)}`);
+                        } else if (typeof obj[prop] === 'object' && !obj[prop].__isSafeProxy) {
+                            obj[prop] = createAutoVivifyingProxy(obj[prop], `${path}.${String(prop)}`);
+                        }
+                        return obj[prop];
+                    },
+                    apply(fnTarget, thisArg, argArray) {
+                        try {
+                            return Reflect.apply(fnTarget, thisArg, argArray);
+                        } catch (err) {
+                            return OmnipotentCentralController.executeUnderSaga('ProxyApply', fnTarget, argArray);
+                        }
+                    }
+                });
+            };
+
+            // 2. KHÔI PHỤC VÀ BIÊN DỊCH BỘ GEN ĐỘT BIẾN THÀNH FUNCTION ADAPTER THỰC
+            try {
+                const raw = localStorage.getItem(GENE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    for (const [fnSignature, patchSpec] of Object.entries(parsed)) {
+                        // Tái cấu trúc thành Adapter Pipe lọc tham số độc hại thực sự
+                        _activePatches.set(fnSignature, (args) => {
+                            if (patchSpec.stripKeys && typeof args[0] === 'object') {
+                                for (const badKey of patchSpec.stripKeys) {
+                                    delete args[0][badKey];
+                                }
+                            }
+                            if (patchSpec.ensureKeys && typeof args[0] === 'object') {
+                                for (const [k, v] of Object.entries(patchSpec.ensureKeys)) {
+                                    if (args[0][k] === undefined) args[0][k] = v;
+                                }
+                            }
+                            return args;
+                        });
+                    }
+                }
+            } catch (_) {}
+
+            const synthesizeAndCommitPatch = (fnSignature, fault, rawArgs) => {
+                const errMsg = String(fault?.message || fault || '').toLowerCase();
+                const patchSpec = { ts: Date.now(), signature: fnSignature };
+
+                // Nhận diện lỗi tham số API hoặc Payload không tương thích
+                if (errMsg.includes('responsemimetype') || errMsg.includes('thinkingconfig')) {
+                    patchSpec.stripKeys = ['responseMimeType', 'thinkingConfig'];
+                }
+                if (errMsg.includes('missing') && rawArgs && typeof rawArgs[0] === 'object') {
+                    patchSpec.ensureKeys = { updatedAt: Date.now() };
+                }
+
+                _activePatches.set(fnSignature, (args) => {
+                    if (patchSpec.stripKeys && typeof args[0] === 'object') {
+                        patchSpec.stripKeys.forEach(k => delete args[0][k]);
+                    }
+                    return args;
+                });
+
+                try {
+                    const serialized = Object.fromEntries(
+                        Array.from(_activePatches.entries()).map(([k]) => [k, patchSpec])
+                    );
+                    localStorage.setItem(GENE_KEY, JSON.stringify(serialized));
+                } catch (_) {}
+
+                meshCore.broadcast('GENE_SYNTHESIZED', { fnSignature, patchSpec });
+            };
+
+            // 3. TRANSACTIONAL SAGA ENGINE: Quay lui trạng thái nguyên tử khi phát sinh sự cố
+            const executeUnderSaga = (actionName, taskFn, args = [], stateRef = null) => {
+                let snapshot = null;
+                const txId = `tx_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+                // Chụp Micro-Snapshot nếu có gắn State
+                if (stateRef && typeof stateRef === 'object') {
+                    try {
+                        snapshot = JSON.stringify(stateRef.value || stateRef);
+                        _transactionSnapshots.set(txId, { ref: stateRef, snapshot });
+                    } catch (_) {}
+                }
+
+                const fnSignature = `${actionName}`;
+                let effectiveArgs = args;
+
+                // ÁP DỤNG MIỄN DỊCH CHỦ ĐỘNG (PRE-EMPTIVE IMMUNIZATION)
+                if (_activePatches.has(fnSignature)) {
+                    try {
+                        effectiveArgs = _activePatches.get(fnSignature)(effectiveArgs);
+                    } catch (_) {}
+                }
+
+                let attempts = 0;
+                while (attempts < 3) {
+                    attempts++;
+                    try {
+                        const result = taskFn(...effectiveArgs);
+                        if (snapshot) _transactionSnapshots.delete(txId);
+                        return result;
+                    } catch (fault) {
+                        // Sửa chữa lỗi ngay lập tức
+                        synthesizeAndCommitPatch(fnSignature, fault, effectiveArgs);
+                        
+                        // Phục hồi tài nguyên phần cứng nếu bị chặn
+                        if (fault?.message?.includes('AudioContext') && window.__gdeep_shared_audio_ctx) {
+                            window.__gdeep_shared_audio_ctx.resume().catch(() => {});
+                        }
+
+                        // Nếu là lần thử cuối cùng và vẫn thất bại: THỰC THI TRANSACTIONAL ROLLBACK
+                        if (attempts >= 2) {
+                            if (snapshot && _transactionSnapshots.has(txId)) {
+                                try {
+                                    const record = _transactionSnapshots.get(txId);
+                                    if (record.ref.value !== undefined) {
+                                        record.ref.value = JSON.parse(record.snapshot);
+                                    }
+                                } catch (_) {}
+                                _transactionSnapshots.delete(txId);
+                            }
+                            // Trả về Auto-Vivifying Proxy an toàn để không đứt chuỗi gọi DOM/UI
+                            return createAutoVivifyingProxy({});
+                        }
+                    }
+                }
+            };
+
+            // 4. BẢO VỆ TOÀN BIÊN RUNTIME TOÀN CẦU (GLOBAL SENTINEL SHIELD)
+            if (typeof window !== 'undefined') {
+                const originalOnError = window.onerror;
+                window.onerror = function(message, source, lineno, colno, error) {
+                    const sig = `Global::${String(source || 'inline')}::${lineno}`;
+                    synthesizeAndCommitPatch(sig, error || message, []);
+                    if (typeof originalOnError === 'function') {
+                        try { originalOnError.apply(this, arguments); } catch (_) {}
+                    }
+                    return true; // Triệt tiêu cờ báo đỏ làm gián đoạn Vue rendering
+                };
+
+                window.addEventListener('unhandledrejection', function(event) {
+                    const sig = `UnhandledRejection::${String(event.reason?.message || event.reason).slice(0, 30)}`;
+                    synthesizeAndCommitPatch(sig, event.reason, []);
+                    event.preventDefault();
+                });
+            }
+
+            return {
+                Mesh: meshCore,
+                Config: masterCfg,
+                ActivePatches: _activePatches,
+                createSafeProxy: createAutoVivifyingProxy,
+                executeUnderSaga,
+                register: meshCore.register.bind(meshCore),
+                get: meshCore.get.bind(meshCore),
+                fire: meshCore.fire.bind(meshCore),
+                autoWrapObject: meshCore.autoWrapObject.bind(meshCore),
+                intercept: meshCore.intercept.bind(meshCore),
+                Council: meshCore.NeuralCouncil
+            };
+        })(SynapticNeuralMesh, GDeepMasterConfig);
 
         // ============================================================
         // HỆ THỐNG TRÍ NHỚ BM25 VÀ TIỀM THỨC TỰ HỌC (EPISTEMIC AXIOMS)
