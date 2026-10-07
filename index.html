@@ -2791,6 +2791,7 @@ function createRecursivePingPongSolverMaterial() {
         vertexShader,
         fragmentShader,
         uniforms: {
+            uProgress: { value: 0.0 },
             uPreviousFrameTexture: { value: null },
             uInitialKeyframeTexture: { value: null },
             uDepthMap: { value: null },
@@ -2873,7 +2874,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON CHUẨN XÁC:
             totalTries++;
             const activeKey = keyPool[totalTries % keyPool.length];
             try {
-                postStatus(`Gemini Hamiltonian: Đang thiết lập trường năng lượng...`);
+                postStatus(`Đang phân tích không gian...`);
                 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${activeKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -3159,58 +3160,69 @@ self.onmessage = async function(e) {
 
             if (!shotBitmap) {
                 const sanitizedPrompt = (sceneSpec.image_plan?.prompt || sceneSpec.action_description || 'cinematic masterpiece 8k dramatic lighting')
-                    .replace(/[/\\?#&%()[\]{}<>"'`\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 250);
+                    .replace(/[/\\?#&%()[\]{}<>"'`\r\n\t]/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 280);
 
                 const encodedPrompt = encodeURIComponent(sanitizedPrompt);
-                const modelsToAttempt = ['flux', 'turbo', 'flux-realism'];
+                const fixedModel = sceneSpec.image_plan?.model || 'flux';
+                const fixedSeed = seed; 
 
-                for (const mName of modelsToAttempt) {
-                    postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Kết xuất hình ảnh (${mName})...`);
+                const makeUrl = (base) => `${base}/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${fixedModel}&seed=${fixedSeed}&nologo=true`;
+                const directUrl = makeUrl('https://image.pollinations.ai');
+                const gatewayUrls = [
+                    directUrl,
+                    `https://corsproxy.io/?${encodeURIComponent(directUrl)}`,
+                    `https://api.allorigins.win/raw?url=${encodeURIComponent(directUrl)}`
+                ];
 
-                    const directUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&model=${mName}&seed=${seed}&nologo=true`;
-                    const gatewayUrls = [
-                        directUrl,
-                        `https://corsproxy.io/?${encodeURIComponent(directUrl)}`,
-                        `https://api.allorigins.win/raw?url=${encodeURIComponent(directUrl)}`
-                    ];
+                let attempt = 0;
+                const maxAttempts = 15;
+
+                while (!shotBitmap && attempt < maxAttempts) {
+                    attempt++;
+                    const waitDelay = Math.min(3000 + (attempt * 2500), 18000);
+
+                    // THÔNG BÁO TINH GỌN, CHUẨN THƯƠNG MẠI
+                    postStatus(`Đang tạo hình ảnh cảnh quay [${currentSceneNum}/${totalScenes}]...`);
 
                     for (let g = 0; g < gatewayUrls.length; g++) {
-                        for (let attempt = 0; attempt < 2; attempt++) {
-                            try {
-                                const ctrl = new AbortController();
-                                const timeoutMs = (mName === 'turbo') ? 10000 : 25000;
-                                const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+                        try {
+                            const ctrl = new AbortController();
+                            const tid = setTimeout(() => ctrl.abort(), 35000);
 
-                                const res = await fetch(gatewayUrls[g], {
-                                    signal: ctrl.signal,
-                                    headers: { 'Accept': 'image/jpeg,image/png,image/webp,*/*' }
-                                });
-                                clearTimeout(tid);
+                            const res = await fetch(gatewayUrls[g], {
+                                signal: ctrl.signal,
+                                headers: { 'Accept': 'image/jpeg,image/png,image/webp,*/*' }
+                            });
+                            clearTimeout(tid);
 
-                                if (res.ok) {
-                                    const blob = await res.blob();
-                                    const decoded = await decodeImageBlobSafely(blob);
-                                    if (decoded) {
-                                        shotBitmap = decoded;
-                                        break;
-                                    }
+                            if (res.ok) {
+                                const blob = await res.blob();
+                                const decoded = await decodeImageBlobSafely(blob);
+                                if (decoded) {
+                                    shotBitmap = decoded;
+                                    break;
                                 }
-                            } catch (_) {
-                                await new Promise(r => setTimeout(r, 400));
                             }
-                        }
-                        if (shotBitmap) break;
+                        } catch (_) {}
                     }
+
                     if (shotBitmap) break;
+
+                    // Nếu server đang dựng, thông báo thanh lịch thay vì đếm số lần hay hiện mã Seed
+                    postStatus(`Đang hoàn thiện chi tiết cảnh quay [${currentSceneNum}/${totalScenes}]...`);
+                    await new Promise(r => setTimeout(r, waitDelay));
                 }
             }
 
             if (!shotBitmap) {
-                throw new Error(`Cú máy ${currentSceneNum}: Không thể tải ảnh gốc từ máy chủ. Vui lòng thử lại.`);
+                throw new Error(`Không thể khởi tạo cảnh quay [${currentSceneNum}/${totalScenes}]. Vui lòng kiểm tra lại kết nối.`);
             }
 
             // GIẢI MÃ THẾ NĂNG HAMILTONIAN
-            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Đạo diễn không gian True 3D...`);
+            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Đạo diễn không gian...`);
             const hamiltonianPlan = await requestHamiltonianContinuumTensor(
                 shotBitmap,
                 sceneSpec.action_description || rawPrompt,
@@ -3324,7 +3336,7 @@ self.onmessage = async function(e) {
             const solverMesh = new THREE.Mesh(gridGeo, pingPongMaterial);
             quadScene.add(solverMesh);
 
-            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Tiến hóa thể tích True 3D 60 FPS...`);
+            postStatus(`Đang kết xuất chuyển động cảnh quay...`);
 
             let prevPan = [0, 0], prevZoom = 1.0, prevRot = 0.0;
 
@@ -3389,7 +3401,7 @@ self.onmessage = async function(e) {
 
                 if (f % 30 === 0) {
                     const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`True 3D 60 FPS: ${percent}%`, percent);
+                    postStatus(`Đang hoàn thiện: ${percent}%`, percent);
                 }
             }
 
@@ -3404,7 +3416,7 @@ self.onmessage = async function(e) {
             shotsLog.push({ shot_id: currentSceneNum, title: sceneSpec.title || `Cú máy ${currentSceneNum}`, duration: shotDuration });
         }
 
-        postStatus("Hoàn tất tác phẩm điện ảnh True 3D 60 FPS...", 100);
+        postStatus("Đang hoàn tất video...", 100);
 
         if (supportsAudio && audioEngine && audioEngine.state !== 'closed') {
             try { await audioEngine.flush(); } catch (_) {}
@@ -9005,18 +9017,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                         const shotsDetail = (result.shotsLog || []).map(s => `- **${s.title} (${s.duration}s)**`).join('\n');
 
                         targetMsg.content = (targetMsg.content || '') +
-                            `\n\n🎬 **Tác Phẩm Điện Ảnh 4D Độc Bản: "${masterScript.title || 'G-Deep Cinema'}"**\n` +
-                            `- **Động cơ:** G-Deep 4D Volumetric Tensor Engine (Chuẩn 60 FPS Điện Ảnh)\n` +
-                            `- **Phân rã không gian:** Chủ thể độc lập & Môi trường Dual-Phase Flow\n` +
-                            `- **Âm học:** Đồng bộ tần số sóng âm FFT & Khắc phụ đề tự động\n` +
-                            `- **Tổng thời lượng:** ${result.narrativePlan.total_duration}s (${result.narrativePlan.total_scenes} Cú máy)\n` +
-                            `- **Độ phân giải:** ${w}x${h} (${userAspectRatio})\n\n` +
-                            `🎞️ **Danh mục cú máy:**\n${shotsDetail}`;
+                            `\n\n🎬 **${masterScript.title || 'Tác Phẩm Điện Ảnh Hoàn Thiện'}**\n` +
+                            `- **Thời lượng:** ${result.narrativePlan.total_duration} giây\n` +
+                            `- **Tỷ lệ:** ${userAspectRatio}\n\n` +
+                            `🎞️ **Danh mục phân cảnh:**\n${shotsDetail}`;
 
                         targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                         scheduleDbSave(targetMsg);
                         scrollToBottom(true);
-                        notify("Tác phẩm điện ảnh đã xuất xưởng thành công!");
+                        notify("Tác phẩm điện ảnh đã hoàn thành!");
 
                     } catch (err) {
                         notify(`Lỗi xưởng phim: ${err.message}`, true);
