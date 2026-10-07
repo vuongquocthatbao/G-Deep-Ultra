@@ -2569,12 +2569,11 @@ async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) 
     return null;
 }
 
-// BỘ PHÂN TÍCH TẦN SỐ SÓNG ÂM FFT (AUDIO DYNAMICS ANALYZER)
 function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRate) {
     if (!channelData || channelData.length === 0) return { bass: 0.0, vocal: 0.0, treble: 0.0 };
     
     const centerSample = Math.floor(currentSecond * sampleRate);
-    const windowSize = Math.floor(sampleRate / 60); // 1 frame tại 60 FPS
+    const windowSize = Math.floor(sampleRate / 60);
     const halfWin = Math.floor(windowSize / 2);
     const start = Math.max(0, centerSample - halfWin);
     const end = Math.min(channelData.length, centerSample + halfWin);
@@ -2605,10 +2604,10 @@ function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRat
 }
 
 // =========================================================================================
-// [HƯỚNG 2]: SHADER BỘ GIẢI PHƯƠNG TRÌNH CONTINUUM MECHANICS & TENSOR FLUID (GPU SOLVER)
-// Mô phỏng chuyển động tự sinh từ bảo toàn năng lượng, ứng suất vật liệu và phi nén
+// [VÒNG LẶP SIÊU VI MÔ]: SHADER TIẾN HÓA ĐỆ QUY PING-PONG (RECURSIVE CONTINUUM SOLVER)
+// Frame t nạp Frame t-1 để giải tích vi phân chuyển động tự sinh, bảo toàn độ nét 8K
 // =========================================================================================
-function createUnifiedContinuumSolverMaterial() {
+function createRecursivePingPongSolverMaterial() {
     const vertexShader = `
         varying vec2 vUv;
         void main() {
@@ -2620,31 +2619,33 @@ function createUnifiedContinuumSolverMaterial() {
     const fragmentShader = `
         precision highp float;
 
-        uniform sampler2D uTexture;
+        uniform sampler2D uPreviousFrameTexture;  // Kết quả tiến hóa từ frame t-1 (Ping-Pong)
+        uniform sampler2D uInitialKeyframeTexture; // Mỏ neo 8K gốc để bảo toàn chi tiết vĩnh viễn
         uniform float uTime;
-        uniform vec2 uResolution;
-        
-        // 1. TRƯỜNG BIẾN THIÊN THẤU KÍNH (6-DOF CAMERA MANIFOLD)
-        uniform vec2 uCameraPan;
-        uniform float uCameraZoom;
-        uniform float uCameraRotation;
+        uniform float uDeltaTime; // 1.0 / 60.0s
+        uniform float uProgress;  // 0.0 -> 1.0 của cả cú máy
+
+        // ĐỘNG HỌC THẤU KÍNH 6-DOF
+        uniform vec2 uCameraDeltaPan;
+        uniform float uCameraDeltaZoom;
+        uniform float uCameraDeltaRot;
         uniform float uCameraDepth;
 
-        // 2. NĂNG LƯỢNG SÓNG ÂM FFT (HƯỚNG 3: CLOSED-LOOP REFLEX)
+        // NĂNG LƯỢNG SÓNG ÂM FFT
         uniform float uAudioBass;
         uniform float uAudioVocal;
         uniform float uAudioTreble;
 
-        // 3. MA TRẬN TRƯỜNG THẾ NĂNG & VẬN TỐC TỰ SINH (HƯỚNG 1 & 2: CONTINUUM SOLVER)
-        #define MAX_DYNAMICS_NODES 8
+        // MA TRẬN ĐỘNG LỰC HỌC TENSOR
+        #define MAX_NODES 8
         uniform int uNodeCount;
-        uniform vec2 uNodeCenter[MAX_DYNAMICS_NODES];
-        uniform vec2 uNodeRadius[MAX_DYNAMICS_NODES];
-        uniform vec2 uNodeMomentum[MAX_DYNAMICS_NODES]; // Vector động lượng v_x, v_y
-        uniform float uNodeViscosity[MAX_DYNAMICS_NODES]; // Độ nhớt / đàn hồi
-        uniform float uNodeVorticity[MAX_DYNAMICS_NODES]; // Độ xoáy cuộn chất lưu
-        uniform float uNodeFrequency[MAX_DYNAMICS_NODES]; // Tần số cộng hưởng
-        uniform float uNodePhase[MAX_DYNAMICS_NODES];     // Độ lệch pha vi mô
+        uniform vec2 uNodeCenter[MAX_NODES];
+        uniform vec2 uNodeRadius[MAX_NODES];
+        uniform vec2 uNodeMomentum[MAX_NODES];
+        uniform float uNodeViscosity[MAX_NODES];
+        uniform float uNodeVorticity[MAX_NODES];
+        uniform float uNodeFrequency[MAX_NODES];
+        uniform float uNodePhase[MAX_NODES];
 
         varying vec2 vUv;
 
@@ -2656,89 +2657,66 @@ function createUnifiedContinuumSolverMaterial() {
 
         void main() {
             vec2 uv = vUv;
-            
-            // Chấn động thấu kính kích hoạt bởi năng lượng Bass thực tế
-            vec2 cameraInertia = vec2(sin(uTime * 38.0), cos(uTime * 34.0)) * (uAudioBass * 0.006);
 
-            // TẦNG 1: TÍCH PHÂN HỆ QUY CHIẾU CAMERA (HOMOGRAPHY CONTINUUM)
+            // 1. TÍCH PHÂN VI PHÂN THẤU KÍNH (CAMERA SUB-STEPPING)
+            vec2 cameraImpulse = vec2(sin(uTime * 40.0), cos(uTime * 35.0)) * (uAudioBass * 0.003);
             vec2 centered = uv - vec2(0.5);
-            centered = rotateVec(centered, -(uCameraRotation + cameraInertia.x * 0.4));
-            centered /= max(uCameraZoom + uCameraDepth * 0.08, 0.001);
-            vec2 baseCoord = centered + vec2(0.5) - (uCameraPan + cameraInertia);
+            centered = rotateVec(centered, -(uCameraDeltaRot + cameraImpulse.x * 0.3));
+            centered /= max(1.0 + uCameraDeltaZoom, 0.001);
+            vec2 evolvedCoord = centered + vec2(0.5) - (uCameraDeltaPan + cameraImpulse);
 
-            // TẦNG 2: BỘ GIẢI VI PHÂN CONTINUUM MECHANICS (CHUYỂN ĐỘNG TỰ SINH)
-            vec2 totalAdvectionA = vec2(0.0);
-            vec2 totalAdvectionB = vec2(0.0);
-            vec2 totalElasticStrain = vec2(0.0);
-            float totalFluidWeight = 0.0;
-            float totalFluidInfluence = 0.0;
+            // 2. TÍNH TOÁN TRƯỜNG VẬN TỐC TỰ SINH SUB-FRAME (VELOCITY FIELD ADVECTION)
+            vec2 totalVelocity = vec2(0.0);
+            float totalElasticStrain = 0.0;
+            float totalVorticity = 0.0;
 
-            for (int i = 0; i < MAX_DYNAMICS_NODES; i++) {
+            for (int i = 0; i < MAX_NODES; i++) {
                 if (i >= uNodeCount) break;
 
                 vec2 center = uNodeCenter[i];
                 vec2 radius = max(uNodeRadius[i], vec2(0.001));
-                vec2 delta = (baseCoord - center) / radius;
+                vec2 delta = (evolvedCoord - center) / radius;
                 float distSq = dot(delta, delta);
 
                 if (distSq < 1.0) {
                     float dist = sqrt(distSq);
-                    float eta = uNodeViscosity[i]; // Tỷ lệ Nhớt (0.0 = Dịch thể lỏng) vs Đàn hồi (1.0 = Chất rắn dẻo)
-                    float falloff = pow(clamp(1.0 - dist, 0.0, 1.0), 2.0);
+                    float eta = uNodeViscosity[i];
+                    float falloff = pow(clamp(1.0 - dist, 0.0, 1.0), 2.2);
 
-                    // A. THÀNH PHẦN CHẤT RẮN ĐÀN HỒI (ELASTIC SOLID DYNAMICS)
-                    if (eta > 0.3) {
-                        float wave = sin(uTime * uNodeFrequency[i] * 6.2831853 + uNodePhase[i]);
-                        // Điều biến rung cơ học từ tần số Vocal giọng nói
-                        float vocalMicroStrain = sin(uTime * 28.0) * (uAudioVocal * 0.015);
-                        vec2 strain = (uNodeMomentum[i] * (wave + vocalMicroStrain)) * (eta * falloff);
-                        totalElasticStrain += strain;
-                    }
+                    // Thành phần chất lưu Navier-Stokes vi mô
+                    vec2 rotTangent = vec2(-delta.y, delta.x) * (uNodeVorticity[i] * 0.08);
+                    vec2 flowVel = (uNodeMomentum[i] + rotTangent) * ((1.0 - eta * 0.7) * falloff);
 
-                    // B. THÀNH PHẦN THỂ DỊCH CHẤT LƯU (NAVIER-STOKES FLUID ADVECTION)
-                    if (eta < 0.7) {
-                        float fluidPower = (1.0 - eta) * falloff;
-                        float speed = max(length(uNodeMomentum[i]), 0.1) * 0.8;
-                        
-                        // Xoáy cuộn chất lưu (Vorticity)
-                        vec2 rotTangent = vec2(-delta.y, delta.x) * (uNodeVorticity[i] * 0.05);
-                        vec2 flowVector = (uNodeMomentum[i] + rotTangent);
+                    // Thành phần đàn hồi dao động vi mô
+                    float wave = sin(uTime * uNodeFrequency[i] * 6.2831853 + uNodePhase[i]);
+                    float vocalMod = sin(uTime * 30.0) * (uAudioVocal * 0.02);
+                    vec2 elasticVel = uNodeMomentum[i] * ((wave + vocalMod) * (eta * falloff * 0.8));
 
-                        // Dual-Phase Integration: Bảo toàn điểm ảnh vĩnh viễn (Zero Stretching)
-                        float tA = fract(uTime * speed);
-                        float tB = fract(uTime * speed + 0.5);
-                        float w = abs(1.0 - 2.0 * tA);
-
-                        flowA: vec2 dUvA = flowVector * (tA - 0.5) * fluidPower;
-                        flowB: vec2 dUvB = flowVector * (tB - 0.5) * fluidPower;
-
-                        totalAdvectionA += dUvA;
-                        totalAdvectionB += dUvB;
-                        totalFluidWeight = mix(totalFluidWeight, w, fluidPower);
-                        totalFluidInfluence = max(totalFluidInfluence, fluidPower);
-                    }
+                    totalVelocity += (flowVel + elasticVel);
                 }
             }
 
-            // TẦNG 3: TỔNG HỢP TRẠNG THÁI KHÔNG GIAN (CONSTITUTIVE COMPOSITING)
-            vec2 resolvedUv = baseCoord - totalElasticStrain;
+            // 3. TÍCH PHÂN ĐỆ QUY (RECURSIVE ADVECTION): LẤY MẪU TỪ FRAME T-1
+            vec2 advectedUv = evolvedCoord - totalVelocity * (uDeltaTime * 1.5);
+            advectedUv = clamp(advectedUv, vec2(0.001), vec2(0.999));
 
-            vec2 sampleUvA = clamp(resolvedUv - totalAdvectionA, vec2(0.002), vec2(0.998));
-            vec2 sampleUvB = clamp(resolvedUv - totalAdvectionB, vec2(0.002), vec2(0.998));
+            vec4 previousStateColor = texture2D(uPreviousFrameTexture, advectedUv);
 
-            vec4 texA = texture2D(uTexture, sampleUvA);
-            vec4 texB = texture2D(uTexture, sampleUvB);
-            vec4 fluidColor = mix(texA, texB, totalFluidWeight);
+            // 4. HỒI TIẾP BẢO TOÀN CHI TIẾT 8K (HAMILTONIAN FIDELITY ANCHOR)
+            // Lấy mẫu bức ảnh gốc K_0 theo tọa độ biến thiên tổng thể để bù trừ khử nhòe
+            vec2 keyframeSampleUv = clamp(evolvedCoord, vec2(0.001), vec2(0.999));
+            vec4 keyframeColor = texture2D(uInitialKeyframeTexture, keyframeSampleUv);
 
-            vec4 finalColor = mix(texture2D(uTexture, clamp(resolvedUv, vec2(0.002), vec2(0.998))), fluidColor, totalFluidInfluence);
+            // Hòa trộn vi sai: Giữ 97% trạng thái tiến hóa đệ quy + 3% neo độ nét 8K gốc
+            vec4 finalOutput = mix(previousStateColor, keyframeColor, 0.028);
 
-            // Bụi vi mô phát sáng theo tần số Treble
-            if (uAudioTreble > 0.1) {
-                float microShimmer = sin(dot(uv, vec2(120.0, 85.0)) + uTime * 20.0) * (uAudioTreble * 0.03);
-                finalColor.rgb += vec3(microShimmer);
+            // Bụi ánh sáng vi mô phát sáng theo tần số Treble
+            if (uAudioTreble > 0.08) {
+                float shimmer = sin(dot(uv, vec2(140.0, 95.0)) + uTime * 24.0) * (uAudioTreble * 0.025);
+                finalOutput.rgb += vec3(shimmer);
             }
 
-            gl_FragColor = finalColor;
+            gl_FragColor = finalOutput;
         }
     `;
 
@@ -2746,13 +2724,15 @@ function createUnifiedContinuumSolverMaterial() {
         vertexShader,
         fragmentShader,
         uniforms: {
-            uTexture: { value: null },
+            uPreviousFrameTexture: { value: null },
+            uInitialKeyframeTexture: { value: null },
             uTime: { value: 0.0 },
-            uResolution: { value: new THREE.Vector2(1, 1) },
+            uDeltaTime: { value: 1.0 / 60.0 },
+            uProgress: { value: 0.0 },
 
-            uCameraPan: { value: new THREE.Vector2(0, 0) },
-            uCameraZoom: { value: 1.0 },
-            uCameraRotation: { value: 0.0 },
+            uCameraDeltaPan: { value: new THREE.Vector2(0, 0) },
+            uCameraDeltaZoom: { value: 0.0 },
+            uCameraDeltaRot: { value: 0.0 },
             uCameraDepth: { value: 0.0 },
 
             uAudioBass: { value: 0.0 },
@@ -2773,9 +2753,7 @@ function createUnifiedContinuumSolverMaterial() {
     });
 }
 
-// =========================================================================================
-// [HƯỚNG 1]: BỘ NÃO GEMINI GIẢI MÃ THẾ NĂNG HAMILTONIAN TOÀN NĂNG (ZERO-HARDCODE)
-// =========================================================================================
+// BỘ NÃO ĐẠO DIỄN HAMILTONIAN KHÔNG ĐỊNH KIẾN
 async function requestHamiltonianContinuumTensor(imageBitmap, userIntentPrompt, sceneDuration, keyPool, postStatus) {
     const base64Keyframe = await bitmapToBase64(imageBitmap, 512);
 
@@ -2791,8 +2769,8 @@ HÃY GIẢI MÃ BỨC TRANH THÀNH CÁC PHƯƠNG TRÌNH THẾ NĂNG & ĐỘNG L�
      ]
 2. "dynamics_tensor_nodes": Các trung tâm phát tán năng lượng & ứng suất vật liệu (tối đa 8 vùng):
    - "center": [u, v] (Gốc tọa độ [0.0, 0.0] là góc trên bên trái)
-   - "radius": [ru, rv] (Vùng ảnh hưởng trường lực)
-   - "momentum_vector": [vx, vy] (Vector vận tốc/quán tính tích tụ)
+   - "radius": [ru, rv]
+   - "momentum_vector": [vx, vy]
    - "viscosity": Hệ số nhớt vs đàn hồi (0.0 = Dịch thể/Nước/Mây/Khói, 1.0 = Cơ thể/Vật rắn/Kim loại/Cơ học)
    - "vorticity": Độ xoáy cuộn chất lưu (-1.0 đến 1.0)
    - "frequency_hz": Tần số dao động tự nhiên (0.2 đến 3.0 Hz)
@@ -2827,7 +2805,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON CHUẨN XÁC:
             totalTries++;
             const activeKey = keyPool[totalTries % keyPool.length];
             try {
-                postStatus(`Gemini Hamiltonian: Đang giải mã trường năng lượng không-thời gian...`);
+                postStatus(`Gemini Hamiltonian: Đang thiết lập trường năng lượng...`);
                 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${activeKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2905,7 +2883,6 @@ function interpolateSplineProperty(track, progress, propKey) {
     return 0;
 }
 
-// KHẮC PHỤ ĐỀ ĐIỆN ẢNH CHUẨN RẠP TRÊN CANVAS 60 FPS
 function renderCinemaSubtitlesOverlay(ctx, width, height, currentSecond, dialogueCues) {
     if (!Array.isArray(dialogueCues) || dialogueCues.length === 0) return;
 
@@ -2955,7 +2932,7 @@ function renderCinemaSubtitlesOverlay(ctx, width, height, currentSecond, dialogu
 }
 
 // =========================================================================
-// TIẾN TRÌNH KẾT XUẤT ĐIỆN ẢNH TAM HỢP CỰC HẠN 60 FPS
+// TIẾN TRÌNH KẾT XUẤT ĐIỆN ẢNH ĐA TẦNG PING-PONG 60 FPS
 // =========================================================================
 self.onmessage = async function(e) {
     const { masterScript, apiKey, apiKeys } = e.data;
@@ -2975,7 +2952,7 @@ self.onmessage = async function(e) {
 
     try {
         const overallDuration = Number(masterScript.total_duration) || 15;
-        const fps = 60; // 60 KHUNG HÌNH / GIÂY
+        const fps = 60; // 60 KHUNG HÌNH / GIÂY CHUẨN ĐIỆN ẢNH
         const shotSampleRate = 48000;
         const validKeyPool = (Array.isArray(apiKeys) && apiKeys.length > 0) ? apiKeys : [apiKey];
         const voiceCharacters = masterScript.voice_characters || [];
@@ -2992,7 +2969,7 @@ self.onmessage = async function(e) {
         try {
             if (typeof navigator !== 'undefined' && navigator.storage?.getDirectory) {
                 const root = await navigator.storage.getDirectory();
-                opfsFileHandle = await root.getFileHandle(`gdeep_continuum_${Date.now()}.mp4`, { create: true });
+                opfsFileHandle = await root.getFileHandle(`gdeep_pingpong_${Date.now()}.mp4`, { create: true });
                 if (opfsFileHandle.createWritable) {
                     opfsWritable = await opfsFileHandle.createWritable();
                     const TargetClass = self.Mp4Muxer?.FileSystemWritableFileStreamTarget || self.FileSystemWritableFileStreamTarget;
@@ -3072,7 +3049,9 @@ self.onmessage = async function(e) {
         let cumulativeAudioFramesEncoded = 0;
         const shotsLog = [];
 
-        // VÒNG LẶP SẢN XUẤT CÁC CÚ MÁY CONTINUUM
+        // =========================================================================
+        // 1. VÒNG LẶP VĨ MÔ (OUTER MACRO LOOP - CẤP ĐỘ CÚ MÁY & ĐIỆN ẢNH)
+        // =========================================================================
         for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
             const sceneSpec = rawScenesList[sIdx] || {};
             const currentSceneNum = sIdx + 1;
@@ -3160,7 +3139,7 @@ self.onmessage = async function(e) {
                 throw new Error(`Cú máy ${currentSceneNum}: Không thể tải ảnh gốc từ máy chủ. Vui lòng thử lại.`);
             }
 
-            // HƯỚNG 1: GIẢI MÃ THẾ NĂNG HAMILTONIAN TOÀN CẢNH
+            // GIẢI MÃ THẾ NĂNG HAMILTONIAN
             postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Thiết lập trường thế năng động học...`);
             const hamiltonianPlan = await requestHamiltonianContinuumTensor(
                 shotBitmap,
@@ -3170,7 +3149,7 @@ self.onmessage = async function(e) {
                 postStatus
             );
 
-            // TỔNG HỢP VÀ ĐỒNG BỘ TRACK ÂM THANH
+            // TỔNG HỢP TRACK ÂM THANH
             const totalShotAudioSamples = Math.ceil(shotDuration * shotSampleRate);
             const leftChannel = new Float32Array(totalShotAudioSamples);
             const rightChannel = new Float32Array(totalShotAudioSamples);
@@ -3221,72 +3200,112 @@ self.onmessage = async function(e) {
                 }
             }
 
-            // HƯỚNG 2: NẠP VÀO MÁY GIẢI ĐỘNG HỌC CONTINUUM TRÊN GPU
-            const shotTexture = new THREE.Texture(shotBitmap);
-            shotTexture.minFilter = THREE.LinearFilter;
-            shotTexture.magFilter = THREE.LinearFilter;
-            shotTexture.generateMipmaps = false;
-            shotTexture.flipY = false;
-            shotTexture.wrapS = THREE.ClampToEdgeWrapping;
-            shotTexture.wrapT = THREE.ClampToEdgeWrapping;
-            shotTexture.needsUpdate = true;
+            // =========================================================================
+            // 2. KHỞI TẠO BỘ ĐỆM ĐÔI PING-PONG (DOUBLE FRAMEBUFFER EVOLUTION)
+            // =========================================================================
+            const initialKeyframeTexture = new THREE.Texture(shotBitmap);
+            initialKeyframeTexture.minFilter = THREE.LinearFilter;
+            initialKeyframeTexture.magFilter = THREE.LinearFilter;
+            initialKeyframeTexture.generateMipmaps = false;
+            initialKeyframeTexture.flipY = false;
+            initialKeyframeTexture.wrapS = THREE.ClampToEdgeWrapping;
+            initialKeyframeTexture.wrapT = THREE.ClampToEdgeWrapping;
+            initialKeyframeTexture.needsUpdate = true;
 
-            const solverMaterial = createUnifiedContinuumSolverMaterial();
-            solverMaterial.uniforms.uTexture.value = shotTexture;
-            solverMaterial.uniforms.uResolution.value.set(width, height);
+            const rtOptions = {
+                minFilter: THREE.LinearFilter,
+                magFilter: THREE.LinearFilter,
+                format: THREE.RGBAFormat,
+                type: THREE.UnsignedByteType,
+                wrapS: THREE.ClampToEdgeWrapping,
+                wrapT: THREE.ClampToEdgeWrapping
+            };
+
+            let renderTargetA = new THREE.WebGLRenderTarget(width, height, rtOptions);
+            let renderTargetB = new THREE.WebGLRenderTarget(width, height, rtOptions);
+
+            // Nạp bức ảnh gốc K_0 vào Buffer A
+            const copyMaterial = new THREE.MeshBasicMaterial({ map: initialKeyframeTexture, depthTest: false, depthWrite: false });
+            const initQuad = new THREE.Mesh(quadGeo, copyMaterial);
+            quadScene.add(initQuad);
+            sharedRenderer.setRenderTarget(renderTargetA);
+            sharedRenderer.render(quadScene, quadCamera);
+            quadScene.remove(initQuad);
+            copyMaterial.dispose();
+
+            // Khởi tạo Shader đệ quy Ping-Pong
+            const pingPongMaterial = createRecursivePingPongSolverMaterial();
+            pingPongMaterial.uniforms.uInitialKeyframeTexture.value = initialKeyframeTexture;
 
             const nodes = hamiltonianPlan.dynamics_tensor_nodes || [];
             const nodeCount = Math.min(8, nodes.length);
-            solverMaterial.uniforms.uNodeCount.value = nodeCount;
+            pingPongMaterial.uniforms.uNodeCount.value = nodeCount;
 
             for (let i = 0; i < nodeCount; i++) {
                 const n = nodes[i];
-                solverMaterial.uniforms.uNodeCenter.value[i].set(n.center[0], n.center[1]);
-                solverMaterial.uniforms.uNodeRadius.value[i].set(n.radius[0], n.radius[1]);
-                solverMaterial.uniforms.uNodeMomentum.value[i].set(n.momentum_vector[0], n.momentum_vector[1]);
-                solverMaterial.uniforms.uNodeViscosity.value[i] = Number(n.viscosity) !== undefined ? Number(n.viscosity) : 0.5;
-                solverMaterial.uniforms.uNodeVorticity.value[i] = Number(n.vorticity) || 0.0;
-                solverMaterial.uniforms.uNodeFrequency.value[i] = Number(n.frequency_hz) || 1.0;
-                solverMaterial.uniforms.uNodePhase.value[i] = Number(n.phase_rad) || 0.0;
+                pingPongMaterial.uniforms.uNodeCenter.value[i].set(n.center[0], n.center[1]);
+                pingPongMaterial.uniforms.uNodeRadius.value[i].set(n.radius[0], n.radius[1]);
+                pingPongMaterial.uniforms.uNodeMomentum.value[i].set(n.momentum_vector[0], n.momentum_vector[1]);
+                pingPongMaterial.uniforms.uNodeViscosity.value[i] = Number(n.viscosity) !== undefined ? Number(n.viscosity) : 0.5;
+                pingPongMaterial.uniforms.uNodeVorticity.value[i] = Number(n.vorticity) || 0.0;
+                pingPongMaterial.uniforms.uNodeFrequency.value[i] = Number(n.frequency_hz) || 1.0;
+                pingPongMaterial.uniforms.uNodePhase.value[i] = Number(n.phase_rad) || 0.0;
             }
 
-            const continuumMesh = new THREE.Mesh(quadGeo, solverMaterial);
-            quadScene.add(continuumMesh);
+            const solverQuad = new THREE.Mesh(quadGeo, pingPongMaterial);
+            quadScene.add(solverQuad);
 
-            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Tích phân chuyển động tự sinh 60 FPS...`);
+            postStatus(`[Cú máy ${currentSceneNum}/${totalScenes}] Tiến hóa đệ quy Ping-Pong 60 FPS...`);
 
-            // HƯỚNG 3: VÒNG LẶP TÍCH PHÂN THỜI GIAN THỰC (CLOSED-LOOP 60 FPS)
+            let prevPan = [0, 0], prevZoom = 1.0, prevRot = 0.0;
+
+            // =========================================================================
+            // 3. VÒNG LẶP TRUNG MÔ & SIÊU VI MÔ (MESO & MICRO RECURSIVE LOOP 60 FPS)
+            // =========================================================================
             for (let f = 0; f < totalFrames; f++) {
                 const progress = f / Math.max(1, totalFrames - 1);
                 const currentSecond = f / fps;
 
-                solverMaterial.uniforms.uTime.value = currentSecond;
-
-                // Đồng bộ sóng âm FFT tức thời
+                // A. TÍCH PHÂN NĂNG LƯỢNG SÓNG ÂM FFT
                 const audioDynamics = extractInstantaneousAudioEnergies(leftChannel, currentSecond, shotSampleRate);
-                solverMaterial.uniforms.uAudioBass.value = audioDynamics.bass;
-                solverMaterial.uniforms.uAudioVocal.value = audioDynamics.vocal;
-                solverMaterial.uniforms.uAudioTreble.value = audioDynamics.treble;
+                pingPongMaterial.uniforms.uAudioBass.value = audioDynamics.bass;
+                pingPongMaterial.uniforms.uAudioVocal.value = audioDynamics.vocal;
+                pingPongMaterial.uniforms.uAudioTreble.value = audioDynamics.treble;
 
-                // Tích phân thấu kính 6-DOF
-                const camPan = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'pan');
-                const camZoom = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'zoom');
-                const camRot = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'rot');
-                const camDepth = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'depth');
+                // B. TÍNH VI PHÂN DELTA CAMERA TỪNG FRAME (SUB-STEPPING)
+                const curPan = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'pan');
+                const curZoom = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'zoom') || 1.0;
+                const curRot = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'rot') || 0.0;
+                const curDepth = interpolateSplineProperty(hamiltonianPlan.camera_manifold?.trajectory, progress, 'depth') || 0.0;
 
-                solverMaterial.uniforms.uCameraPan.value.set(camPan[0], camPan[1]);
-                solverMaterial.uniforms.uCameraZoom.value = Number(camZoom) || 1.0;
-                solverMaterial.uniforms.uCameraRotation.value = Number(camRot) || 0.0;
-                solverMaterial.uniforms.uCameraDepth.value = Number(camDepth) || 0.0;
+                const deltaPan = [curPan[0] - prevPan[0], curPan[1] - prevPan[1]];
+                const deltaZoom = curZoom - prevZoom;
+                const deltaRot = curRot - prevRot;
 
-                // 1. Render giải tích Continuum lên WebGL
+                prevPan = curPan; prevZoom = curZoom; prevRot = curRot;
+
+                pingPongMaterial.uniforms.uCameraDeltaPan.value.set(deltaPan[0], deltaPan[1]);
+                pingPongMaterial.uniforms.uCameraDeltaZoom.value = Number(deltaZoom);
+                pingPongMaterial.uniforms.uCameraDeltaRot.value = Number(deltaRot);
+                pingPongMaterial.uniforms.uCameraDepth.value = Number(curDepth);
+
+                pingPongMaterial.uniforms.uTime.value = currentSecond;
+                pingPongMaterial.uniforms.uProgress.value = progress;
+
+                // C. BƯỚC ĐỆ QUY PING-PONG: LẤY TARGET_A LÀM ĐẦU VÀO -> VẼ RA TARGET_B
+                pingPongMaterial.uniforms.uPreviousFrameTexture.value = renderTargetA.texture;
+                sharedRenderer.setRenderTarget(renderTargetB);
                 sharedRenderer.render(quadScene, quadCamera);
 
-                // 2. Khắc phụ đề điện ảnh chuẩn 60 FPS
+                // D. VẼ BỨC TRANH TIẾN HÓA MỚI RA CANVAS ĐÍCH
+                sharedRenderer.setRenderTarget(null);
+                sharedRenderer.render(quadScene, quadCamera);
+
+                // E. HẬU KỲ KHẮC PHỤ ĐỀ 60 FPS
                 compositeCtx.drawImage(webglCanvas, 0, 0, width, height);
                 renderCinemaSubtitlesOverlay(compositeCtx, width, height, currentSecond, sceneSpec.dialogue_cues);
 
-                // 3. Nén WebCodecs không rò rỉ RAM
+                // F. ĐIỀU TỐC NÉN WEBCODECS KHÔNG RÒ RỈ RAM
                 while (activeEncoder && activeEncoder.encodeQueueSize > 4) {
                     await new Promise(r => setTimeout(r, 6));
                 }
@@ -3299,22 +3318,29 @@ self.onmessage = async function(e) {
                 vFrame.close();
                 cumulativeGlobalFrameCount++;
 
+                // G. ĐỔI CHỖ PING-PONG: B TRỞ THÀNH MỒI CHO FRAME TIẾP THEO (A = B)
+                let swapTemp = renderTargetA;
+                renderTargetA = renderTargetB;
+                renderTargetB = swapTemp;
+
                 if (f % 30 === 0) {
                     const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`Mã hóa Continuum 60 FPS: ${percent}%`, percent);
+                    postStatus(`Tiến hóa 60 FPS: ${percent}%`, percent);
                 }
             }
 
-            // Dọn dẹp tài nguyên cú máy
-            quadScene.remove(continuumMesh);
-            solverMaterial.dispose();
-            shotTexture.dispose();
+            // Giải phóng bộ đệm cú máy
+            quadScene.remove(solverQuad);
+            pingPongMaterial.dispose();
+            initialKeyframeTexture.dispose();
+            renderTargetA.dispose();
+            renderTargetB.dispose();
             try { shotBitmap.close(); } catch (_) {}
 
             shotsLog.push({ shot_id: currentSceneNum, title: sceneSpec.title || `Cú máy ${currentSceneNum}`, duration: shotDuration });
         }
 
-        postStatus("Hoàn tất tác phẩm điện ảnh Continuum 60 FPS...", 100);
+        postStatus("Hoàn tất tác phẩm điện ảnh Đa Tầng 60 FPS...", 100);
 
         if (supportsAudio && audioEngine && audioEngine.state !== 'closed') {
             try { await audioEngine.flush(); } catch (_) {}
