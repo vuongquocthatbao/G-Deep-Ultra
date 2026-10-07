@@ -2444,7 +2444,6 @@
     </div>
 
 <!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (PRESERVE BUFFER · NPOT SAFE · ZERO BLACK SCREEN · PURE THREE.JS) -->
-<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (PRESERVE BUFFER · NPOT SAFE · ZERO BLACK SCREEN · PURE THREE.JS) -->
 <script id="cinema-worker-code" type="text/plain">
 if (typeof self.window === 'undefined') { self.window = self; }
 if (typeof self.document === 'undefined') {
@@ -2586,15 +2585,14 @@ async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) 
     }
 }
 
+// BỘ TỔNG HỢP ÂM SẮC LINH HOẠT THUẦN AI (KHÔNG DÙNG HỢP ÂM CỐ ĐỊNH)
 function synthesizeAiDirectSoundscape(soundscapePlan, durationSec, sampleRate, leftChannel, rightChannel) {
-    if (!soundscapePlan) return;
+    if (!soundscapePlan || !Array.isArray(soundscapePlan.base_frequencies) || soundscapePlan.base_frequencies.length === 0) return;
 
-    const baseFreqs = Array.isArray(soundscapePlan.base_frequencies) && soundscapePlan.base_frequencies.length > 0 
-        ? soundscapePlan.base_frequencies 
-        : [55.0, 110.0, 164.81];
-    
-    const pulseHz = Math.max(0.1, Number(soundscapePlan.pulse_rate_hz) || 0.5);
-    const richness = Math.min(1.0, Math.max(0.1, Number(soundscapePlan.harmonic_richness) || 0.4));
+    const baseFreqs = soundscapePlan.base_frequencies.map(f => Math.max(20.0, Math.min(12000.0, Number(f) || 110.0)));
+    const pulseHz = Math.max(0.05, Math.min(10.0, Number(soundscapePlan.pulse_rate_hz) || 0.5));
+    const richness = Math.min(1.0, Math.max(0.0, Number(soundscapePlan.harmonic_richness) || 0.4));
+    const timbre = soundscapePlan.timbre_type || "fm_drone";
     const totalSamples = Math.ceil(durationSec * sampleRate);
 
     for (let i = 0; i < totalSamples; i++) {
@@ -2602,18 +2600,26 @@ function synthesizeAiDirectSoundscape(soundscapePlan, durationSec, sampleRate, l
         const t = i / sampleRate;
         const progress = t / Math.max(0.1, durationSec);
 
+        // Đường bao động học tiến hóa theo kịch bản
         const envelope = Math.sin(progress * Math.PI) * 0.18;
         const pulse = 0.85 + 0.15 * Math.sin(2.0 * Math.PI * pulseHz * t);
 
         let wave = 0.0;
         for (let f = 0; f < baseFreqs.length; f++) {
             const freq = baseFreqs[f];
-            wave += Math.sin(2.0 * Math.PI * freq * t) * (1.0 / (f + 1));
-            wave += Math.sin(2.0 * Math.PI * (freq * 2.0) * t) * (richness * 0.35);
+            if (timbre === "tension_cluster") {
+                wave += Math.sin(2.0 * Math.PI * freq * t + Math.sin(t * 3.0)) * (1.0 / (f + 1));
+            } else if (timbre === "celestial_pad") {
+                wave += Math.sin(2.0 * Math.PI * freq * t) * (1.0 / (f + 1));
+                wave += Math.sin(2.0 * Math.PI * (freq * 1.5) * t) * (richness * 0.3);
+            } else { // fm_drone
+                const mod = Math.sin(2.0 * Math.PI * (freq * 0.5) * t) * 2.0;
+                wave += Math.sin(2.0 * Math.PI * freq * t + mod) * (1.0 / (f + 1));
+            }
         }
 
         const sampleVal = wave * envelope * pulse;
-        const panLeft = 0.5 + 0.2 * Math.sin(t * 0.3);
+        const panLeft = 0.5 + 0.25 * Math.sin(t * (pulseHz * 0.5));
         const panRight = 1.0 - panLeft;
 
         leftChannel[i] += sampleVal * panLeft;
@@ -2655,62 +2661,79 @@ function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRat
     return { bass: bassEnergy, vocal: vocalEnergy, treble: trebleEnergy };
 }
 
-// BỘ TÁCH 3 LỚP KHÔNG GIAN: KHÓA CHẶT TRỤC Y (FLIPY = TRUE) CHỐNG LẬT NGƯỢC ĐẦU
-function buildVolumetricLayerTextures(shotBitmap, width, height, subjectBox) {
-    // 1. TẠO TEXTURE TIỀN CẢNH (CHỦ THỂ) CÓ MẶT NẠ BIÊN MỀM
+// BỘ PHÂN RÃ KHÔNG GIAN THÍCH ỨNG: KHÔNG DÙNG MẶT NẠ BẦU DỤC CỐ ĐỊNH
+function buildAdaptiveVolumetricLayers(shotBitmap, width, height, decompPlan) {
+    const layerMode = decompPlan.layer_mode || "subject_isolate";
+
     const fgCanvas = new OffscreenCanvas(width, height);
     const fgCtx = fgCanvas.getContext('2d');
     fgCtx.drawImage(shotBitmap, 0, 0, width, height);
 
-    const box = subjectBox || [0.15, 0.25, 0.85, 0.75];
-    const ymin = box[0] * height, xmin = box[1] * width;
-    const ymax = box[2] * height, xmax = box[3] * width;
-    const cx = (xmin + xmax) * 0.5, cy = (ymin + ymax) * 0.5;
-    const rx = (xmax - xmin) * 0.58, ry = (ymax - ymin) * 0.58;
-
-    fgCtx.globalCompositeOperation = 'destination-in';
-    const grad = fgCtx.createRadialGradient(cx, cy, Math.min(rx, ry) * 0.65, cx, cy, Math.max(rx, ry));
-    grad.addColorStop(0, 'rgba(0,0,0,1)');
-    grad.addColorStop(0.82, 'rgba(0,0,0,0.92)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    
-    fgCtx.save();
-    fgCtx.translate(cx, cy);
-    fgCtx.scale(1.0, ry / Math.max(1.0, rx));
-    fgCtx.fillStyle = grad;
-    fgCtx.beginPath();
-    fgCtx.arc(0, 0, rx, 0, Math.PI * 2);
-    fgCtx.fill();
-    fgCtx.restore();
-    fgCtx.globalCompositeOperation = 'source-over';
-
-    const fgTex = new THREE.CanvasTexture(fgCanvas);
-    fgTex.minFilter = THREE.LinearFilter;
-    fgTex.magFilter = THREE.LinearFilter;
-    fgTex.flipY = true; // KHÓA ĐỨNG HÌNH ẢNH: Chống lật ngược trục Y
-    fgTex.needsUpdate = true;
-
-    // 2. TẠO TEXTURE HẬU CẢNH MỞ RỘNG BIÊN ĐỘ ĐỂ TRÁNH LỖ HỔNG KHÔNG GIAN
     const bgCanvas = new OffscreenCanvas(width, height);
     const bgCtx = bgCanvas.getContext('2d');
     bgCtx.drawImage(shotBitmap, -width * 0.06, -height * 0.06, width * 1.12, height * 1.12);
 
+    if (layerMode === "panoramic_landscape") {
+        // TÁCH PHONG CẢNH CHÂN TRỜI: Tách tầng đất phía trước và bầu trời xa xôi
+        const horizonRatio = Number(decompPlan.horizon_y) || 0.45;
+        const horizonY = horizonRatio * height;
+
+        fgCtx.globalCompositeOperation = 'destination-in';
+        const grad = fgCtx.createLinearGradient(0, horizonY - height * 0.1, 0, horizonY + height * 0.15);
+        grad.addColorStop(0, 'rgba(0,0,0,0)');
+        grad.addColorStop(1, 'rgba(0,0,0,1)');
+        fgCtx.fillStyle = grad;
+        fgCtx.fillRect(0, 0, width, height);
+        fgCtx.globalCompositeOperation = 'source-over';
+    } else {
+        // TÁCH CHỦ THỂ THEO HỘP BIÊN ĐỘ THỰC TẾ
+        const box = decompPlan.subject_box || [0.15, 0.25, 0.85, 0.75];
+        const ymin = Math.max(0, box[0] * height), xmin = Math.max(0, box[1] * width);
+        const ymax = Math.min(height, box[2] * height), xmax = Math.min(width, box[3] * width);
+        const bw = xmax - xmin, bh = ymax - ymin;
+        const cx = xmin + bw * 0.5, cy = ymin + bh * 0.5;
+
+        fgCtx.globalCompositeOperation = 'destination-in';
+        const padX = bw * 0.12, padY = bh * 0.12;
+        const grad = fgCtx.createRadialGradient(cx, cy, Math.min(bw, bh) * 0.35, cx, cy, Math.max(bw, bh) * 0.55 + Math.max(padX, padY));
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(0.85, 'rgba(0,0,0,0.95)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+        fgCtx.save();
+        fgCtx.translate(cx, cy);
+        fgCtx.scale(1.0, bh / Math.max(1.0, bw));
+        fgCtx.fillStyle = grad;
+        fgCtx.beginPath();
+        fgCtx.arc(0, 0, bw * 0.55 + padX, 0, Math.PI * 2);
+        fgCtx.fill();
+        fgCtx.restore();
+        fgCtx.globalCompositeOperation = 'source-over';
+    }
+
+    const fgTex = new THREE.CanvasTexture(fgCanvas);
+    fgTex.minFilter = THREE.LinearFilter;
+    fgTex.magFilter = THREE.LinearFilter;
+    fgTex.flipY = true;
+    fgTex.needsUpdate = true;
+
     const bgTex = new THREE.CanvasTexture(bgCanvas);
     bgTex.minFilter = THREE.LinearFilter;
     bgTex.magFilter = THREE.LinearFilter;
-    bgTex.flipY = true; // KHÓA ĐỨNG HÌNH ẢNH: Chống lật ngược trục Y
+    bgTex.flipY = true;
     bgTex.needsUpdate = true;
 
-    return { fgTex, bgTex, subjectBounds: { cx: cx / width, cy: cy / height, w: (xmax - xmin) / width, h: (ymax - ymin) / height } };
+    return { fgTex, bgTex };
 }
 
-// SHADER CHỦ THỂ CỬ ĐỘNG ĐỘC LẬP & PHẬP PHỒNG HỮU CƠ
-function createSubjectKineticMaterial() {
+// BỘ SHADER DỊCH CHUYỂN MA TRẬN ĐIỂM ẢNH ĐA HÌNH THÁI (TRIỆT TIÊU HẰNG SỐ TOÁN HỌC CỨNG)
+function createPolymorphicPixelMatrixMaterial() {
     const vertexShader = `
         uniform float uTime;
-        uniform float uAudioBass;
         uniform float uAudioVocal;
-        uniform float uOrganicKinetics;
+        uniform float uKineticAmp;
+        uniform float uKineticFreq;
+        uniform int uKineticType; // 0=Cơ khí/Bất biến, 1=Sinh học/Hữu cơ, 2=Chất lưu/Nguyên tố, 3=Năng lượng cao
 
         varying vec2 vUv;
 
@@ -2718,10 +2741,18 @@ function createSubjectKineticMaterial() {
             vUv = uv;
             vec3 pos = position;
 
-            // Nhịp thở và cơ học tự nhiên của chủ thể trong không gian 3 chiều
-            float breath = sin(uTime * 2.4) * (0.015 * uOrganicKinetics);
-            float vocalImpact = sin(uTime * 18.0) * (uAudioVocal * 0.012);
-            pos.z += (breath + vocalImpact) * (1.0 - length(uv - vec2(0.5)));
+            if (uKineticType == 1) { // Sinh học: Nhịp thở tự nhiên theo tần số AI chỉ định
+                float breath = sin(uTime * uKineticFreq) * (uKineticAmp * 0.02);
+                float vocalImpact = sin(uTime * 18.0) * (uAudioVocal * 0.01);
+                pos.z += (breath + vocalImpact) * (1.0 - length(uv - vec2(0.5)));
+            } else if (uKineticType == 2) { // Chất lưu: Gợn sóng đa hướng
+                float wave = sin(uv.x * 6.28 + uTime * uKineticFreq) * cos(uv.y * 6.28 + uTime * 0.8) * (uKineticAmp * 0.025);
+                pos.z += wave;
+            } else if (uKineticType == 3) { // Năng lượng cao: Xung động mạnh
+                float pulse = sin(uTime * uKineticFreq * 3.0) * (uKineticAmp * 0.04);
+                pos.z += pulse;
+            }
+            // uKineticType == 0: Cơ khí/Vật rắn không bị phập phồng sai lệch
 
             gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
         }
@@ -2732,21 +2763,64 @@ function createSubjectKineticMaterial() {
 
         uniform sampler2D uTexture;
         uniform float uTime;
+        uniform float uAudioBass;
+        uniform float uAudioVocal;
         uniform float uAudioTreble;
         uniform float uShimmerAmp;
 
+        uniform vec2 uFlowVector;
+        uniform vec2 uFlowHarmonics;
+        uniform float uFlowSpeed;
+        uniform float uCurlScale;
+        uniform float uMicroAmp;
+        uniform vec2 uAnchorCenter;
+        uniform float uAnchorRadius;
+        uniform int uKineticType;
+
         varying vec2 vUv;
 
+        // Trường Vector không phân kỳ với tần số sóng hài do AI định cấu hình
+        vec2 computeDynamicCurlField(vec2 p) {
+            float n1 = sin(p.x * uFlowHarmonics.x + uTime * uFlowSpeed) * cos(p.y * uFlowHarmonics.y + uTime * 0.5);
+            float n2 = cos(p.x * uFlowHarmonics.y - uTime * 0.6) * sin(p.y * uFlowHarmonics.x + uTime * uFlowSpeed);
+            return vec2(n1, -n2) * (0.02 * uCurlScale);
+        }
+
         void main() {
-            vec4 col = texture2D(uTexture, vUv);
-            if (col.a < 0.01) discard;
+            vec2 uv = vUv;
+
+            // Neo giữ điểm nhận diện cốt lõi
+            float distToAnchor = length(uv - uAnchorCenter);
+            float anchorWeight = (uAnchorRadius > 0.0) ? smoothstep(uAnchorRadius * 0.4, uAnchorRadius, distToAnchor) : 1.0;
+
+            vec2 dynamicCurl = computeDynamicCurlField(uv * 3.0);
+            vec2 vocalJitter = vec2(sin(uTime * 20.0), cos(uTime * 18.0)) * (uAudioVocal * 0.004);
+            vec2 bassImpulse = uFlowVector * (uAudioBass * 0.025);
+
+            vec2 totalVelocity = (uFlowVector * 0.02 + dynamicCurl + vocalJitter + bassImpulse) * (uMicroAmp * anchorWeight);
+
+            // Bù frame tuần hoàn 2 pha triệt tiêu sai lệch
+            float speed = max(0.1, uFlowSpeed * 0.4);
+            float phaseA = fract(uTime * speed);
+            float phaseB = fract(uTime * speed + 0.5);
+
+            vec2 uvA = clamp(uv + totalVelocity * (phaseA - 0.5), vec2(0.001), vec2(0.999));
+            vec2 uvB = clamp(uv + totalVelocity * (phaseB - 0.5), vec2(0.001), vec2(0.999));
+
+            vec4 colA = texture2D(uTexture, uvA);
+            vec4 colB = texture2D(uTexture, uvB);
+
+            float blendWeight = sin(phaseA * 3.14159265);
+            vec4 finalColor = mix(colB, colA, blendWeight);
+
+            if (finalColor.a < 0.01) discard;
 
             if (uAudioTreble > 0.05 && uShimmerAmp > 0.0) {
-                float shimmer = sin(dot(vUv, vec2(90.0, 60.0)) + uTime * 22.0) * (uAudioTreble * uShimmerAmp * 0.6);
-                col.rgb += vec3(shimmer);
+                float shimmer = sin(dot(uv, vec2(100.0, 70.0)) + uTime * 22.0) * (uAudioTreble * uShimmerAmp * 0.5);
+                finalColor.rgb += vec3(shimmer);
             }
 
-            gl_FragColor = col;
+            gl_FragColor = finalColor;
         }
     `;
 
@@ -2759,8 +2833,18 @@ function createSubjectKineticMaterial() {
             uAudioBass: { value: 0.0 },
             uAudioVocal: { value: 0.0 },
             uAudioTreble: { value: 0.0 },
-            uOrganicKinetics: { value: 1.0 },
-            uShimmerAmp: { value: 0.02 }
+            uShimmerAmp: { value: 0.02 },
+
+            uKineticType: { value: 1 },
+            uKineticAmp: { value: 1.0 },
+            uKineticFreq: { value: 2.0 },
+            uFlowSpeed: { value: 0.5 },
+            uFlowVector: { value: new THREE.Vector2(0.02, 0.0) },
+            uFlowHarmonics: { value: new THREE.Vector2(4.0, 3.5) },
+            uCurlScale: { value: 1.0 },
+            uMicroAmp: { value: 1.0 },
+            uAnchorCenter: { value: new THREE.Vector2(0.5, 0.5) },
+            uAnchorRadius: { value: 0.25 }
         },
         transparent: true,
         depthTest: true,
@@ -2768,67 +2852,47 @@ function createSubjectKineticMaterial() {
     });
 }
 
-// BỘ NÃO ĐẠO DIỄN KHÔNG GIAN 3 TẦNG THUẦN AI (CẤM HARDCODE KHUÔN MẪU)
+// BỘ NÃO ĐẠO DIỄN KHÔNG GIAN TOÀN DIỆN THUẦN AI (TUYỆT ĐỐI KHÔNG DÙNG FORM MẪU RẬP KHUÔN)
 async function requestHamiltonianContinuumTensor(imageBitmap, userIntentPrompt, sceneDuration, keyPool, postStatus) {
     const base64Keyframe = await bitmapToBase64(imageBitmap, 512);
 
-    const hamiltonianDirectingPrompt = `[UNIFIED CINEMATIC VOLUMETRIC 3-LAYER DIRECTOR]
+    const hamiltonianDirectingPrompt = `[SUPREME ZERO-TEMPLATE VOLUMETRIC & PIXEL MATRIX DIRECTOR]
 Ý niệm phân cảnh: "${userIntentPrompt}". Thời lượng: ${sceneDuration}s (60 FPS).
-Hãy phân rã bức tranh thành 3 tầng không gian thực thụ và đạo diễn chuyển động tự do của chủ thể:
+Hãy quan sát hình ảnh và phân tích ngữ cảnh để thiết kế không gian và chuyển động CHÍNH XÁC THEO BẢN CHẤT CẢNH:
 
 1. "spatial_decomposition":
-   - "subject_box": Tọa độ hộp bao quanh chủ thể chính trong ảnh [ymin, xmin, ymax, xmax] (tỷ lệ 0.0 đến 1.0).
-   - "subject_depth_z": Tọa độ nổi khối của chủ thể (0.2 đến 0.45).
-   - "background_depth_z": Tọa độ lùi của hậu cảnh (-0.4 đến -0.8).
-   - "organic_kinetics": Hệ số phập phồng sinh học của chủ thể (0.5 đến 1.8).
-2. "subject_free_motion": Quỹ đạo chuyển động tự do ĐỘC LẬP của chủ thể qua thời gian:
-   - "trajectory": [
-       {"t": 0.0, "shift": [0.0, 0.0, 0.0], "scale": 1.0, "rot": [0.0, 0.0, 0.0]},
-       {"t": 1.0, "shift": [dx, dy, dz], "scale": s, "rot": [pitch, yaw, roll]}
-     ]
-3. "camera_manifold": Quỹ đạo lướt của camera điện ảnh để tạo thị sai (Parallax):
-   - "trajectory": [
-       {"t": 0.0, "pan": [0.0, 0.0], "zoom": 1.0, "rot": 0.0},
-       {"t": 1.0, "pan": [cx, cy], "zoom": cz, "rot": crot}
-     ]
-4. "soundscape": Thiết kế không gian âm học:
-   - "base_frequencies": 3 tần số hợp âm nền (Hz).
-   - "pulse_rate_hz": Nhịp đập (0.2 đến 2.0).
-   - "harmonic_richness": Độ dày họa âm (0.1 đến 0.9).
+   - "layer_mode": Chọn đúng loại ["subject_isolate", "panoramic_landscape", "atmospheric_macro"].
+   - "subject_box": [ymin, xmin, ymax, xmax] của chủ thể chính (nếu là landscape thì để null).
+   - "horizon_y": Vị trí đường chân trời (0.2 đến 0.8) nếu là panoramic_landscape.
+   - "subject_depth_z": Tọa độ Z tiền cảnh (0.1 đến 0.5).
+   - "background_depth_z": Tọa độ Z hậu cảnh (-0.3 đến -0.9).
+   - "kinetic_type": [0=Cơ khí/Vật cứng/Kiến trúc, 1=Sinh vật sống/Con người, 2=Nước/Khói/Chất lưu, 3=Năng lượng/Hỗn loạn].
+   - "kinetic_freq": Tần số dao động tự nhiên của vật thể (0.0 đến 6.0 Hz).
+   - "kinetic_amp": Biên độ co giãn tự nhiên (0.0 đến 2.0).
+2. "subject_free_motion": Quỹ đạo 6-DOF thực tế của chủ thể (shift [dx, dy, dz], scale, rot [pitch, yaw, roll]).
+3. "pixel_motion_matrix": Đạo diễn ma trận điểm ảnh vi mô phù hợp bản chất vật liệu:
+   - "primary_flow_vector": [vx, vy] hướng trôi vi mô.
+   - "flow_harmonics": [hx, hy] tần số góc sóng hài của chất liệu (ví dụ tóc tơ: [6.0, 5.0], sóng nước: [3.0, 2.0]).
+   - "flow_speed": Tốc độ trôi vi mô (0.1 đến 2.0).
+   - "curl_scale": Độ xoắn vi mô (0.2 đến 3.0).
+   - "micro_deformation_amp": Biên độ biến dạng điểm ảnh (0.2 đến 2.0).
+   - "anchor_center": [u, v] tâm vùng bất biến (nếu cảnh không có mặt người thì đặt null).
+   - "anchor_radius": Bán kính vùng bất biến (0.0 đến 0.4).
+4. "camera_manifold": Quỹ đạo camera bay lướt (pan [cx, cy], zoom cz, rot crot).
+5. "soundscape": Thiết kế âm thanh:
+   - "base_frequencies": 3 tần số nốt nền (Hz) hòa âm chuẩn xác với cảm xúc cảnh.
+   - "timbre_type": Chọn đúng loại ["fm_drone", "celestial_pad", "tension_cluster"].
+   - "pulse_rate_hz": Nhịp tim âm thanh (0.1 đến 3.0).
+   - "harmonic_richness": Độ dày âm sắc (0.1 đến 1.0).
 
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON CHUẨN XÁC, KHÔNG CÓ LỜI DẪN:
-{
-  "spatial_decomposition": {
-    "subject_box": [0.15, 0.28, 0.85, 0.72],
-    "subject_depth_z": 0.35,
-    "background_depth_z": -0.55,
-    "organic_kinetics": 1.2
-  },
-  "subject_free_motion": {
-    "trajectory": [
-      {"t": 0.0, "shift": [0.0, 0.0, 0.0], "scale": 1.0, "rot": [0.0, 0.0, 0.0]},
-      {"t": 1.0, "shift": [0.04, -0.015, 0.03], "scale": 1.03, "rot": [0.01, -0.02, 0.015]}
-    ]
-  },
-  "camera_manifold": {
-    "trajectory": [
-      {"t": 0.0, "pan": [0.0, 0.0], "zoom": 1.0, "rot": 0.0},
-      {"t": 1.0, "pan": [-0.03, 0.01], "zoom": 1.05, "rot": -0.01}
-    ]
-  },
-  "soundscape": {
-    "base_frequencies": [55.0, 110.0, 164.81],
-    "pulse_rate_hz": 0.6,
-    "harmonic_richness": 0.5
-  }
-}`;
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON CHUẨN XÁC, KHÔNG CÓ LỜI DẪN HAY MẪU CỨNG:`;
 
     const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
     let totalTries = 0;
 
     while (true) {
         totalTries++;
-        await ensureNetworkOnline(postStatus, "đạo diễn không gian 3 tầng");
+        await ensureNetworkOnline(postStatus, "đạo diễn chuyển động phi khuôn mẫu");
 
         const activeModel = candidateModels[totalTries % candidateModels.length];
         const activeKey = keyPool[totalTries % keyPool.length];
@@ -2845,7 +2909,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON CHUẨN XÁC, KHÔNG CÓ LỜI DẪN:
                             { inlineData: { mimeType: "image/jpeg", data: base64Keyframe } }
                         ]
                     }],
-                    generationConfig: { temperature: 0.15, maxOutputTokens: 3000, responseMimeType: "application/json" }
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 3000, responseMimeType: "application/json" }
                 })
             });
 
@@ -2853,14 +2917,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON CHUẨN XÁC, KHÔNG CÓ LỜI DẪN:
                 const data = await res.json();
                 const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
                 const parsed = robustJsonParse(rawText);
-                if (parsed && parsed.spatial_decomposition && parsed.subject_free_motion && parsed.camera_manifold) {
+                if (parsed && parsed.spatial_decomposition && parsed.camera_manifold) {
                     return parsed;
                 }
             }
         } catch (_) {}
 
         const delayMs = Math.min(2500 + (totalTries * 1200), 15000);
-        postStatus("Đang đồng bộ hóa bộ não đạo diễn 3D...");
+        postStatus("Đang đồng bộ hóa trí tuệ đạo diễn AI...");
         await new Promise(r => setTimeout(r, delayMs));
     }
 }
@@ -3044,11 +3108,11 @@ self.onmessage = async function(e) {
         compositeCanvas = new OffscreenCanvas(width, height);
         compositeCtx = compositeCanvas.getContext('2d', { alpha: false, desynchronized: true });
 
-        // KHỞI TẠO CAMERA PHỐI CẢNH ĐIỆN ẢNH VỚI TRỤC ĐỨNG CHUẨN XÁC 100%
+        // KHỞI TẠO CAMERA PHỐI CẢNH 3D NATIVE
         const quadScene = new THREE.Scene();
         const camDist = 2.2;
         const quadCamera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-        quadCamera.up.set(0, 1, 0); // KHÓA ĐỨNG TRỤC Y: Đảm bảo trời luôn ở trên, đất ở dưới
+        quadCamera.up.set(0, 1, 0); // Khóa đứng trục Y chống lật video
         quadCamera.position.set(0, 0, camDist);
         quadCamera.lookAt(0, 0, 0);
 
@@ -3158,8 +3222,8 @@ self.onmessage = async function(e) {
                 }
             }
 
-            postStatus(`Đang phân rã không gian 3 tầng [${currentSceneNum}/${totalScenes}]...`);
-            const hamiltonianPlan = await requestHamiltonianContinuumTensor(
+            postStatus(`Đang giải cấu trúc ma trận chuyển động phi khuôn mẫu [${currentSceneNum}/${totalScenes}]...`);
+            const continuumPlan = await requestHamiltonianContinuumTensor(
                 shotBitmap,
                 sceneSpec.action_description || rawPrompt,
                 shotDuration,
@@ -3167,12 +3231,12 @@ self.onmessage = async function(e) {
                 postStatus
             );
 
-            postStatus(`Đang phối âm & lời thoại [${currentSceneNum}/${totalScenes}]...`);
+            postStatus(`Đang tổng hợp không gian âm thanh [${currentSceneNum}/${totalScenes}]...`);
             const totalShotAudioSamples = Math.ceil(shotDuration * shotSampleRate);
             const leftChannel = new Float32Array(totalShotAudioSamples);
             const rightChannel = new Float32Array(totalShotAudioSamples);
 
-            synthesizeAiDirectSoundscape(hamiltonianPlan.soundscape, shotDuration, shotSampleRate, leftChannel, rightChannel);
+            synthesizeAiDirectSoundscape(continuumPlan.soundscape, shotDuration, shotSampleRate, leftChannel, rightChannel);
 
             if (Array.isArray(sceneSpec.dialogue_cues) && sceneSpec.dialogue_cues.length > 0) {
                 for (const cue of sceneSpec.dialogue_cues) {
@@ -3221,12 +3285,14 @@ self.onmessage = async function(e) {
             }
 
             // =========================================================================
-            // KHỞI TẠO 3 TẦNG KHÔNG GIAN THỰC THỤ VỚI KHÓA TRỤC Y CHUẨN XÁC
+            // THIẾT LẬP CÁC LỚP KHÔNG GIAN VÀ MA TRẬN ĐIỂM ẢNH ĐA HÌNH THÁI
             // =========================================================================
-            const decomp = hamiltonianPlan.spatial_decomposition || {};
-            const { fgTex, bgTex, subjectBounds } = buildVolumetricLayerTextures(shotBitmap, width, height, decomp.subject_box);
+            const decomp = continuumPlan.spatial_decomposition || {};
+            const pixMat = continuumPlan.pixel_motion_matrix || {};
 
-            // 1. TẤM LƯỚI HẬU CẢNH (BACKGROUND MESH) - MỞ RỘNG ĐỂ KHÔNG BAO GIỜ LỘ VIỀN
+            const { fgTex, bgTex } = buildAdaptiveVolumetricLayers(shotBitmap, width, height, decomp);
+
+            // 1. TẤM NỀN HẬU CẢNH THỊ SAI
             const bgDepthZ = Number(decomp.background_depth_z) || -0.55;
             const bgScaleFactor = 1.0 - (bgDepthZ / camDist);
             const bgGeo = new THREE.PlaneGeometry(visibleWidth * bgScaleFactor * 1.15, visibleHeight * bgScaleFactor * 1.15);
@@ -3235,21 +3301,43 @@ self.onmessage = async function(e) {
             bgMesh.position.set(0, 0, bgDepthZ);
             quadScene.add(bgMesh);
 
-            // 2. TẤM LƯỚI CHỦ THỂ TIỀN CẢNH (FOREGROUND KINETIC SUBJECT MESH)
+            // 2. TẤM LƯỚI TIỀN CẢNH MA TRẬN ĐIỂM ẢNH THÍCH ỨNG
             const fgDepthZ = Number(decomp.subject_depth_z) || 0.35;
             const fgScaleFactor = 1.0 - (fgDepthZ / camDist);
             const fgGeo = new THREE.PlaneGeometry(visibleWidth * fgScaleFactor, visibleHeight * fgScaleFactor, 64, 64);
-            const fgMat = createSubjectKineticMaterial();
+            const fgMat = createPolymorphicPixelMatrixMaterial();
             fgMat.uniforms.uTexture.value = fgTex;
-            fgMat.uniforms.uOrganicKinetics.value = Number(decomp.organic_kinetics) || 1.2;
+
+            // NẠP CÁC THAM SỐ VẬT LÝ PHI KHUÔN MẪU TỪ BỘ NÃO AI
+            fgMat.uniforms.uKineticType.value = parseInt(decomp.kinetic_type !== undefined ? decomp.kinetic_type : 1, 10);
+            fgMat.uniforms.uKineticFreq.value = Number(decomp.kinetic_freq) || 2.0;
+            fgMat.uniforms.uKineticAmp.value = Number(decomp.kinetic_amp) || 1.0;
+
+            const flowVec = Array.isArray(pixMat.primary_flow_vector) ? pixMat.primary_flow_vector : [0.02, 0.0];
+            fgMat.uniforms.uFlowVector.value.set(flowVec[0], flowVec[1]);
+
+            const harmonics = Array.isArray(pixMat.flow_harmonics) ? pixMat.flow_harmonics : [4.0, 3.5];
+            fgMat.uniforms.uFlowHarmonics.value.set(harmonics[0], harmonics[1]);
+
+            fgMat.uniforms.uFlowSpeed.value = Number(pixMat.flow_speed) || 0.5;
+            fgMat.uniforms.uCurlScale.value = Number(pixMat.curl_scale) || 1.0;
+            fgMat.uniforms.uMicroAmp.value = Number(pixMat.micro_deformation_amp) || 1.0;
+
+            if (Array.isArray(pixMat.anchor_center)) {
+                fgMat.uniforms.uAnchorCenter.value.set(pixMat.anchor_center[0], pixMat.anchor_center[1]);
+                fgMat.uniforms.uAnchorRadius.value = Number(pixMat.anchor_radius) || 0.25;
+            } else {
+                fgMat.uniforms.uAnchorRadius.value = 0.0; // Không neo cứng nếu không cần
+            }
+
             const fgMesh = new THREE.Mesh(fgGeo, fgMat);
             fgMesh.position.set(0, 0, fgDepthZ);
             quadScene.add(fgMesh);
 
-            const subjectTrajectory = hamiltonianPlan.subject_free_motion?.trajectory || [];
-            const cameraTrajectory = hamiltonianPlan.camera_manifold?.trajectory || [];
+            const subjectTrajectory = continuumPlan.subject_free_motion?.trajectory || [];
+            const cameraTrajectory = continuumPlan.camera_manifold?.trajectory || [];
 
-            // VÒNG LẶP RENDER 60 FPS CHUẨN XÁC NATIVE: ĐẢM BẢO CHIỀU ĐỨNG CHUẨN XÁC 100%
+            // VÒNG LẶP RENDER 60 FPS BÙ FRAME MA TRẬN ĐIỂM ẢNH THỰC
             for (let f = 0; f < totalFrames; f++) {
                 const progress = f / Math.max(1, totalFrames - 1);
                 const currentSecond = f / fps;
@@ -3261,36 +3349,41 @@ self.onmessage = async function(e) {
                 fgMat.uniforms.uAudioVocal.value = audioDynamics.vocal;
                 fgMat.uniforms.uAudioTreble.value = audioDynamics.treble;
 
-                // 1. CHỦ THỂ CỬ ĐỘNG THẬT & TỰ DO THEO QUY HOẠCH AI (6 BẬC TỰ DO)
+                // 1. CHUYỂN ĐỘNG 6-DOF TỰ DO CỦA CHỦ THỂ (TÍNH TOÁN THEO HÌNH HỌC KHÔNG GIAN THẬT)
                 const subShift = interpolateSplineProperty(subjectTrajectory, progress, 'shift');
                 const subScale = interpolateSplineProperty(subjectTrajectory, progress, 'scale') || 1.0;
                 const subRot = interpolateSplineProperty(subjectTrajectory, progress, 'rot');
 
-                // Đồng bộ trục Y chuẩn: -subShift[1] để chuyển đổi giữa tọa độ ảnh 2D và không gian 3D
-                fgMesh.position.x = subShift[0] * visibleWidth * 0.38;
-                fgMesh.position.y = -subShift[1] * visibleHeight * 0.38;
-                fgMesh.position.z = fgDepthZ + (subShift[2] * 0.3);
+                const maxAllowedSpanX = visibleWidth * fgScaleFactor * 0.45;
+                const maxAllowedSpanY = visibleHeight * fgScaleFactor * 0.45;
+
+                fgMesh.position.x = subShift[0] * maxAllowedSpanX;
+                fgMesh.position.y = -subShift[1] * maxAllowedSpanY; // Đảo dấu để đồng bộ hệ trục Y
+                fgMesh.position.z = fgDepthZ + (subShift[2] * 0.25);
                 fgMesh.scale.set(subScale, subScale, 1.0);
                 fgMesh.rotation.set(-subRot[0], subRot[1], subRot[2]);
 
-                // 2. CAMERA LƯỚT ĐỘC LẬP TẠO THỊ SAI PARALLAX ĐA TẦNG TUYỆT ĐỐI
+                // 2. CHUYỂN ĐỘNG CAMERA ĐIỆN ẢNH TẠO THỊ SAI PARALLAX ĐA TẦNG
                 const camPan = interpolateSplineProperty(cameraTrajectory, progress, 'pan');
                 const camZoom = interpolateSplineProperty(cameraTrajectory, progress, 'zoom') || 1.0;
                 const camRotZ = interpolateSplineProperty(cameraTrajectory, progress, 'rot') || 0.0;
 
-                const camX = camPan[0] * visibleWidth * 0.3;
-                const camY = -camPan[1] * visibleHeight * 0.3; // Chuẩn hóa trục Y chuyển động của camera
+                const camSpanX = visibleWidth * 0.35;
+                const camSpanY = visibleHeight * 0.35;
+
+                const camX = camPan[0] * camSpanX;
+                const camY = -camPan[1] * camSpanY;
                 const camZ = camDist / Math.max(0.65, camZoom);
 
                 quadCamera.position.set(camX, camY, camZ);
-                quadCamera.lookAt(camX * 0.4, camY * 0.4, 0);
-                quadCamera.rotation.z = camRotZ; // Khóa góc xoay Roll sau khi lookAt để giữ vững trục đứng
+                quadCamera.lookAt(camX * 0.35, camY * 0.35, 0);
+                quadCamera.rotation.z = camRotZ;
 
-                // KẾT XUẤT 1 PASS NATIVE TOÀN KHUNG HÌNH (100% SẮC NÉT, ĐẦY MÀN HÌNH, CHIỀU ĐỨNG CHUẨN)
+                // 3. KẾT XUẤT NATIVE 60 FPS TRỰC TIẾP LÊN CANVAS
                 sharedRenderer.setRenderTarget(null);
                 sharedRenderer.render(quadScene, quadCamera);
 
-                // Khắc phụ đề và đẩy khung hình vào VideoEncoder
+                // Khắc phụ đề và nén khung hình vào VideoEncoder
                 compositeCtx.drawImage(webglCanvas, 0, 0, width, height);
                 renderCinemaSubtitlesOverlay(compositeCtx, width, height, currentSecond, sceneSpec.dialogue_cues);
 
@@ -3308,11 +3401,11 @@ self.onmessage = async function(e) {
 
                 if (f % 30 === 0) {
                     const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`Đang kết xuất đa tầng (${percent}%)...`, percent);
+                    postStatus(`Đang kết xuất ma trận chuyển động phi khuôn mẫu (${percent}%)...`, percent);
                 }
             }
 
-            // DỌN DẸP TÀI NGUYÊN TỪNG PHÂN CẢNH CHỐNG TRÀN VRAM
+            // DỌN DẸP BỘ NHỚ VRAM TỪNG PHÂN CẢNH
             quadScene.remove(bgMesh);
             quadScene.remove(fgMesh);
             bgGeo.dispose();
