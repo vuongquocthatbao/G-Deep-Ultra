@@ -2680,10 +2680,10 @@ function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRat
     return { bass: bassEnergy, vocal: vocalEnergy, treble: trebleEnergy };
 }
 
-// BỘ PHÂN RÃ LỚP KHÔNG GIAN THAM SỐ HÓA HOÀN TOÀN
+// BỘ PHÂN RÃ LỚP KHÔNG GIAN BẢO VỆ BÁN KÍNH TUYỆT ĐỐI (KHÔNG BAO GIỜ ÂM BÁN KÍNH)
 function buildAdaptiveVolumetricLayers(shotBitmap, width, height, decompPlan) {
     const layerMode = decompPlan.layer_mode || "subject_isolate";
-    const overscan = Number(decompPlan.bg_overscan) || 0.0;
+    const overscan = Math.max(0.0, Number(decompPlan.bg_overscan) || 0.0);
     const overscanW = width * overscan, overscanH = height * overscan;
 
     const fgCanvas = new OffscreenCanvas(width, height);
@@ -2695,9 +2695,9 @@ function buildAdaptiveVolumetricLayers(shotBitmap, width, height, decompPlan) {
     bgCtx.drawImage(shotBitmap, -overscanW, -overscanH, width + overscanW * 2.0, height + overscanH * 2.0);
 
     if (layerMode === "panoramic_landscape") {
-        const horizonRatio = Number(decompPlan.horizon_y) || 0.5;
+        const horizonRatio = Math.max(0.0, Math.min(1.0, Number(decompPlan.horizon_y) || 0.5));
         const horizonY = horizonRatio * height;
-        const transitionSpan = Number(decompPlan.horizon_transition_span) || 0.1;
+        const transitionSpan = Math.max(0.01, Number(decompPlan.horizon_transition_span) || 0.1);
 
         fgCtx.globalCompositeOperation = 'destination-in';
         const grad = fgCtx.createLinearGradient(0, horizonY - height * transitionSpan * 0.5, 0, horizonY + height * transitionSpan * 0.5);
@@ -2707,19 +2707,35 @@ function buildAdaptiveVolumetricLayers(shotBitmap, width, height, decompPlan) {
         fgCtx.fillRect(0, 0, width, height);
         fgCtx.globalCompositeOperation = 'source-over';
     } else {
-        const box = decompPlan.subject_box || [0.0, 0.0, 1.0, 1.0];
-        const ymin = Math.max(0, box[0] * height), xmin = Math.max(0, box[1] * width);
-        const ymax = Math.min(height, box[2] * height), xmax = Math.min(width, box[3] * width);
-        const bw = xmax - xmin, bh = ymax - ymin;
+        const rawBox = Array.isArray(decompPlan.subject_box) && decompPlan.subject_box.length === 4 
+            ? decompPlan.subject_box 
+            : [0.0, 0.0, 1.0, 1.0];
+
+        // Chuẩn hóa tọa độ hộp: Tự sửa nếu AI trả về ymin > ymax hoặc xmin > xmax
+        const normYmin = Math.max(0.0, Math.min(Number(rawBox[0]) || 0.0, Number(rawBox[2]) || 1.0));
+        const normYmax = Math.min(1.0, Math.max(Number(rawBox[0]) || 0.0, Number(rawBox[2]) || 1.0));
+        const normXmin = Math.max(0.0, Math.min(Number(rawBox[1]) || 0.0, Number(rawBox[3]) || 1.0));
+        const normXmax = Math.min(1.0, Math.max(Number(rawBox[1]) || 0.0, Number(rawBox[3]) || 1.0));
+
+        const ymin = normYmin * height, xmin = normXmin * width;
+        const ymax = normYmax * height, xmax = normXmax * width;
+        const bw = Math.max(1.0, xmax - xmin);
+        const bh = Math.max(1.0, ymax - ymin);
         const cx = xmin + bw * 0.5, cy = ymin + bh * 0.5;
 
-        const featherInner = Number(decompPlan.feather_inner_ratio) || 0.3;
-        const featherOuter = Number(decompPlan.feather_outer_ratio) || 0.7;
-        const padRatio = Number(decompPlan.feather_pad_ratio) || 0.1;
+        // BẢO VỆ BÁN KÍNH: Đảm bảo r0 và r1 luôn >= 0 trong mọi tình huống
+        const featherInner = Math.max(0.0, Number(decompPlan.feather_inner_ratio) || 0.3);
+        const featherOuter = Math.max(featherInner + 0.01, Number(decompPlan.feather_outer_ratio) || 0.7);
+        const padRatio = Math.max(0.0, Number(decompPlan.feather_pad_ratio) || 0.1);
         const padX = bw * padRatio, padY = bh * padRatio;
 
+        const minDim = Math.min(bw, bh);
+        const maxDim = Math.max(bw, bh);
+        const r0 = Math.max(0.0, minDim * featherInner);
+        const r1 = Math.max(r0 + 0.1, maxDim * featherOuter + Math.max(padX, padY));
+
         fgCtx.globalCompositeOperation = 'destination-in';
-        const grad = fgCtx.createRadialGradient(cx, cy, Math.min(bw, bh) * featherInner, cx, cy, Math.max(bw, bh) * featherOuter + Math.max(padX, padY));
+        const grad = fgCtx.createRadialGradient(cx, cy, r0, cx, cy, r1);
         grad.addColorStop(0, 'rgba(0,0,0,1)');
         grad.addColorStop(0.85, 'rgba(0,0,0,0.95)');
         grad.addColorStop(1, 'rgba(0,0,0,0)');
@@ -2729,7 +2745,7 @@ function buildAdaptiveVolumetricLayers(shotBitmap, width, height, decompPlan) {
         fgCtx.scale(1.0, bh / Math.max(1.0, bw));
         fgCtx.fillStyle = grad;
         fgCtx.beginPath();
-        fgCtx.arc(0, 0, bw * featherOuter + padX, 0, Math.PI * 2);
+        fgCtx.arc(0, 0, Math.max(1.0, bw * featherOuter + padX), 0, Math.PI * 2);
         fgCtx.fill();
         fgCtx.restore();
         fgCtx.globalCompositeOperation = 'source-over';
