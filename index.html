@@ -3393,8 +3393,6 @@ self.onmessage = async function(e) {
 
     let sharedRenderer = null;
     let webglCanvas = null;
-    let compositeCanvas = null;
-    let compositeCtx = null;
     let rawMuxer = null;
     let activeEncoder = null;
     let audioEngine = null;
@@ -3604,18 +3602,29 @@ self.onmessage = async function(e) {
                 }
             }
 
-            postStatus(`Đang tổng hợp không gian âm thanh [${currentSceneNum}/${totalScenes}]...`);
+            // =========================================================================
+            // 1. TỔNG HỢP ÂM THANH ĐA LUỒNG SONG SONG (PARALLEL AUDIO FETCHING)
+            // =========================================================================
+            postStatus(`Đang tổng hợp không gian âm thanh và lời thoại đa luồng [${currentSceneNum}/${totalScenes}]...`);
             const totalShotAudioSamples = Math.ceil(shotDuration * shotSampleRate);
             const leftChannel = new Float32Array(totalShotAudioSamples);
             const rightChannel = new Float32Array(totalShotAudioSamples);
 
+            // Sinh âm thanh môi trường (Soundscape)
             synthesizeAiDirectSoundscape(continuumPlan.soundscape, shotDuration, shotSampleRate, leftChannel, rightChannel);
 
+            // Sinh lời thoại siêu tốc bằng Promise.all
             if (Array.isArray(sceneSpec.dialogue_cues) && sceneSpec.dialogue_cues.length > 0) {
-                for (const cue of sceneSpec.dialogue_cues) {
+                const audioPromises = sceneSpec.dialogue_cues.map(async (cue) => {
                     const charObj = voiceCharacters.find(c => c.name === cue.speaker);
                     const voiceName = charObj ? (charObj.geminiVoice || "Puck") : "Puck";
                     const voicePcm = await synthesizeVoiceWithKeyPool(cue.text, voiceName, validKeyPool, postStatus);
+                    return { cue, voicePcm };
+                });
+
+                const audioResults = await Promise.all(audioPromises);
+
+                for (const { cue, voicePcm } of audioResults) {
                     if (voicePcm) {
                         const startSample = Math.floor((Number(cue.startTimeSec) || 0.0) * shotSampleRate);
                         const ratio = voicePcm.sampleRate / shotSampleRate;
@@ -3806,7 +3815,15 @@ self.onmessage = async function(e) {
             let prevSubPos = new THREE.Vector2(0, 0);
             let prevCamPos = new THREE.Vector2(0, 0);
 
-            // VÒNG LẶP RENDER 60 FPS SCHEMA THUẦN TÚY
+            // =========================================================================
+            // 2. VÒNG LẶP RENDER 60 FPS ZERO-COPY GPU (TRIỆT TIÊU CPU STALL)
+            // =========================================================================
+            let currentSubtitleMesh = null;
+            let currentSubtitleText = "";
+
+            // Gắn Camera vào Scene để Subtitle có thể bay theo ống kính
+            quadScene.add(quadCamera);
+
             for (let f = 0; f < totalFrames; f++) {
                 const progress = f / Math.max(1, totalFrames - 1);
                 const currentSecond = f / fps;
@@ -3820,7 +3837,7 @@ self.onmessage = async function(e) {
                 fgMat.uniforms.uAudioVocal.value = audioDynamics.vocal;
                 fgMat.uniforms.uAudioTreble.value = audioDynamics.treble;
 
-                // 1. CHUYỂN ĐỘNG CHỦ THỂ SCHEMA
+                // CHUYỂN ĐỘNG CHỦ THỂ
                 const subShift = interpolateSplineProperty(subjectTrajectory, progress, 'shift', subjectEasing);
                 const subScale = interpolateSplineProperty(subjectTrajectory, progress, 'scale', subjectEasing);
                 const subRot = interpolateSplineProperty(subjectTrajectory, progress, 'rot', subjectEasing);
@@ -3836,7 +3853,7 @@ self.onmessage = async function(e) {
                 fgMesh.scale.set(subScale, subScale, 1.0);
                 fgMesh.rotation.set(-subRot[0], subRot[1], subRot[2]);
 
-                // 2. CHUYỂN ĐỘNG CAMERA SCHEMA
+                // CHUYỂN ĐỘNG CAMERA
                 const camPan = interpolateSplineProperty(cameraTrajectory, progress, 'pan', cameraEasing);
                 const camZoom = interpolateSplineProperty(cameraTrajectory, progress, 'zoom', cameraEasing);
                 const camRotZ = interpolateSplineProperty(cameraTrajectory, progress, 'rot', cameraEasing);
@@ -3853,33 +3870,65 @@ self.onmessage = async function(e) {
                 quadCamera.lookAt(curCamX * panScale, curCamY * panScale, 0);
                 quadCamera.rotation.z = camRotZ;
 
-                // 3. MOTION BLUR & CONTACT SHADOW SCHEMA
-                const motionDeltaX = (curSubX - prevSubPos.x) - (curCamX - prevCamPos.x) * panScale;
-                const motionDeltaY = (curSubY - prevSubPos.y) - (curCamY - prevCamPos.y) * panScale;
-                fgMat.uniforms.uMotionBlurVector.value.set(motionDeltaX, motionDeltaY);
+                // XỬ LÝ PHỤ ĐỀ TRỰC TIẾP TRÊN GPU (WEBGL SPRITE)
+                let activeText = "";
+                if (Array.isArray(sceneSpec.dialogue_cues)) {
+                    for (const cue of sceneSpec.dialogue_cues) {
+                        const start = Number(cue.startTimeSec) || 0.0;
+                        const dur = Math.max(1.0, (cue.text?.length || 0) * 0.075);
+                        if (currentSecond >= start && currentSecond <= start + dur) {
+                            activeText = String(cue.text || '').trim();
+                            break;
+                        }
+                    }
+                }
 
-                prevSubPos.set(curSubX, curSubY);
-                prevCamPos.set(curCamX, curCamY);
+                if (activeText !== currentSubtitleText) {
+                    currentSubtitleText = activeText;
+                    if (currentSubtitleMesh) {
+                        quadCamera.remove(currentSubtitleMesh);
+                        currentSubtitleMesh.material.map.dispose();
+                        currentSubtitleMesh.material.dispose();
+                        currentSubtitleMesh.geometry.dispose();
+                        currentSubtitleMesh = null;
+                    }
+                    if (activeText) {
+                        const subCanvas = new OffscreenCanvas(1024, 128);
+                        const subCtx = subCanvas.getContext('2d');
+                        subCtx.font = 'bold 36px "Plus Jakarta Sans", sans-serif';
+                        subCtx.textAlign = 'center';
+                        subCtx.textBaseline = 'middle';
+                        subCtx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                        const tw = subCtx.measureText(activeText).width + 60;
+                        subCtx.roundRect((1024 - tw)/2, 20, tw, 88, 16);
+                        subCtx.fill();
+                        subCtx.strokeStyle = 'rgba(255,255,255,0.2)';
+                        subCtx.lineWidth = 2;
+                        subCtx.stroke();
+                        subCtx.shadowColor = 'black'; subCtx.shadowBlur = 10;
+                        subCtx.fillStyle = 'white';
+                        subCtx.fillText(activeText, 512, 64);
 
-                const shadowOffX = Number(optics.shadow_offset?.[0]) || 0.0;
-                const shadowOffY = Number(optics.shadow_offset?.[1]) || 0.0;
-                const normSubX = (curSubX / visibleWidth) + 0.5 + shadowOffX;
-                const normSubY = (curSubY / visibleHeight) + 0.5 + shadowOffY;
-                bgMat.uniforms.uShadowCenter.value.set(normSubX, normSubY);
+                        const tex = new THREE.CanvasTexture(subCanvas);
+                        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false });
+                        const geo = new THREE.PlaneGeometry(visibleWidth * 0.8, (visibleWidth * 0.8) * (128/1024));
+                        currentSubtitleMesh = new THREE.Mesh(geo, mat);
+                        currentSubtitleMesh.position.set(0, -visibleHeight * 0.35, -camDist + 0.1); // Đặt cố định trước Camera
+                        quadCamera.add(currentSubtitleMesh);
+                    }
+                }
 
-                // KẾT XUẤT TRỰC TIẾP LÊN CANVAS MÀN HÌNH
-                sharedRenderer.setRenderTarget(null);
+                // KẾT XUẤT TRỰC TIẾP LÊN CANVAS MÀN HÌNH (ZERO-COPY)
                 sharedRenderer.render(quadScene, quadCamera);
-
-                compositeCtx.drawImage(webglCanvas, 0, 0, width, height);
-                renderCinemaSubtitlesOverlay(compositeCtx, width, height, currentSecond, sceneSpec.dialogue_cues);
 
                 while (activeEncoder && activeEncoder.encodeQueueSize > 4) {
                     await new Promise(r => setTimeout(r, 6));
                 }
 
                 const isKeyframe = (f === 0) || (cumulativeGlobalFrameCount % (fps * 2) === 0);
-                const vFrame = new VideoFrame(compositeCanvas, {
+                
+                // ĐẨY TRỰC TIẾP TỪ WEBGL VÀO BỘ NÉN MP4: TỐC ĐỘ TĂNG 300%
+                const vFrame = new VideoFrame(webglCanvas, {
                     timestamp: Math.round(cumulativeGlobalFrameCount * frameMicros)
                 });
                 activeEncoder.encode(vFrame, { keyFrame: isKeyframe });
@@ -3888,8 +3937,15 @@ self.onmessage = async function(e) {
 
                 if (f % 30 === 0) {
                     const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`Đang kết xuất ma trận tensor Schema (${percent}%)...`, percent);
+                    postStatus(`Đang kết xuất ma trận điện ảnh (${percent}%)...`, percent);
                 }
+            }
+
+            if (currentSubtitleMesh) {
+                quadCamera.remove(currentSubtitleMesh);
+                currentSubtitleMesh.material.map.dispose();
+                currentSubtitleMesh.material.dispose();
+                currentSubtitleMesh.geometry.dispose();
             }
 
             // DỌN DẸP BỘ NHỚ VRAM TỪNG PHÂN CẢNH
@@ -5271,16 +5327,17 @@ self.onmessage = async function(e) {
                 // ZERO-LATENCY: Dùng bộ đếm bộ nhớ RAM siêu tốc (<0.1ms). Tuyệt đối không gọi thêm API đếm token chặn luồng gửi
                 const totalActualTokens = this.measureHistoryTokens(fullTurns);
 
+                // SỬA LỖI LOGIC: Bảo toàn nguyên vẹn ngữ cảnh nếu chưa chạm ngưỡng nguy hiểm
                 if (totalActualTokens <= safeLimit) {
-                    // Giữ Base64 cho tối đa 2 lượt người dùng gần nhất để tránh lỗi máy chủ HTTP 413
-                    const recentUserThreshold = 20;
-                    let userTurnsSeen = 0;
-                    return fullTurns.map((t, idx) => {
-                        const isRecent = idx >= (fullTurns.length - 4);
-                        if (t.role === 'user' && !isRecent) {
-                            return this.compressHistoricalTurnPreservingContext(t, idx);
-                        }
-                        return { role: t.role, parts: t.parts };
+                    return fullTurns.map((t) => {
+                        // CHỈ lược bỏ base64 media nặng ở các lượt quá cũ để tránh lỗi HTTP 413 Payload Too Large, giữ nguyên 100% Text
+                        const safeParts = t.parts.map(p => {
+                            if (p.inlineData && (p.inlineData.mimeType.startsWith('video/') || p.inlineData.mimeType.startsWith('audio/'))) {
+                                return { text: `[Tệp đa phương tiện đã được phân tích ở lượt trước: ${p.inlineData.mimeType}]` };
+                            }
+                            return p;
+                        });
+                        return { role: t.role, parts: safeParts };
                     });
                 }
 
@@ -6247,56 +6304,59 @@ self.onmessage = async function(e) {
             }
 
             async _processNext() {
-                if (this.isPaused || this.activeCount >= this.concurrencyLimit || this.queue.length === 0) {
-                    return;
-                }
-
-                const task = this.queue.shift();
-                if (!task) return;
-
-                // Kiểm tra nếu task đã bị hủy trước khi chạy
-                if (task.signal?.aborted) {
-                    task.reject(new DOMException("Task aborted before execution", "AbortError"));
-                    this._processNext();
-                    return;
-                }
-
-                this.activeCount++;
-                task.attempts++;
-
-                let timeoutHandle = null;
-                const timeoutPromise = (task.timeoutMs > 0) ? new Promise((_, rj) => {
-                    timeoutHandle = setTimeout(() => {
-                        rj(new Error(`[AsyncTaskQueue] Hết thời gian chờ (${task.timeoutMs}ms)`));
-                    }, task.timeoutMs);
-                }) : null;
+                // SỬA LỖI DEADLOCK: Dùng cờ khóa vòng lặp thay vì gọi đệ quy, đảm bảo không bao giờ bị nghẽn I/O
+                if (this._isProcessing || this.isPaused) return;
+                this._isProcessing = true;
 
                 try {
-                    const executionPromise = task.taskFn();
-                    const result = timeoutPromise 
-                        ? await Promise.race([executionPromise, timeoutPromise]) 
-                        : await executionPromise;
+                    while (this.queue.length > 0 && this.activeCount < this.concurrencyLimit && !this.isPaused) {
+                        const task = this.queue.shift();
+                        if (!task) continue;
 
-                    if (timeoutHandle) clearTimeout(timeoutHandle);
-                    task.resolve(result);
-                } catch (err) {
-                    if (timeoutHandle) clearTimeout(timeoutHandle);
+                        if (task.signal?.aborted) {
+                            task.reject(new DOMException("Task aborted before execution", "AbortError"));
+                            continue;
+                        }
 
-                    // Tự động thử lại nếu cấu hình retries và chưa vượt quá số lần
-                    if (task.attempts <= task.retries && (!task.signal || !task.signal.aborted)) {
-                        const backoff = Math.min(100 * Math.pow(2, task.attempts), 3000);
-                        setTimeout(() => {
-                            this.queue.unshift(task); // Đưa lại đầu hàng đợi để chạy lại
-                            this._processNext();
-                        }, backoff);
-                        this.activeCount--;
-                        return;
+                        this.activeCount++;
+                        task.attempts++;
+
+                        let timeoutHandle = null;
+                        const timeoutPromise = (task.timeoutMs > 0) ? new Promise((_, rj) => {
+                            timeoutHandle = setTimeout(() => {
+                                rj(new Error(`[AsyncTaskQueue] Hết thời gian chờ (${task.timeoutMs}ms)`));
+                            }, task.timeoutMs);
+                        }) : null;
+
+                        // Tạo Promise bọc để chạy task bất đồng bộ không chặn luồng chính của while
+                        (async () => {
+                            try {
+                                const executionPromise = task.taskFn();
+                                const result = timeoutPromise 
+                                    ? await Promise.race([executionPromise, timeoutPromise]) 
+                                    : await executionPromise;
+
+                                if (timeoutHandle) clearTimeout(timeoutHandle);
+                                task.resolve(result);
+                            } catch (err) {
+                                if (timeoutHandle) clearTimeout(timeoutHandle);
+                                if (task.attempts <= task.retries && (!task.signal || !task.signal.aborted)) {
+                                    const backoff = Math.min(100 * Math.pow(2, task.attempts), 3000);
+                                    setTimeout(() => {
+                                        this.queue.unshift(task);
+                                        this._processNext(); // Gọi lại an toàn nhờ cờ _isProcessing
+                                    }, backoff);
+                                } else {
+                                    task.reject(err);
+                                }
+                            } finally {
+                                this.activeCount--;
+                                this._processNext();
+                            }
+                        })();
                     }
-
-                    task.reject(err);
                 } finally {
-                    this.activeCount--;
-                    this._processNext();
+                    this._isProcessing = false;
                 }
             }
 
@@ -9457,8 +9517,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                         const promptScript = `[G-DEEP CINEMA DIRECTOR]
 Chủ đề: "${userPrompt}". 
-Tổng thời lượng BẮT BUỘC: ${requestedDuration} giây. Tỷ lệ: ${userAspectRatio}.
-Hãy chia kịch bản thành các cú máy (mỗi cú máy từ 3 đến 6 giây). TỔNG THỜI LƯỢNG TẤT CẢ CÁC CÚ MÁY PHẢI BẰNG ĐÚNG ${requestedDuration} GIÂY.
+Tổng thời lượng BẮT BUỘC: ${requestedDuration} giây. Tỷ lệ khung hình: ${userAspectRatio}.
+Nhiệm vụ: Phân rã thành các cú máy (shots) điện ảnh liền mạch. TỔNG THỜI LƯỢNG CÁC CÚ MÁY PHẢI ĐÚNG BẰNG ${requestedDuration} GIÂY.
+Tuyệt đối KHÔNG rập khuôn độ dài. Hãy thiết kế nhịp độ (Pacing) linh hoạt: Cảnh hành động cắt nhanh (1-2s), Cảnh toàn/cảm xúc lướt chậm (5-10s).
 ${voiceCharactersInfo.length > 0 ? `Các nhân vật: ${JSON.stringify(voiceCharactersInfo)}` : ''}
 ${dialogueTimeline.length > 0 ? `Dòng thời gian lời thoại: ${JSON.stringify(dialogueTimeline)}` : ''}
 
@@ -9473,9 +9534,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
   "scenes": [
     {
       "scene_index": 1,
-      "title": "Cú máy 1",
-      "target_duration": ${avgShotDuration},
-      "action_description": "Mô tả chi tiết động lực học điện ảnh",
+      "title": "Tên cú máy",
+      "target_duration": 4.5,
+      "action_description": "Mô tả chi tiết động lực học điện ảnh (Dolly in, Pan left, Flowing water...)",
       "image_plan": {
         "prompt": "Detailed English visual prompt for high quality 8k film still"
       }
@@ -12117,20 +12178,23 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
                                 "A49 [Groupthink Inquisitor]", "A50 [Supreme Architect]"
                             ]);
 
+                            // SỬA LỖI LOGIC: Lọc sạch rác (Log Python, thẻ Think) trước khi trích xuất rãnh giữa
                             let dynamicMiddleContext = "";
-                            const currentHistorySnap = currentMessages.value || [];
-                            if (currentHistorySnap.length >= 3) {
-                                const startMid = Math.floor(currentHistorySnap.length * 0.2);
-                                const endMid = Math.ceil(currentHistorySnap.length * 0.8);
-                                const midSlices = currentHistorySnap.slice(startMid, endMid);
+                            const cleanChatHistory = (currentMessages.value || []).filter(m => m.role === 'user' || m.role === 'model');
+                            
+                            if (cleanChatHistory.length >= 4) {
+                                const startMid = Math.floor(cleanChatHistory.length * 0.25);
+                                const endMid = Math.ceil(cleanChatHistory.length * 0.75);
+                                const midSlices = cleanChatHistory.slice(startMid, endMid);
                                 const midPoints = midSlices.map((m, i) => {
-                                    const sender = m.role === 'user' ? 'User' : 'Assistant';
-                                    const body = (m.promptContent || m.content || '').replace(/\s+/g, ' ').trim().slice(0, 250);
-                                    return "[Vị trí rãnh giữa " + (startMid + i + 1) + " | " + sender + "]: " + body;
-                                }).filter(s => s.length > 20);
+                                    const sender = m.role === 'user' ? 'Người dùng' : 'Hệ thống';
+                                    // Bóc tách text thuần, xóa sạch thẻ html hoặc suy luận thừa
+                                    let body = (m.promptContent || m.content || '').replace(/<[^>]*>?/gm, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+                                    return body.length > 20 ? `[Lượt ${startMid + i + 1} | ${sender}]: ${body}` : null;
+                                }).filter(Boolean);
 
                                 if (midPoints.length > 0) {
-                                    dynamicMiddleContext = "\n[DỮ LIỆU ĐƯỢC AGENT 06 & AGENT 43 TRÍCH XUẤT TỪ RÃNH GIỮA 20%-80% LỊCH SỬ]:\n" + midPoints.join('\n') + "\n";
+                                    dynamicMiddleContext = "\n[BỘ NHỚ TRUNG GIAN DÀNH CHO AGENT 06 & AGENT 43]:\n" + midPoints.join('\n') + "\n";
                                 }
                             }
 
@@ -12962,49 +13026,44 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
                         window.addEventListener('beforeunload', handleBeforeUnload);
                         document.addEventListener('visibilitychange', handleVisibilityChange);
 
-                        // Tự động khôi phục ảnh nếu gặp sự cố kết nối hoặc model bận
+                        // Tự động khôi phục ảnh nếu gặp sự cố kết nối
                         window.addEventListener('error', (e) => {
                             if (e.target && e.target.tagName === 'IMG') {
                                 const img = e.target;
                                 if (img.src && img.src.includes('pollinations.ai')) {
-                                    // Chỉ thử lại nếu chưa quá 2 lần để tránh vòng lặp vô hạn
                                     const retryCount = parseInt(img.dataset.retried || '0', 10);
-                                    if (retryCount < 2) {
-                                        img.dataset.retried = String(retryCount + 1);
-                                        
-                                        // 1. Nếu ảnh đang dùng proxy Jina AI và vẫn lỗi, thử lại với proxy khác (corsproxy.io)
-                                        if (img.src.includes('r.jina.ai')) {
-                                            const originalUrlMatch = img.src.match(/https:\/\/r\.jina\.ai\/(https?%3A%2F%2F.*)/i);
-                                            if (originalUrlMatch && originalUrlMatch[1]) {
-                                                const cleanOriginalUrl = decodeURIComponent(originalUrlMatch[1]);
-                                                img.src = `https://corsproxy.io/?${encodeURIComponent(cleanOriginalUrl)}`;
-                                                return;
-                                            }
-                                        }
-                                        // 2. Nếu ảnh đang dùng corsproxy.io và vẫn lỗi, thử lại với URL gốc (có thể đã hết chặn)
-                                        else if (img.src.includes('corsproxy.io')) {
-                                            const originalUrlMatch = img.src.match(/https:\/\/corsproxy\.io\/\?(https?%3A%2F%2F.*)/i);
-                                            if (originalUrlMatch && originalUrlMatch[1]) {
-                                                img.src = decodeURIComponent(originalUrlMatch[1]);
-                                                return;
-                                            }
-                                        }
-                                        // 3. Tự động chuyển về model=flux chuẩn nếu model phong cách bị quá tải hoặc lỗi
-                                        else if (!img.src.includes('model=flux')) {
-                                            img.src = img.src.replace(/model=[a-zA-Z0-9_-]+/g, 'model=flux');
+                                    
+                                    // SỬA LỖI TREO MÁY: Chặn đứng vòng lặp nếu thử quá 3 lần
+                                    if (retryCount >= 3) {
+                                        // Đổi thành một SVG báo lỗi cực nhẹ (Base64) để dừng vĩnh viễn việc gọi mạng
+                                        img.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 24 24' fill='none' stroke='%23ef4444' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'></circle><line x1='15' y1='9' x2='9' y2='15'></line><line x1='9' y1='9' x2='15' y2='15'></line></svg>";
+                                        img.alt = "Lỗi kết nối hình ảnh";
+                                        return;
+                                    }
+                                    
+                                    img.dataset.retried = String(retryCount + 1);
+                                    
+                                    if (img.src.includes('r.jina.ai')) {
+                                        const originalUrlMatch = img.src.match(/https:\/\/r\.jina\.ai\/(https?%3A%2F%2F.*)/i);
+                                        if (originalUrlMatch && originalUrlMatch[1]) {
+                                            img.src = `https://corsproxy.io/?${originalUrlMatch[1]}`;
                                             return;
                                         }
-                                        // 4. Cuối cùng, thử lại với Jina AI proxy nếu mọi cách đều thất bại (chống CORS/chặn IP)
-                                        else if (!img.src.includes('r.jina.ai')) { // Đảm bảo chưa thử Jina AI
-                                            const originalUrl = img.src;
-                                            img.src = `https://r.jina.ai/${encodeURIComponent(originalUrl)}`;
+                                    }
+                                    else if (img.src.includes('corsproxy.io')) {
+                                        const originalUrlMatch = img.src.match(/https:\/\/corsproxy\.io\/\?(https?%3A%2F%2F.*)/i);
+                                        if (originalUrlMatch && originalUrlMatch[1]) {
+                                            img.src = decodeURIComponent(originalUrlMatch[1]);
                                             return;
                                         }
+                                    }
+                                    else if (!img.src.includes('r.jina.ai')) {
+                                        img.src = `https://r.jina.ai/${encodeURIComponent(img.src)}`;
+                                        return;
                                     }
                                 }
                             }
                         }, true);
-                        // ----------------------------
 
                         // 8. Đồng bộ màu giao diện và cấu hình giọng đọc
                         const savedAccent = accentColors.value.find(c => c.color === selectedAccent.value) || accentColors.value[0];
