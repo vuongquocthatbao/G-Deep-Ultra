@@ -2500,89 +2500,172 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    let currentAttempt = 0;
-    let workingSvg = String(svgString || '').trim();
+    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Chống kẹt 90 giây do createImageBitmap từ chối SVG trong Web Worker
+    // Làm sạch và chuẩn hóa thẻ SVG
+    let cleanSvg = String(svgString || '').replace(/^```(?:xml|svg)?/gi, '').replace(/```$/gi, '').trim();
+    const startIdx = cleanSvg.indexOf('<svg');
+    const endIdx = cleanSvg.lastIndexOf('</svg>');
 
-    while (true) {
-        currentAttempt++;
+    if (startIdx !== -1 && endIdx > startIdx) {
+        cleanSvg = cleanSvg.slice(startIdx, endIdx + 6);
+    } else {
+        cleanSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">${cleanSvg}</svg>`;
+    }
 
-        let candidateSvg = workingSvg;
+    if (!cleanSvg.includes('xmlns=')) {
+        cleanSvg = cleanSvg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    cleanSvg = cleanSvg.replace(/<svg([^>]*)>/i, (m, attrs) => {
+        let a = attrs;
+        if (!a.includes('width=')) a += ` width="${width}"`;
+        if (!a.includes('height=')) a += ` height="${height}"`;
+        if (!a.includes('viewBox=')) a += ` viewBox="0 0 ${width} ${height}"`;
+        return `<svg${a}>`;
+    });
 
-        if (currentAttempt === 1) {
-            // Lượt 1: Làm sạch markdown code fences và xác định ranh giới cơ bản
-            candidateSvg = candidateSvg.replace(/^```(?:xml|svg)?/gi, '').replace(/```$/gi, '').trim();
-            const startIdx = candidateSvg.indexOf('<svg');
-            let endIdx = candidateSvg.lastIndexOf('</svg>');
+    // Thử giải mã trực tiếp bằng phần cứng một lần duy nhất nếu trình duyệt hỗ trợ SVG trong Worker
+    let decodedViaBitmap = false;
+    try {
+        const blob = new Blob([cleanSvg], { type: 'image/svg+xml;charset=utf-8' });
+        const bitmap = await createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        bitmap.close();
+        decodedViaBitmap = true;
+    } catch (_) {
+        decodedViaBitmap = false;
+    }
 
-            if (startIdx !== -1) {
-                if (endIdx === -1 || endIdx <= startIdx) {
-                    candidateSvg = candidateSvg.slice(startIdx) + '</svg>';
-                } else {
-                    candidateSvg = candidateSvg.slice(startIdx, endIdx + 6);
-                }
-            } else {
-                candidateSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">${candidateSvg}</svg>`;
+    // Nếu trình duyệt chặn createImageBitmap trong Worker, kích hoạt ngay bộ phân giải Véc-tơ Canvas Path2D
+    if (!decodedViaBitmap) {
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#060814";
+        ctx.fillRect(0, 0, width, height);
+
+        const getAttr = (tag, name) => {
+            const m = tag.match(new RegExp(`${name}=["']([^"']*)["']`, 'i'));
+            return m ? m[1].trim() : null;
+        };
+
+        const parseCoord = (val, maxRef) => {
+            if (!val) return 0;
+            if (val.endsWith('%')) return (parseFloat(val) / 100) * maxRef;
+            return parseFloat(val) || 0;
+        };
+
+        // 1. Phân tích và nạp toàn bộ Gradient vào bộ nhớ
+        const gradMap = {};
+        const gradRegex = /<linearGradient([^>]*)>([\s\S]*?)<\/linearGradient>/gi;
+        let gMatch;
+        while ((gMatch = gradRegex.exec(cleanSvg)) !== null) {
+            const gid = getAttr(gMatch[1], 'id');
+            if (gid) {
+                const x1 = parseCoord(getAttr(gMatch[1], 'x1') || '0', width);
+                const y1 = parseCoord(getAttr(gMatch[1], 'y1') || '0', height);
+                const x2 = parseCoord(getAttr(gMatch[1], 'x2') || '100%', width);
+                const y2 = parseCoord(getAttr(gMatch[1], 'y2') || '100%', height);
+                try {
+                    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+                    const stopRegex = /<stop([^>]*)\/?>/gi;
+                    let sMatch;
+                    while ((sMatch = stopRegex.exec(gMatch[2])) !== null) {
+                        const offsetStr = getAttr(sMatch[1], 'offset') || '0';
+                        const offset = offsetStr.endsWith('%') ? parseFloat(offsetStr) / 100 : parseFloat(offsetStr);
+                        const color = getAttr(sMatch[1], 'stop-color') || '#ffffff';
+                        grad.addColorStop(Math.min(1, Math.max(0, offset || 0)), color);
+                    }
+                    gradMap[gid] = grad;
+                } catch (_) {}
             }
-
-            if (!candidateSvg.includes('xmlns=')) {
-                candidateSvg = candidateSvg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
-            }
-            if (!candidateSvg.includes('viewBox=')) {
-                candidateSvg = candidateSvg.replace('<svg', `<svg viewBox="0 0 ${width} ${height}"`);
-            }
-            candidateSvg = candidateSvg.replace(/<svg([^>]*)>/i, (m, attrs) => {
-                let a = attrs;
-                if (!a.includes('width=')) a += ` width="${width}"`;
-                if (!a.includes('height=')) a += ` height="${height}"`;
-                return `<svg${a}>`;
-            });
-        } else if (currentAttempt === 2) {
-            // Lượt 2: Tự động sửa lỗi cú pháp XML phổ biến (ampersand, thẻ tự đóng)
-            candidateSvg = candidateSvg.replace(/&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)/g, '&amp;');
-            candidateSvg = candidateSvg.replace(/<(path|circle|rect|line|polygon|polyline|ellipse|stop|use)([^>]*?)>/gi, (match, tag, rest) => {
-                const trimmed = rest.trim();
-                return trimmed.endsWith('/') ? match : `<${tag}${rest} />`;
-            });
-            candidateSvg = candidateSvg.replace(/<script[\s\S]*?<\/script>/gi, '');
-            candidateSvg = candidateSvg.replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, '');
-        } else if (currentAttempt === 3) {
-            // Lượt 3: Tái thiết lập phôi véc-tơ nghiêm ngặt (Trích xuất nguyên tố hình học)
-            const defsMatch = candidateSvg.match(/<defs[\s\S]*?<\/defs>/gi) || [];
-            const shapeMatches = candidateSvg.match(/<(?:path|rect|circle|line|polygon|polyline|ellipse|g)[\s\S]*?(?:<\/g>|\/>)/gi) || [];
-            const safePayload = [...defsMatch, ...shapeMatches].join('\n');
-
-            candidateSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">\n${safePayload}\n</svg>`;
-        } else if (currentAttempt === 4) {
-            // Lượt 4: Làm sạch triệt để các thuộc tính hỏng và ký tự lạ ngoài ASCII
-            candidateSvg = candidateSvg.replace(/[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD]/gu, '');
-            candidateSvg = candidateSvg.replace(/\s[a-zA-Z0-9_\-]+=(?:"[^"]*"|'[^']*'|[^\s>]+)/g, (attr) => {
-                if (attr.includes('undefined') || attr.includes('NaN') || attr.includes('null')) return '';
-                return attr;
-            });
-        } else {
-            // Lượt 5+: Phục hồi khẩn cấp cấu trúc véc-tơ tối thiểu từ dữ liệu tọa độ khả dụng
-            const pathDataMatches = candidateSvg.match(/[MmLlHhVvCcSsQqTtAaZz0-9\s,\-\.]{15,}/g) || [];
-            const reconstructedPaths = pathDataMatches.map(d => `<path d="${d.trim()}" fill="none" stroke="#6366f1" stroke-width="2" />`).join('\n');
-            candidateSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">\n${reconstructedPaths}\n</svg>`;
         }
 
-        try {
-            const blob = new Blob([candidateSvg], { type: 'image/svg+xml;charset=utf-8' });
-            const bitmap = await createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
-            ctx.clearRect(0, 0, width, height);
-            ctx.drawImage(bitmap, 0, 0, width, height);
-            bitmap.close();
+        const resolveStyle = (val) => {
+            if (!val || val === 'none') return null;
+            const uMatch = val.match(/url\(#([^)]+)\)/i);
+            if (uMatch && gradMap[uMatch[1]]) return gradMap[uMatch[1]];
+            return val;
+        };
 
-            const tex = new THREE.CanvasTexture(canvas);
-            tex.minFilter = THREE.LinearFilter;
-            tex.magFilter = THREE.LinearFilter;
-            tex.needsUpdate = true;
-            return tex;
-        } catch (rasterErr) {
-            // Tạm dừng cực ngắn nhường luồng CPU cho event loop trước khi thử lại vòng tiếp theo
-            await new Promise(r => setTimeout(r, 16));
+        // 2. Quét và vẽ tuần tự từng phần tử hình học thật sự của AI
+        const elemRegex = /<(path|rect|circle|ellipse|line|polygon|polyline)([^>]*?)\/?>/gi;
+        let eMatch;
+        while ((eMatch = elemRegex.exec(cleanSvg)) !== null) {
+            const tag = eMatch[1].toLowerCase();
+            const attrs = eMatch[2];
+            const fill = resolveStyle(getAttr(attrs, 'fill'));
+            const stroke = resolveStyle(getAttr(attrs, 'stroke'));
+            const strokeWidth = parseFloat(getAttr(attrs, 'stroke-width') || '1') || 1;
+
+            ctx.save();
+            if (stroke) {
+                ctx.strokeStyle = stroke;
+                ctx.lineWidth = strokeWidth;
+            }
+
+            try {
+                if (tag === 'rect') {
+                    const rx = parseCoord(getAttr(attrs, 'x') || '0', width);
+                    const ry = parseCoord(getAttr(attrs, 'y') || '0', height);
+                    const rw = parseCoord(getAttr(attrs, 'width') || String(width), width);
+                    const rh = parseCoord(getAttr(attrs, 'height') || String(height), height);
+                    if (fill) { ctx.fillStyle = fill; ctx.fillRect(rx, ry, rw, rh); }
+                    if (stroke) ctx.strokeRect(rx, ry, rw, rh);
+                } else if (tag === 'circle') {
+                    const cx = parseCoord(getAttr(attrs, 'cx') || '0', width);
+                    const cy = parseCoord(getAttr(attrs, 'cy') || '0', height);
+                    const r = parseCoord(getAttr(attrs, 'r') || '10', width);
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+                    if (stroke) ctx.stroke();
+                } else if (tag === 'ellipse') {
+                    const cx = parseCoord(getAttr(attrs, 'cx') || '0', width);
+                    const cy = parseCoord(getAttr(attrs, 'cy') || '0', height);
+                    const rx = parseCoord(getAttr(attrs, 'rx') || '10', width);
+                    const ry = parseCoord(getAttr(attrs, 'ry') || '10', height);
+                    ctx.beginPath();
+                    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+                    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+                    if (stroke) ctx.stroke();
+                } else if (tag === 'line') {
+                    const x1 = parseCoord(getAttr(attrs, 'x1') || '0', width);
+                    const y1 = parseCoord(getAttr(attrs, 'y1') || '0', height);
+                    const x2 = parseCoord(getAttr(attrs, 'x2') || '0', width);
+                    const y2 = parseCoord(getAttr(attrs, 'y2') || '0', height);
+                    ctx.beginPath();
+                    ctx.moveTo(x1, y1);
+                    ctx.lineTo(x2, y2);
+                    if (stroke) ctx.stroke();
+                } else if (tag === 'polygon' || tag === 'polyline') {
+                    const pts = (getAttr(attrs, 'points') || '').trim().split(/[\s,]+/);
+                    if (pts.length >= 4) {
+                        ctx.beginPath();
+                        ctx.moveTo(parseFloat(pts[0]) || 0, parseFloat(pts[1]) || 0);
+                        for (let p = 2; p < pts.length; p += 2) {
+                            ctx.lineTo(parseFloat(pts[p]) || 0, parseFloat(pts[p + 1]) || 0);
+                        }
+                        if (tag === 'polygon') ctx.closePath();
+                        if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+                        if (stroke) ctx.stroke();
+                    }
+                } else if (tag === 'path') {
+                    const d = getAttr(attrs, 'd');
+                    if (d && typeof Path2D !== 'undefined') {
+                        const pathObj = new Path2D(d);
+                        if (fill) { ctx.fillStyle = fill; ctx.fill(pathObj); }
+                        if (stroke) ctx.stroke(pathObj);
+                    }
+                }
+            } catch (_) {}
+            ctx.restore();
         }
     }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    return tex;
 }
 
 // BỘ TÁCH TẦNG KHÔNG GIAN BẢO VỆ TUYỆT ĐỐI (HỖ TRỢ START & END TEXTURE)
