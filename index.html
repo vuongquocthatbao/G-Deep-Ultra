@@ -2496,10 +2496,16 @@ async function ensureNetworkOnline(postStatus, taskName) {
 // LÒ PHẢN ỨNG VECTOR - BIẾN ĐỔI SVG THÀNH TEXTURE GPU (ZERO EXTERNAL API)
 // =========================================================================
 async function rasterizeVectorToCanvas(svgString, width, height) {
-    if (!svgString || !svgString.includes('<svg')) {
-        throw new Error("Không tìm thấy mã nguồn Vector SVG hợp lệ.");
-    }
-
+    // Tầng kiểm định 1: Kiểm tra cấu trúc XML/SVG trước khi đưa vào GPU
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgString, "image/svg+xml");
+    const errorNode = doc.querySelector("parsererror");
+    if (errorNode) {
+        console.error("Lỗi cú pháp SVG từ AI:", errorNode.textContent);
+        // Gửi tín hiệu lỗi về cho Đạo diễn AI yêu cầu sửa
+        return null; 
+    }    
+    
     let cleanSvg = svgString.substring(svgString.indexOf('<svg'));
     if (!cleanSvg.includes('xmlns=')) {
         cleanSvg = cleanSvg.replace('<svg', `<svg xmlns="http://www.w3.org/2000/svg"`);
@@ -3415,7 +3421,7 @@ function parseAudioBytes(audioBytes) {
 // 2. BỘ THU ÂM LỜI THOẠI NHÂN VẬT GEMINI TTS
 async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) {
     if (!text || !text.trim()) return null;
-    const voiceModels = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-2.5-flash"];
+    const voiceModels = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-lite-tts-preview"];
     for (const m of voiceModels) {
         for (let k = 0; k < keyPool.length; k++) {
             const activeKey = keyPool[k];
@@ -4296,7 +4302,7 @@ self.onmessage = async function(e) {
             // 2. Danh mục Mô hình AI (Models Catalog)
             Models: {
                 AVAILABLE: [
-                    { id: "gemini-3.8-flash", apiEndpointId: "gemini-3.8-flash", name: "Ultra", maxContextTokens: 1048576 },
+                    { id: "gemini-3.8-flash", apiEndpointId: "gemini-flash-latest", name: "Ultra", maxContextTokens: 1048576 },
                     { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", maxContextTokens: 1048576 },
                     { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", maxContextTokens: 1048576 },
                     { id: "gemini-3.5-flash", apiEndpointId: "gemini-3.5-flash", name: "Flash 01", maxContextTokens: 1048576 },
