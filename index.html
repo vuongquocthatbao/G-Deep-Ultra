@@ -2485,45 +2485,6 @@ const getArrVal = (arr, idx, defVal) => {
     return defVal;
 };
 
-async function bitmapToBase64(bitmap, maxWidth) {
-    const targetMax = Number(maxWidth) || bitmap.width;
-    const scale = Math.min(1.0, targetMax / bitmap.width);
-    const w = Math.round(bitmap.width * scale);
-    const h = Math.round(bitmap.height * scale);
-    const canvas = new OffscreenCanvas(w, h);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-    const arrayBuffer = await blob.arrayBuffer();
-    let binary = '';
-    const bytes = new Uint8Array(arrayBuffer);
-    const CHUNK_SIZE = 8192;
-    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SIZE));
-    }
-    return btoa(binary);
-}
-
-async function decodeImageBlobSafely(blob) {
-    if (!blob || blob.size === 0) return null;
-    const arrayBuffer = await blob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    
-    const isJpeg = bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
-    const isPng = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
-    const isWebp = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
-                   bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
-
-    if (!isJpeg && !isPng && !isWebp) return null;
-
-    try {
-        const cleanBlob = new Blob([bytes], { type: isJpeg ? 'image/jpeg' : (isPng ? 'image/png' : 'image/webp') });
-        return await createImageBitmap(cleanBlob);
-    } catch (_) {
-        return null;
-    }
-}
-
 async function ensureNetworkOnline(postStatus, taskName) {
     while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
         postStatus(`Đang chờ khôi phục tín hiệu kết nối...`);
@@ -2531,218 +2492,131 @@ async function ensureNetworkOnline(postStatus, taskName) {
     }
 }
 
-function parseAudioBytes(audioBytes) {
-    let pcmBytes = audioBytes;
-    if (audioBytes.length >= 44 &&
-        audioBytes[0] === 0x52 && audioBytes[1] === 0x49 && audioBytes[2] === 0x46 && audioBytes[3] === 0x46) {
-        let offset = 12;
-        while (offset < audioBytes.length - 8) {
-            const chunkId = String.fromCharCode(audioBytes[offset], audioBytes[offset+1], audioBytes[offset+2], audioBytes[offset+3]);
-            const chunkSize = new DataView(audioBytes.buffer, audioBytes.byteOffset).getUint32(offset + 4, true);
-            if (chunkId === 'data') {
-                pcmBytes = audioBytes.subarray(offset + 8, offset + 8 + chunkSize);
-                break;
-            }
-            offset += 8 + chunkSize + (chunkSize % 2);
-        }
-    }
-    const dataView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
-    const numSamples = Math.floor(pcmBytes.byteLength / 2);
-    const float32 = new Float32Array(numSamples);
-    for (let s = 0; s < numSamples; s++) {
-        float32[s] = dataView.getInt16(s * 2, true) / 32768.0;
-    }
-    return { samples: float32, sampleRate: 24000, duration: numSamples / 24000 };
-}
-
-async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) {
-    if (!text || !text.trim()) return null;
-    const voiceModels = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"];
-    let attempt = 0;
-    while (true) {
-        attempt++;
-        await ensureNetworkOnline(postStatus, "giọng đọc");
-
-        for (const m of voiceModels) {
-            for (let k = 0; k < keyPool.length; k++) {
-                const activeKey = keyPool[k];
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ role: 'user', parts: [{ text: text }] }],
-                            generationConfig: {
-                                responseModalities: ["AUDIO"],
-                                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName || "Puck" } } }
-                            }
-                        })
-                    });
-                    if (res.ok) {
-                        const data = await res.json();
-                        const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-                        if (inlineData?.data) {
-                            const audioBytes = Uint8Array.from(atob(inlineData.data), c => c.charCodeAt(0));
-                            return parseAudioBytes(audioBytes);
-                        }
-                    }
-                } catch (_) {}
-            }
-        }
-        const waitDelay = Math.min(2000 + (attempt * 1500), 12000);
-        postStatus("Đang đồng bộ luồng âm thanh...");
-        await new Promise(r => setTimeout(r, waitDelay));
-    }
-}
-
-function synthesizeAiDirectSoundscape(soundscapePlan, durationSec, sampleRate, leftChannel, rightChannel) {
-    if (!soundscapePlan || !Array.isArray(soundscapePlan.base_frequencies) || soundscapePlan.base_frequencies.length === 0) return;
-
-    const baseFreqs = soundscapePlan.base_frequencies.map(f => Number(f)).filter(f => f > 0.0);
-    if (baseFreqs.length === 0) return;
-
-    const pulseHz = Number(soundscapePlan.pulse_rate_hz) || 0.0;
-    const richness = Number(soundscapePlan.harmonic_richness) || 0.0;
-    const decayExp = Number(soundscapePlan.harmonic_decay_rate) || 1.0;
-    const timbre = soundscapePlan.timbre_type || "fm_drone";
-    const stereoSpread = Number(soundscapePlan.stereo_spread) || 0.0;
-    const masterVol = Number(soundscapePlan.master_volume) || 0.0;
-    const pulseDepth = Number(soundscapePlan.pulse_depth) || 0.0;
-    const modRatio = Number(soundscapePlan.fm_mod_ratio) || 0.0;
-    const modIndex = Number(soundscapePlan.fm_mod_index) || 0.0;
-    const totalSamples = Math.ceil(durationSec * sampleRate);
-
-    for (let i = 0; i < totalSamples; i++) {
-        if (i >= leftChannel.length) break;
-        const t = i / sampleRate;
-        const progress = t / Math.max(0.001, durationSec);
-
-        const envelope = Math.sin(progress * Math.PI) * masterVol;
-        const pulse = (1.0 - pulseDepth) + pulseDepth * Math.sin(2.0 * Math.PI * pulseHz * t);
-
-        let wave = 0.0;
-        for (let f = 0; f < baseFreqs.length; f++) {
-            const freq = baseFreqs[f];
-            const harmonicAmp = 1.0 / Math.pow(f + 1.0, decayExp);
-
-            if (timbre === "tension_cluster") {
-                wave += Math.sin(2.0 * Math.PI * freq * t + Math.sin(t * (pulseHz * 4.0))) * harmonicAmp;
-            } else if (timbre === "celestial_pad") {
-                wave += Math.sin(2.0 * Math.PI * freq * t) * harmonicAmp;
-                wave += Math.sin(2.0 * Math.PI * (freq * (1.0 + richness)) * t) * (richness * harmonicAmp);
-            } else {
-                const mod = Math.sin(2.0 * Math.PI * (freq * modRatio) * t) * modIndex;
-                wave += Math.sin(2.0 * Math.PI * freq * t + mod) * harmonicAmp;
-            }
-        }
-
-        const sampleVal = wave * envelope * pulse;
-        const panLeft = 0.5 + (stereoSpread * 0.5) * Math.sin(t * (pulseHz * 0.5));
-        const panRight = 1.0 - panLeft;
-
-        leftChannel[i] += sampleVal * panLeft;
-        rightChannel[i] += sampleVal * panRight;
-    }
-}
-
-function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRate, audioWeights) {
-    if (!channelData || channelData.length === 0) return { bass: 0.0, vocal: 0.0, treble: 0.0 };
-    
-    const centerSample = Math.floor(currentSecond * sampleRate);
-    const windowSize = Math.floor(sampleRate / 60);
-    const halfWin = Math.floor(windowSize / 2);
-    const start = Math.max(0, centerSample - halfWin);
-    const end = Math.min(channelData.length, centerSample + halfWin);
-    
-    if (start >= end) return { bass: 0.0, vocal: 0.0, treble: 0.0 };
-
-    let sumSquares = 0.0;
-    let zeroCrossings = 0;
-    let prevVal = channelData[start];
-
-    for (let i = start; i < end; i++) {
-        const val = channelData[i];
-        sumSquares += val * val;
-        if ((val >= 0 && prevVal < 0) || (val < 0 && prevVal >= 0)) {
-            zeroCrossings++;
-        }
-        prevVal = val;
+// =========================================================================
+// LÒ PHẢN ỨNG VECTOR - BIẾN ĐỔI SVG THÀNH TEXTURE GPU (ZERO EXTERNAL API)
+// =========================================================================
+async function rasterizeVectorToCanvas(svgString, width, height) {
+    if (!svgString || !svgString.includes('<svg')) {
+        throw new Error("Không tìm thấy mã nguồn Vector SVG hợp lệ.");
     }
 
-    const rms = Math.sqrt(sumSquares / (end - start));
-    const zcr = zeroCrossings / (end - start);
-
-    const bassZcr = Number(audioWeights?.bass_zcr_threshold) || 0.12;
-    const vocalZcr = Number(audioWeights?.vocal_zcr_threshold) || 0.45;
-    const bassAmp = Number(audioWeights?.bass_amplification) || 4.2;
-    const vocalAmp = Number(audioWeights?.vocal_amplification) || 3.5;
-    const trebleAmp = Number(audioWeights?.treble_amplification) || 5.0;
-
-    const bassEnergy = (zcr < bassZcr) ? Math.min(1.0, rms * bassAmp) : 0.0;
-    const vocalEnergy = (zcr >= bassZcr && zcr < vocalZcr) ? Math.min(1.0, rms * vocalAmp) : 0.0;
-    const trebleEnergy = (zcr >= vocalZcr) ? Math.min(1.0, rms * trebleAmp) : 0.0;
-
-    return { bass: bassEnergy, vocal: vocalEnergy, treble: trebleEnergy };
-}
-
-// BỘ TỰ NƯỚNG HỌA ĐỒ GPU NỘI BỘ THEO ĐÚNG BẢN ĐỒ DNA
-function renderInternalGenerativeLayers(renderer, width, height, generativeBlueprint) {
-    if (!generativeBlueprint.procedural_background_glsl || !generativeBlueprint.procedural_subject_glsl) {
-        throw new Error("Bản thiết kế DNA của AI chưa hoàn thiện. Hệ thống từ chối dùng mẫu cứng.");
+    let cleanSvg = svgString.substring(svgString.indexOf('<svg'));
+    if (!cleanSvg.includes('xmlns=')) {
+        cleanSvg = cleanSvg.replace('<svg', `<svg xmlns="http://www.w3.org/2000/svg"`);
     }
-
-    const glslBackgroundGen = generativeBlueprint.procedural_background_glsl;
-    const glslSubjectGen = generativeBlueprint.procedural_subject_glsl;
-
-    const quadGeo = new THREE.PlaneGeometry(2, 2);
-    const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-    const bakeScene = new THREE.Scene();
-
-    const rtOptions = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat };
-    const bgRT = new THREE.WebGLRenderTarget(width, height, rtOptions);
-    const fgRT = new THREE.WebGLRenderTarget(width, height, rtOptions);
-
-    const bgBakeMat = new THREE.ShaderMaterial({
-        vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
-        fragmentShader: `
-            precision highp float;
-            varying vec2 vUv;
-            ${glslBackgroundGen}
-            void main() { gl_FragColor = vec4(renderBackground(vUv), 1.0); }
-        `,
-        depthTest: false
+    cleanSvg = cleanSvg.replace(/<svg([^>]*)>/, (match, attrs) => {
+        if (!attrs.includes('width=')) attrs += ` width="${width}"`;
+        if (!attrs.includes('height=')) attrs += ` height="${height}"`;
+        return `<svg${attrs}>`;
     });
-    const bgQuad = new THREE.Mesh(quadGeo, bgBakeMat);
-    bakeScene.add(bgQuad);
-    renderer.setRenderTarget(bgRT);
-    renderer.render(bakeScene, quadCam);
-    bakeScene.remove(bgQuad);
-    bgBakeMat.dispose();
 
-    const fgBakeMat = new THREE.ShaderMaterial({
-        vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`,
-        fragmentShader: `
-            precision highp float;
-            varying vec2 vUv;
-            ${glslSubjectGen}
-            void main() { gl_FragColor = renderSubject(vUv); }
-        `,
-        transparent: true,
-        depthTest: false
-    });
-    const fgQuad = new THREE.Mesh(quadGeo, fgBakeMat);
-    bakeScene.add(fgQuad);
-    renderer.setRenderTarget(fgRT);
-    renderer.render(bakeScene, quadCam);
-    bakeScene.remove(fgQuad);
-    fgBakeMat.dispose();
-    quadGeo.dispose();
+    const encodedData = btoa(unescape(encodeURIComponent(cleanSvg)));
+    const dataUri = `data:image/svg+xml;base64,${encodedData}`;
 
-    renderer.setRenderTarget(null);
-    return { bgTex: bgRT.texture, fgTex: fgRT.texture, bgRT, fgRT };
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+
+    try {
+        const response = await fetch(dataUri);
+        const blob = await response.blob();
+        const bitmap = await createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        bitmap.close();
+    } catch (err) {
+        // Lưới an toàn giải tích dự phòng (Analytical Mesh Fallback)
+        ctx.fillStyle = "#0a0a0f"; ctx.fillRect(0, 0, width, height);
+        ctx.strokeStyle = "#4338ca"; ctx.lineWidth = 1;
+        for (let i = 0; i < width; i += 30) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, height); ctx.stroke(); }
+        console.warn("Cảnh báo: Render SVG bị lỗi cú pháp từ AI.", err);
+    }
+
+    return new THREE.CanvasTexture(canvas);
 }
 
-// BỘ SHADER MASTER TIỀN CẢNH: DNA KHỚP XƯƠNG + VẬT LÝ ISOSURFACE + SƠN DẦU GLAZING
+// BỘ TÁCH TẦNG KHÔNG GIAN BẢO VỆ TUYỆT ĐỐI (HỖ TRỢ START & END TEXTURE)
+function buildAdaptiveVolumetricLayersFromTexture(baseTexture, width, height, decompPlan) {
+    if (!baseTexture || !baseTexture.image) return null;
+
+    const layerMode = decompPlan.layer_mode || "subject_isolate";
+    const overscan = Math.max(0.0, Number(decompPlan.bg_overscan) || 0.0);
+
+    const fgCanvas = new OffscreenCanvas(width, height);
+    const fgCtx = fgCanvas.getContext('2d');
+    fgCtx.drawImage(baseTexture.image, 0, 0, width, height);
+
+    const bgCanvas = new OffscreenCanvas(width, height);
+    const bgCtx = bgCanvas.getContext('2d');
+    const ow = width * overscan, oh = height * overscan;
+    bgCtx.drawImage(baseTexture.image, -ow, -oh, width + ow * 2.0, height + oh * 2.0);
+
+    if (layerMode === "panoramic_landscape") {
+        const horizonRatio = Math.max(0.0, Math.min(1.0, Number(decompPlan.horizon_y) || 0.5));
+        const horizonY = horizonRatio * height;
+        const transitionSpan = Math.max(0.01, Number(decompPlan.horizon_transition_span) || 0.1);
+
+        fgCtx.globalCompositeOperation = 'destination-in';
+        const grad = fgCtx.createLinearGradient(0, horizonY - height * transitionSpan * 0.5, 0, horizonY + height * transitionSpan * 0.5);
+        grad.addColorStop(0, 'rgba(0,0,0,0)');
+        grad.addColorStop(1, 'rgba(0,0,0,1)');
+        fgCtx.fillStyle = grad;
+        fgCtx.fillRect(0, 0, width, height);
+        fgCtx.globalCompositeOperation = 'source-over';
+    } else {
+        const rawBox = Array.isArray(decompPlan.subject_box) && decompPlan.subject_box.length === 4 
+            ? decompPlan.subject_box : [0.0, 0.0, 1.0, 1.0];
+
+        const normYmin = Math.max(0.0, Math.min(Number(rawBox[0]) || 0.0, Number(rawBox[2]) || 1.0));
+        const normYmax = Math.min(1.0, Math.max(Number(rawBox[0]) || 0.0, Number(rawBox[2]) || 1.0));
+        const normXmin = Math.max(0.0, Math.min(Number(rawBox[1]) || 0.0, Number(rawBox[3]) || 1.0));
+        const normXmax = Math.min(1.0, Math.max(Number(rawBox[1]) || 0.0, Number(rawBox[3]) || 1.0));
+
+        const ymin = normYmin * height, xmin = normXmin * width;
+        const ymax = normYmax * height, xmax = normXmax * width;
+        const bw = Math.max(1.0, xmax - xmin);
+        const bh = Math.max(1.0, ymax - ymin);
+        const cx = xmin + bw * 0.5, cy = ymin + bh * 0.5;
+
+        const featherInner = Math.max(0.0, Number(decompPlan.feather_inner_ratio) || 0.3);
+        const featherOuter = Math.max(featherInner + 0.01, Number(decompPlan.feather_outer_ratio) || 0.7);
+        const padRatio = Math.max(0.0, Number(decompPlan.feather_pad_ratio) || 0.1);
+        const padX = bw * padRatio, padY = bh * padRatio;
+
+        const r0 = Math.max(0.0, Math.min(bw, bh) * featherInner);
+        const r1 = Math.max(r0 + 0.1, Math.max(bw, bh) * featherOuter + Math.max(padX, padY));
+
+        fgCtx.globalCompositeOperation = 'destination-in';
+        const grad = fgCtx.createRadialGradient(cx, cy, r0, cx, cy, r1);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(0.85, 'rgba(0,0,0,0.95)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+        fgCtx.save();
+        fgCtx.translate(cx, cy);
+        fgCtx.scale(1.0, bh / Math.max(1.0, bw));
+        fgCtx.fillStyle = grad;
+        fgCtx.beginPath();
+        fgCtx.arc(0, 0, Math.max(1.0, bw * featherOuter + padX), 0, Math.PI * 2);
+        fgCtx.fill();
+        fgCtx.restore();
+        fgCtx.globalCompositeOperation = 'source-over';
+    }
+
+    const fgTex = new THREE.CanvasTexture(fgCanvas);
+    fgTex.minFilter = THREE.LinearFilter;
+    fgTex.magFilter = THREE.LinearFilter;
+    fgTex.flipY = true;
+    fgTex.needsUpdate = true;
+
+    const bgTex = new THREE.CanvasTexture(bgCanvas);
+    bgTex.minFilter = THREE.LinearFilter;
+    bgTex.magFilter = THREE.LinearFilter;
+    bgTex.flipY = true;
+    bgTex.needsUpdate = true;
+
+    return { fgTex, bgTex };
+}
+
+// BỘ SHADER MASTER TIỀN CẢNH (HỖ TRỢ DUAL-TEXTURE START/END WARPING)
 function createMasterOmniSubjectMaterial() {
     const vertexShader = `
         uniform float uTime;
@@ -3020,6 +2894,9 @@ function createMasterOmniSubjectMaterial() {
             vec2 bassImpulse = uFlowVector * (uAudioBass * uBassMultiplier);
             vec2 totalVelocity = (uFlowVector * uFlowMultiplier + dynamicCurl + bassImpulse) * (uMicroAmp * anchorWeight);
 
+            // =========================================================================
+            // BÙ FRAME MA TRẬN 2 CHIỀU (BI-DIRECTIONAL OPTICAL FLOW MORPHING)
+            // =========================================================================
             float speed = max(0.001, uFlowSpeed);
             float phaseA = fract(uTime * speed);
             float phaseB = fract(uTime * speed + 0.5);
@@ -3027,18 +2904,24 @@ function createMasterOmniSubjectMaterial() {
             vec2 uvA = clamp(uv + totalVelocity * (phaseA - 0.5), vec2(0.001), vec2(0.999));
             vec2 uvB = clamp(uv + totalVelocity * (phaseB - 0.5), vec2(0.001), vec2(0.999));
 
+            // Đẩy trôi frame Khởi đầu (K0) về phía tương lai
+            vec2 uvStartForward = clamp(uvA + totalVelocity * uProgress * 0.1, vec2(0.001), vec2(0.999));
+            // Kéo lùi frame Kết thúc (K1) về phía quá khứ
+            vec2 uvEndBackward = clamp(uvB - totalVelocity * (1.0 - uProgress) * 0.1, vec2(0.001), vec2(0.999));
+
             vec4 colStart = vec4(0.0);
             vec4 colEnd = vec4(0.0);
             const int BLUR_TAPS = 4;
             for (int i = 0; i < BLUR_TAPS; i++) {
                 float stepFrac = (float(i) / float(BLUR_TAPS - 1) - 0.5);
                 vec2 bOff = uMotionBlurVector * (stepFrac * uMotionBlurMult);
-                colStart += texture2D(uTextureStart, clamp(uvA + bOff, vec2(0.001), vec2(0.999)));
-                colEnd += texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, clamp(uvB + bOff, vec2(0.001), vec2(0.999)));
+                colStart += texture2D(uTextureStart, clamp(uvStartForward + bOff, vec2(0.001), vec2(0.999)));
+                colEnd += texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, clamp(uvEndBackward + bOff, vec2(0.001), vec2(0.999)));
             }
             colStart /= float(BLUR_TAPS);
             colEnd /= float(BLUR_TAPS);
 
+            // Hòa trộn 2 mốc thời gian K0 và K1
             float morphWeight = smoothstep(0.0, 1.0, uProgress);
             vec4 baseAlbedo = mix(colStart, colEnd, morphWeight);
 
@@ -3349,43 +3232,39 @@ function createCinematicLensPostMaterial() {
     });
 }
 
-// BỘ NÃO BIÊN DỊCH BẢN ĐỒ DNA KHÔNG-THỜI GIAN 4D TỪ CHỈ ĐẠO CỦA TỔNG ĐẠO DIỄN
+// =========================================================================
+// BỘ NÃO ĐẠO DIỄN TOÀN TRI CẤP CAO: 
+// XUẤT 2 MÃ NGUỒN KEYFRAME SVG ĐỘC LẬP (START_SVG VÀ END_SVG) ĐỂ BÙ FRAME LÊN GPU
+// =========================================================================
 async function requestHamiltonianContinuumTensor(shotBlueprint, sceneDuration, keyPool, postStatus) {
-    const directingPrompt = `[SUPREME 4D SPATIO-TEMPORAL DNA COMPILER]
-BẠN LÀ BỘ NÃO KỸ THUẬT ĐIỆN ẢNH & KIẾN TRÚC SƯ DNA VẬT LÝ.
-Tổng Đạo Diễn đã phê duyệt Bản thiết kế Phân cảnh:
-- Tên cú máy: "${shotBlueprint.title || ''}"
-- Thời lượng: ${sceneDuration}s (60 FPS)
-- Ngôn ngữ máy quay: ${JSON.stringify(shotBlueprint.cinematography || {})}
-- Diễn viên & Hành động chi tiết: ${JSON.stringify(shotBlueprint.subject_direction || {})}
-- Bối cảnh & Không gian: ${JSON.stringify(shotBlueprint.environment_direction || {})}
-- Kinh thánh Thế giới: ${JSON.stringify(shotBlueprint.production_bible || {})}
+    const directingPrompt = `[SUPREME 4D DUAL-KEYFRAME COMPILER]
+Chủ đề phân cảnh: "${shotBlueprint.title || ''}". Thời lượng: ${sceneDuration}s (60 FPS).
+BẠN LÀ BẬC THẦY KỸ THUẬT VẬT LÝ TOÁN VÀ ĐIỆN ẢNH ĐỘC BẢN.
+Nhiệm vụ: Bạn PHẢI tạo ra 2 bức tranh Vector (SVG) siêu chi tiết làm hạt nhân thị giác: một cho Khởi đầu (start_svg) và một cho Kết thúc (end_svg) của cảnh quay. Cả 2 SVG phải dùng CÙNG MỘT id lớp (<defs>, class) nhưng chỉ thay đổi vị trí vector, góc độ, màu sắc hoặc độ mở mắt/miệng để thể hiện sự dịch chuyển thời gian.
 
-NHIỆM VỤ TỐI THƯỢNG: LẬP BẢN ĐỒ DNA KHÔNG-THỜI GIAN ĐẦY ĐỦ CHO TỪNG FRAME:
-Hãy phân tích thực thể cụ thể và bối cảnh cụ thể để sinh ra mã DNA giải tích chính xác (Không dùng hình hộp vuông vô nghĩa):
-
-1. "internal_generative_blueprint": Cung cấp 2 hàm GLSL vẽ chi tiết bề mặt theo đúng DNA của cảnh:
-   - "procedural_background_glsl": vec3 renderBackground(vec2 uv) vẽ màu sắc, ánh sáng, địa hình của bối cảnh được mô tả.
-   - "procedural_subject_glsl": vec4 renderSubject(vec2 uv) vẽ đúng hình thái giải phẫu học, trang phục, diện mạo của chủ thể và kênh Alpha viền mềm.
-2. "population_instancing": Số lượng thực thể (1 cho cận cảnh/solo, hoặc từ 2 đến 120 cho đại cảnh/quần thể) kèm hệ số phân tán không gian và độ lệch pha thời gian.
-3. "deterministic_physics": Cơ học Isosurface Metaball biến đổi pha thể tích, nứt vỡ Voronoi và tiếp xúc Coulomb chống xuyên thủng.
-4. "chromophore_glazing": DNA sắc tố mao mạch máu dưới da (subsurface_color, subsurface_wrap, lipid_sheen_strength, micro_grain_scale, micro_grain_density).
-5. "universal_kinematic_rig": Động học 8 khớp xương tương ứng bản chất thực thể (joint_pivots, joint_trajectories).
-6. "volumetric_360_hull": Bề dày thể tích 3D và sắc thái mặt sau lưng khi camera quay 360 độ (depth_thickness, posterior_tint, posterior_occlusion).
-7. "spatial_decomposition": subject_depth_z, background_depth_z, motion_scale_factor, deform_center, wave_spatial_tensor, kinetic_freq, kinetic_amp, kinetic_scale, vocal_scale, vocal_freq_multiplier, sub_wave_scale.
-8. "biological_features": has_face, eye_left, eye_right, eye_radius_x, eye_radius_y, blink_tightness, mouth_center, mouth_radius_x, mouth_radius_y, mouth_open_sensitivity, mouth_upper_ratio, mouth_lower_ratio, blink_interval_sec, blink_duration_sec, saccade_freq, saccade_amp.
-9. "cinematic_optics": light_pos, light_color, ambient_strength, diffuse_strength, specular_strength, surface_shininess, normal_strength, bokeh_radius, shadow_offset, shadow_opacity, shadow_falloff_inner, shadow_darkness, motion_blur_multiplier, film_grain, chromatic_aberration, halation, vignette, particle_density, particle_opacity, handheld_sway_freq, handheld_sway_amp, lens_breathing_amp.
-10. "pixel_motion_matrix": primary_flow_vector, flow_harmonics, flow_spatial_scale, flow_speed, curl_scale, micro_deformation_amp, flow_multiplier, bass_multiplier, anchor_center, anchor_radius, anchor_falloff, shimmer_coords, shimmer_speed.
-11. "subject_free_motion": easing_type, trajectory: [{"t": 0.0, "shift": [x,y,z], "scale": s, "rot": [p,y,r]}, {"t": 1.0, ...}].
-12. "camera_manifold": fov_degrees, camera_distance_z, pan_scale, easing_type, trajectory: [{"t": 0.0, "pan": [x,y], "zoom": z, "rot": r}, {"t": 1.0, ...}].
-13. "soundscape": Toàn bộ thông số âm thanh giải tích tương ứng với bối cảnh.`;
+YÊU CẦU JSON CHUẨN XÁC:
+1. "vector_keyframes":
+   - "start_svg": Chuỗi SVG hoàn chỉnh (<svg>...</svg>) vẽ trạng thái BẮT ĐẦU. Dùng chi tiết đa lớp, <radialGradient>, <path d="..."> để hình thành cấu trúc.
+   - "end_svg": Chuỗi SVG hoàn chỉnh vẽ trạng thái KẾT THÚC (Sự tiến hóa về thời gian, động tác hoặc ánh sáng từ start_svg).
+2. "population_instancing": (Hỗ trợ từ 1 cá thể tới hàng trăm cá thể đại cảnh): "instance_count", "distribution_spread_x", "distribution_spread_y", "distribution_spread_z", "instance_phase_spread".
+3. "deterministic_physics": "isosurface_active", "isosurface_center", "isosurface_strength", "isosurface_softness", "isosurface_displace_scale", "fracture_active", "fracture_impact_time", "fracture_cell_scale", "fracture_threshold", "fracture_impulse", "contact_active", "contact_point", "contact_normal", "contact_radius", "contact_stiffness".
+4. "chromophore_glazing": "subsurface_color", "subsurface_wrap", "lipid_sheen_strength", "micro_grain_scale", "micro_grain_density".
+5. "universal_kinematic_rig": "joint_pivots", "joint_trajectories".
+6. "volumetric_360_hull": "depth_thickness", "posterior_tint", "posterior_occlusion".
+7. "spatial_decomposition": "subject_depth_z", "background_depth_z", "motion_scale_factor", "deform_center", "wave_spatial_tensor", "kinetic_freq", "kinetic_amp", "kinetic_scale", "vocal_scale", "vocal_freq_multiplier", "sub_wave_scale", "layer_mode", "subject_box", "feather_inner_ratio", "feather_outer_ratio", "feather_pad_ratio", "bg_overscan", "horizon_y", "horizon_transition_span".
+8. "biological_features": "has_face", "eye_left", "eye_right", "eye_radius_x", "eye_radius_y", "blink_tightness", "mouth_center", "mouth_radius_x", "mouth_radius_y", "mouth_open_sensitivity", "mouth_upper_ratio", "mouth_lower_ratio", "blink_interval_sec", "blink_duration_sec", "saccade_freq", "saccade_amp".
+9. "cinematic_optics": "light_pos", "light_color", "ambient_strength", "diffuse_strength", "specular_strength", "surface_shininess", "normal_strength", "bokeh_radius", "shadow_offset", "shadow_opacity", "shadow_falloff_inner", "shadow_darkness", "motion_blur_multiplier", "film_grain", "chromatic_aberration", "halation", "vignette", "particle_density", "particle_opacity", "handheld_sway_freq", "handheld_sway_amp", "lens_breathing_amp".
+10. "pixel_motion_matrix": "primary_flow_vector", "flow_harmonics", "flow_spatial_scale", "flow_speed", "curl_scale", "micro_deformation_amp", "flow_multiplier", "bass_multiplier", "anchor_center", "anchor_radius", "anchor_falloff", "shimmer_coords", "shimmer_speed".
+11. "subject_free_motion": "easing_type", "trajectory".
+12. "camera_manifold": "fov_degrees", "camera_distance_z", "pan_scale", "easing_type", "trajectory".
+13. "soundscape": Toàn bộ thông số âm thanh giải tích.`;
 
     const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
     let totalTries = 0;
 
     while (true) {
         totalTries++;
-        await ensureNetworkOnline(postStatus, "biên dịch DNA không-thời gian");
+        await ensureNetworkOnline(postStatus, "đạo diễn 2 khung hình vector K0 và K1");
 
         const activeModel = candidateModels[totalTries % candidateModels.length];
         const activeKey = keyPool[totalTries % keyPool.length];
@@ -3398,7 +3277,7 @@ Hãy phân tích thực thể cụ thể và bối cảnh cụ thể để sinh 
                     contents: [{ role: 'user', parts: [{ text: directingPrompt }] }],
                     generationConfig: {
                         temperature: 0.3,
-                        maxOutputTokens: 5000,
+                        maxOutputTokens: 6000,
                         responseMimeType: "application/json"
                     }
                 })
@@ -3408,14 +3287,15 @@ Hãy phân tích thực thể cụ thể và bối cảnh cụ thể để sinh 
                 const data = await res.json();
                 const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
                 const parsed = robustJsonParse(rawText);
-                if (parsed && parsed.spatial_decomposition && parsed.cinematic_optics && parsed.camera_manifold && parsed.internal_generative_blueprint) {
+                
+                if (parsed && parsed.vector_keyframes && parsed.vector_keyframes.start_svg && parsed.vector_keyframes.end_svg && parsed.spatial_decomposition) {
                     return parsed;
                 }
             }
         } catch (_) {}
 
         const delayMs = Math.min(2500 + (totalTries * 1200), 15000);
-        postStatus("Đang tái kết nối cỗ máy giải tích DNA...");
+        postStatus("Đang tái kết nối cỗ máy giải tích Vector kép...");
         await new Promise(r => setTimeout(r, delayMs));
     }
 }
@@ -3620,7 +3500,7 @@ self.onmessage = async function(e) {
         let cumulativeAudioFramesEncoded = 0;
         const shotsLog = [];
 
-        // VÒNG LẶP SẢN XUẤT CÁC PHÂN CẢNH THEO ĐÚNG BẢN ĐỒ DNA
+        // VÒNG LẶP SẢN XUẤT CÁC PHÂN CẢNH DỰA TRÊN 2 KHUNG HÌNH K0 VÀ K1
         for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
             const sceneSpec = rawScenesList[sIdx] || {};
             const currentSceneNum = sIdx + 1;
@@ -3638,7 +3518,7 @@ self.onmessage = async function(e) {
             const totalFrames = Math.round(shotDuration * fps);
             const frameMicros = 1000000 / fps;
 
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang biên dịch DNA không-thời gian...`);
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang giải mã Vector Keyframes kép...`);
 
             if (sIdx > 0) {
                 await new Promise(r => setTimeout(r, 2000));
@@ -3654,7 +3534,7 @@ self.onmessage = async function(e) {
                 action_description: sceneSpec.action_description || ''
             };
 
-            // 1. GEMINI BIÊN DỊCH BẢN ĐỒ DNA ĐỘC BẢN CỦA CÚ MÁY
+            // 1. GEMINI TRẢ VỀ 2 SVG: START_SVG (K0) VÀ END_SVG (K1)
             const continuumPlan = await requestHamiltonianContinuumTensor(
                 shotBlueprint,
                 shotDuration,
@@ -3662,14 +3542,20 @@ self.onmessage = async function(e) {
                 postStatus
             );
 
-            // 2. TỰ NƯỚNG HỌA ĐỒ GPU NỘI BỘ THEO ĐÚNG DNA CỦA CẢNH
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang nung chất liệu và cấu trúc DNA...`);
-            const generatedLayers = renderInternalGenerativeLayers(
-                sharedRenderer, 
-                width, 
-                height, 
-                continuumPlan.internal_generative_blueprint || {}
-            );
+            // 2. CHUYỂN HÓA CẢ 2 VECTOR SVG THÀNH RASTER TEXTURE
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang nung chất liệu Vector kép K0-K1...`);
+            let masterTexStart, masterTexEnd;
+            try {
+                masterTexStart = await rasterizeVectorToCanvas(continuumPlan.vector_keyframes.start_svg, width, height);
+                masterTexEnd = await rasterizeVectorToCanvas(continuumPlan.vector_keyframes.end_svg, width, height);
+            } catch (err) {
+                console.warn(err);
+                const fbcv = new OffscreenCanvas(width, height);
+                const fbctx = fbcv.getContext('2d');
+                fbctx.fillStyle = "#0f172a"; fbctx.fillRect(0, 0, width, height);
+                masterTexStart = new THREE.CanvasTexture(fbcv);
+                masterTexEnd = new THREE.CanvasTexture(fbcv);
+            }
 
             postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang hòa âm không gian và lời thoại...`);
             const totalShotAudioSamples = Math.ceil(shotDuration * shotSampleRate);
@@ -3725,7 +3611,7 @@ self.onmessage = async function(e) {
             }
 
             // =========================================================================
-            // THIẾT LẬP CAMERA, ĐẠI CẢNH INSTANCING & MASTER OMNI SUBJECT MATERIAL THEO DNA
+            // THIẾT LẬP CAMERA, ĐẠI CẢNH INSTANCING & SHADER BÙ FRAME TỪ K0 -> K1
             // =========================================================================
             const decomp = continuumPlan.spatial_decomposition || {};
             const optics = continuumPlan.cinematic_optics || {};
@@ -3750,14 +3636,18 @@ self.onmessage = async function(e) {
             const visibleHeight = 2.0 * Math.tan(vFovRad / 2.0) * camDist;
             const visibleWidth = visibleHeight * (width / height);
 
-            // 1. TẦNG HẬU CẢNH: XÓA PHÔNG BOKEH CHUẨN DNA
+            // BÓC TÁCH KHÔNG GIAN CHO CẢ 2 KEYFRAME
+            const startLayers = buildAdaptiveVolumetricLayersFromTexture(masterTexStart, width, height, decomp);
+            const endLayers = buildAdaptiveVolumetricLayersFromTexture(masterTexEnd, width, height, decomp);
+
+            // 1. TẦNG HẬU CẢNH: CHẠY NỘI SUY K0 -> K1
             const bgDepthZ = Number(decomp.background_depth_z) || -0.55;
             const bgScaleFactor = 1.0 - (bgDepthZ / camDist);
             const bgGeo = new THREE.PlaneGeometry(visibleWidth * bgScaleFactor * 1.35, visibleHeight * bgScaleFactor * 1.35);
             const bgMat = createUnifiedUltimateBackgroundMaterial();
-            bgMat.uniforms.uTextureStart.value = generatedLayers.bgTex;
-            bgMat.uniforms.uTextureEnd.value = generatedLayers.bgTex;
-            bgMat.uniforms.uHasDualKeyframes.value = false;
+            bgMat.uniforms.uTextureStart.value = startLayers.bgTex;
+            bgMat.uniforms.uTextureEnd.value = endLayers.bgTex;
+            bgMat.uniforms.uHasDualKeyframes.value = true; // Kích hoạt bù frame kép
             bgMat.uniforms.uBokehRadius.value = Number(optics.bokeh_radius) || 0.0;
             bgMat.uniforms.uShadowOpacity.value = Number(optics.shadow_opacity) || 0.0;
             bgMat.uniforms.uShadowFalloffInner.value = Number(optics.shadow_falloff_inner) || 0.1;
@@ -3767,7 +3657,7 @@ self.onmessage = async function(e) {
             bgMesh.position.set(0, 0, bgDepthZ);
             quadScene.add(bgMesh);
 
-            // 2. BỤI THỂ TÍCH KHÍ QUYỂN BẮT SÁNG CHUẨN DNA
+            // 2. BỤI THỂ TÍCH KHÍ QUYỂN BẮT SÁNG
             const particleCount = Math.max(40, Math.min(500, parseInt(optics.particle_density, 10) || 160));
             const particleGeo = new THREE.BufferGeometry();
             const particlePositions = new Float32Array(particleCount * 3);
@@ -3796,14 +3686,14 @@ self.onmessage = async function(e) {
             const particleSystem = new THREE.Points(particleGeo, particleMat);
             quadScene.add(particleSystem);
 
-            // 3. TẦNG TIỀN CẢNH: HỖ TRỢ ĐA CÁ THỂ / ĐẠI CẢNH GPU INSTANCING CHUẨN DNA
+            // 3. TẦNG TIỀN CẢNH: BÙ FRAME MA TRẬN ĐIỂM ẢNH TỪ K0 -> K1
             const fgDepthZ = Number(decomp.subject_depth_z) || 0.35;
             const fgScaleFactor = 1.0 - (fgDepthZ / camDist);
             const fgGeo = new THREE.PlaneGeometry(visibleWidth * fgScaleFactor, visibleHeight * fgScaleFactor, 64, 64);
             const fgMat = createMasterOmniSubjectMaterial();
-            fgMat.uniforms.uTextureStart.value = generatedLayers.fgTex;
-            fgMat.uniforms.uTextureEnd.value = generatedLayers.fgTex;
-            fgMat.uniforms.uHasDualKeyframes.value = false;
+            fgMat.uniforms.uTextureStart.value = startLayers.fgTex;
+            fgMat.uniforms.uTextureEnd.value = endLayers.fgTex;
+            fgMat.uniforms.uHasDualKeyframes.value = true; // Kích hoạt Flow Morphing K0 -> K1
             fgMat.uniforms.uResolution.value.set(width, height);
 
             fgMat.uniforms.uIsosurfaceActive.value = Number(physics.isosurface_active) || 0.0;
@@ -3978,7 +3868,7 @@ self.onmessage = async function(e) {
             let prevSubPos = new THREE.Vector2(0, 0);
             let prevCamPos = new THREE.Vector2(0, 0);
 
-            // VÒNG LẶP RENDER 60 FPS: HỢP NHẤT TOÀN DIỆN MỌI ĐỘT PHÁ THEO DNA
+            // VÒNG LẶP RENDER 60 FPS: HỢP NHẤT TOÀN DIỆN MA TRẬN 2 CHIỀU K0 -> K1
             for (let f = 0; f < totalFrames; f++) {
                 const progress = f / Math.max(1, totalFrames - 1);
                 const currentSecond = f / fps;
@@ -3993,7 +3883,7 @@ self.onmessage = async function(e) {
                 fgMat.uniforms.uAudioVocal.value = audioDynamics.vocal;
                 fgMat.uniforms.uAudioTreble.value = audioDynamics.treble;
 
-                // 1. DIỄN HOẠT KHỚP ĐỘNG HỌC PHỔ QUÁT THEO DNA
+                // 1. DIỄN HOẠT KHỚP ĐỘNG HỌC PHỔ QUÁT
                 for (let j = 0; j < 8; j++) {
                     if (Array.isArray(jointTracks[j])) {
                         const jRot = interpolateSplineProperty(jointTracks[j], progress, 'rot', subjectEasing);
@@ -4005,7 +3895,7 @@ self.onmessage = async function(e) {
                     }
                 }
 
-                // 2. DIỄN HOẠT HỆ THỐNG HẠT BỤI KHÍ QUYỂN LƠ LỬNG
+                // 2. DIỄN HOẠT HỆ THỐNG HẠT BỤI
                 const posAttr = particleGeo.attributes.position;
                 for (let pIdx = 0; pIdx < particleCount; pIdx++) {
                     posAttr.array[pIdx * 3 + 0] += particleVelocities[pIdx * 3 + 0];
@@ -4018,7 +3908,7 @@ self.onmessage = async function(e) {
                 }
                 posAttr.needsUpdate = true;
 
-                // 3. CHỦ THỂ CỬ ĐỘNG 6-DOF CHUẨN DNA
+                // 3. CHỦ THỂ CỬ ĐỘNG 6-DOF
                 const subShift = interpolateSplineProperty(subjectTrajectory, progress, 'shift', subjectEasing);
                 const subScale = interpolateSplineProperty(subjectTrajectory, progress, 'scale', subjectEasing) || 1.0;
                 const subRot = interpolateSplineProperty(subjectTrajectory, progress, 'rot', subjectEasing);
@@ -4036,7 +3926,7 @@ self.onmessage = async function(e) {
                 fgMesh.scale.set(subScale, subScale, 1.0);
                 fgMesh.rotation.set(-subRot[0], subRot[1], subRot[2]);
 
-                // 4. CAMERA LƯỚT 360 ĐỘ TỰ DO & RUNG TAY HỮU CƠ THEO DNA
+                // 4. CAMERA LƯỚT 360 ĐỘ TỰ DO
                 const camPan = interpolateSplineProperty(cameraTrajectory, progress, 'pan', cameraEasing);
                 const camZoom = interpolateSplineProperty(cameraTrajectory, progress, 'zoom', cameraEasing) || 1.0;
                 const camRotZ = interpolateSplineProperty(cameraTrajectory, progress, 'rot', cameraEasing) || 0.0;
@@ -4080,7 +3970,7 @@ self.onmessage = async function(e) {
                 sharedRenderer.setRenderTarget(sceneRenderTarget);
                 sharedRenderer.render(quadScene, quadCamera);
 
-                // PASS 2: QUANG HỌC HẬU KỲ THẤU KÍNH & HẠT PHIM 35MM
+                // PASS 2: QUANG HỌC HẬU KỲ THẤU KÍNH
                 sharedRenderer.setRenderTarget(null);
                 lensPostMat.uniforms.uSceneTexture.value = sceneRenderTarget.texture;
                 sharedRenderer.render(postScene, postCam);
@@ -4102,7 +3992,7 @@ self.onmessage = async function(e) {
 
                 if (f % 30 === 0) {
                     const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang kết xuất DNA động lực học (${percent}%)...`, percent);
+                    postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang chuyển hóa ma trận Vector kép K0-K1 (${percent}%)...`, percent);
                 }
             }
 
@@ -4116,8 +4006,16 @@ self.onmessage = async function(e) {
             particleMat.dispose();
             fgGeo.dispose();
             fgMat.dispose();
-            generatedLayers.bgRT.dispose();
-            generatedLayers.fgRT.dispose();
+            startLayers.bgTex.dispose();
+            startLayers.fgTex.dispose();
+            if (endLayers) {
+                endLayers.bgTex.dispose();
+                endLayers.fgTex.dispose();
+            }
+            try { masterTexStart.dispose(); } catch (_) {}
+            try { masterTexEnd.dispose(); } catch (_) {}
+            try { shotBitmapStart.close(); } catch (_) {}
+            if (shotBitmapEnd) try { shotBitmapEnd.close(); } catch (_) {}
 
             shotsLog.push({ shot_id: currentSceneNum, title: sceneSpec.title || `Cảnh quay ${currentSceneNum}`, duration: shotDuration });
         }
