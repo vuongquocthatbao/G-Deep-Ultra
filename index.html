@@ -4302,7 +4302,7 @@ self.onmessage = async function(e) {
             // 2. Danh mục Mô hình AI (Models Catalog)
             Models: {
                 AVAILABLE: [
-                    { id: "gemini-3.8-flash", apiEndpointId: "gemini-flash-latest", name: "Ultra", maxContextTokens: 1048576 },
+                    { id: "gemini-flash-latest", apiEndpointId: "gemini-flash-latest", name: "Ultra", maxContextTokens: 1048576 },
                     { id: "gemini-3.7-flash", apiEndpointId: "gemini-3.7-flash", name: "Pro", maxContextTokens: 1048576 },
                     { id: "gemini-3.6-flash", apiEndpointId: "gemini-3.6-flash", name: "Flash", maxContextTokens: 1048576 },
                     { id: "gemini-3.5-flash", apiEndpointId: "gemini-3.5-flash", name: "Flash 01", maxContextTokens: 1048576 },
@@ -11978,10 +11978,13 @@ Yêu cầu xuất JSON chuẩn xác duy nhất:
                     };
 
                     // =========================================================================
-                    // TẦNG VẬN CHUYỂN BỌC THÉP (ĐÃ KHẮC PHỤC LỖI KẸT LUỒNG BAN ĐẦU)
+                    // TẦNG VẬN CHUYỂN BỌC THÉP (TỰ ĐỘNG CHỌN CỔNG CHUẨN XÁC CHO MODEL ALIAS)
                     // =========================================================================
                     const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal) => {
-                        const apiGateways = ['v1beta', 'v1'];
+                        // NGUYÊN TẮC GOOGLE API: Các model alias (-latest, -preview) CHỈ tồn tại trên v1beta
+                        const isDynamicAlias = activeModelId.includes('-latest') || activeModelId.includes('-preview');
+                        const apiGateways = isDynamicAlias ? ['v1beta'] : ['v1beta', 'v1'];
+
                         let hasReceivedAnyChunk = false;
                         let lastErrorMessage = "";
 
@@ -11997,100 +12000,116 @@ Yêu cầu xuất JSON chuẩn xác duy nhất:
                                 if (signal?.aborted) return { success: false, isMidStreamDrop: false };
 
                                 const keyObj = allKeys[kIdx];
-                                // Tương thích cả object { key: '...' } lẫn chuỗi thuần 'AIza...'
                                 const apiKeyString = typeof keyObj === 'string' ? keyObj : (keyObj?.key || '');
                                 if (!apiKeyString) continue;
 
                                 const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${activeModelId}:streamGenerateContent?alt=sse&key=${apiKeyString}`;
 
-                                const reqPayload = JSON.parse(JSON.stringify(payload));
+                                // Thử tối đa 2 lượt cho mỗi key: Lượt 1 đầy đủ, Lượt 2 gọt tham số nếu dính lỗi 400
+                                for (let attempt = 0; attempt < 2; attempt++) {
+                                    if (signal?.aborted) return { success: false, isMidStreamDrop: false };
 
-                                // GIẢI PHÁP TỬ HUYỆT CỔNG v1: Chuyển systemInstruction thành lượt chat User đầu tiên
-                                if (gateway === 'v1') {
-                                    if (reqPayload.generationConfig?.thinkingConfig) delete reqPayload.generationConfig.thinkingConfig;
-                                    delete reqPayload.tools;
+                                    const reqPayload = JSON.parse(JSON.stringify(payload));
 
-                                    if (reqPayload.systemInstruction?.parts?.length) {
-                                        const sysText = reqPayload.systemInstruction.parts.map(p => p.text || '').join('\n');
-                                        delete reqPayload.systemInstruction;
-                                        
-                                        // Đưa chỉ thị hệ thống vào lượt hội thoại mở đầu an toàn cho cổng v1
-                                        reqPayload.contents = [
-                                            { role: 'user', parts: [{ text: `[CHỈ DẪN HỆ THỐNG BẮT BUỘC]:\n${sysText}` }] },
-                                            { role: 'model', parts: [{ text: "Tôi đã hiểu và tuyệt đối tuân thủ toàn bộ chỉ dẫn hệ thống trên." }] },
-                                            ...reqPayload.contents
-                                        ];
+                                    // Lượt cứu hộ: Gỡ bỏ các tham số có thể gây xung đột với model
+                                    if (attempt === 1) {
+                                        if (reqPayload.generationConfig) {
+                                            delete reqPayload.generationConfig.thinkingConfig;
+                                            delete reqPayload.generationConfig.responseMimeType;
+                                            delete reqPayload.generationConfig.maxOutputTokens;
+                                        }
+                                        delete reqPayload.tools;
                                     }
-                                }
 
-                                const stallAbortController = new AbortController();
-                                let combinedSignal = stallAbortController.signal;
-                                if (signal) {
-                                    if (signal.aborted) return { success: false, isMidStreamDrop: false };
-                                    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
-                                        try { combinedSignal = AbortSignal.any([signal, stallAbortController.signal]); } 
-                                        catch (_) { combinedSignal = signal; }
-                                    } else {
-                                        combinedSignal = signal;
+                                    // Cổng v1 không nhận systemInstruction trực tiếp
+                                    if (gateway === 'v1') {
+                                        if (reqPayload.generationConfig?.thinkingConfig) delete reqPayload.generationConfig.thinkingConfig;
+                                        delete reqPayload.tools;
+                                        if (reqPayload.systemInstruction?.parts?.length) {
+                                            const sysText = reqPayload.systemInstruction.parts.map(p => p.text || '').join('\n');
+                                            delete reqPayload.systemInstruction;
+                                            reqPayload.contents = [
+                                                { role: 'user', parts: [{ text: `[CHỈ DẪN HỆ THỐNG]:\n${sysText}` }] },
+                                                { role: 'model', parts: [{ text: "Tôi đã hiểu và tuân thủ." }] },
+                                                ...reqPayload.contents
+                                            ];
+                                        }
                                     }
-                                }
 
-                                // Hạn định 90s cho suy luận chuyên sâu
-                                let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 90000);
+                                    const stallAbortController = new AbortController();
+                                    let combinedSignal = stallAbortController.signal;
+                                    if (signal) {
+                                        if (signal.aborted) return { success: false, isMidStreamDrop: false };
+                                        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
+                                            try { combinedSignal = AbortSignal.any([signal, stallAbortController.signal]); } 
+                                            catch (_) { combinedSignal = signal; }
+                                        } else {
+                                            combinedSignal = signal;
+                                        }
+                                    }
 
-                                try {
-                                    const response = await fetch(endpoint, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(reqPayload),
-                                        signal: combinedSignal
-                                    });
+                                    let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 90000);
 
-                                    if (response.ok) {
-                                        markApiKeySuccess(keyObj);
-                                        let chunkCount = 0;
-
-                                        await readSSEStream(response, combinedSignal, (chunk) => {
-                                            clearTimeout(stallWatchdog);
-                                            stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 45000);
-                                            chunkCount++;
-                                            hasReceivedAnyChunk = true;
-                                            onChunk(chunk);
+                                    try {
+                                        const response = await fetch(endpoint, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify(reqPayload),
+                                            signal: combinedSignal
                                         });
 
-                                        clearTimeout(stallWatchdog);
-                                        if (chunkCount > 0) return { success: true, isMidStreamDrop: false };
-                                    } else {
-                                        clearTimeout(stallWatchdog);
-                                        const errJson = await response.json().catch(() => ({}));
-                                        const serverMsg = errJson?.error?.message || response.statusText;
-                                        lastErrorMessage = `[${activeModelId} - Cổng ${gateway}]: ${serverMsg}`;
-                                        console.warn(`[G-Deep Network]`, lastErrorMessage);
+                                        if (response.ok) {
+                                            markApiKeySuccess(keyObj);
+                                            let chunkCount = 0;
 
-                                        if (response.status === 401 || response.status === 403 || response.status === 429) {
-                                            markApiKeyFailure(keyObj, response.status);
+                                            await readSSEStream(response, combinedSignal, (chunk) => {
+                                                clearTimeout(stallWatchdog);
+                                                stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 45000);
+                                                chunkCount++;
+                                                hasReceivedAnyChunk = true;
+                                                onChunk(chunk);
+                                            });
+
+                                            clearTimeout(stallWatchdog);
+                                            if (chunkCount > 0) return { success: true, isMidStreamDrop: false };
+                                        } else {
+                                            clearTimeout(stallWatchdog);
+                                            const errJson = await response.json().catch(() => ({}));
+                                            const serverMsg = errJson?.error?.message || response.statusText;
+                                            lastErrorMessage = `[${activeModelId} - Cổng ${gateway}]: ${serverMsg}`;
+                                            console.warn(`[G-Deep Network]`, lastErrorMessage);
+
+                                            if (response.status === 401 || response.status === 403 || response.status === 429) {
+                                                markApiKeyFailure(keyObj, response.status);
+                                                break;
+                                            }
+
+                                            if (response.status === 404) {
+                                                break;
+                                            }
+
+                                            if (response.status === 400 && attempt === 0) {
+                                                continue;
+                                            }
+                                            break;
                                         }
-                                        continue;
+                                    } catch (netErr) {
+                                        clearTimeout(stallWatchdog);
+                                        if (signal?.aborted || netErr.name === 'AbortError') return { success: false, isMidStreamDrop: true };
+                                        if (hasReceivedAnyChunk) {
+                                            markApiKeySuccess(keyObj);
+                                            return { success: true, isMidStreamDrop: true };
+                                        }
+                                        break;
                                     }
-                                } catch (netErr) {
-                                    clearTimeout(stallWatchdog);
-                                    if (signal?.aborted || netErr.name === 'AbortError') return { success: false, isMidStreamDrop: false };
-                                    
-                                    // CHỈ coi là rớt giữa chừng NẾU ĐÃ NHẬN ĐƯỢC CHUNK
-                                    if (hasReceivedAnyChunk) {
-                                        markApiKeySuccess(keyObj);
-                                        return { success: true, isMidStreamDrop: true };
-                                    }
-                                    continue;
                                 }
                             }
                         }
 
-                        // TUYỆT ĐỐI KHÔNG BÁO isMidStreamDrop = true NẾU CHƯA NHẬN ĐƯỢC CHUNK NÀO
                         return { 
                             success: hasReceivedAnyChunk, 
-                            isMidStreamDrop: false, 
-                            errorMessage: lastErrorMessage || "Không thể kết nối tới mô hình AI." 
+                            isMidStreamDrop: !hasReceivedAnyChunk,
+                            errorMessage: lastErrorMessage 
                         };
                     };
 
