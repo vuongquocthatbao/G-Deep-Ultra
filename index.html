@@ -2595,7 +2595,6 @@ async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) 
     }
 }
 
-// BỘ TỔNG HỢP ÂM THANH NGUYÊN BẢN THEO CHỈ THỊ TOÁN HỌC CỦA GEMINI
 function synthesizeAiDirectSoundscape(soundscapePlan, durationSec, sampleRate, leftChannel, rightChannel) {
     if (!soundscapePlan || !Array.isArray(soundscapePlan.base_frequencies) || soundscapePlan.base_frequencies.length === 0) return;
 
@@ -2631,7 +2630,7 @@ function synthesizeAiDirectSoundscape(soundscapePlan, durationSec, sampleRate, l
             } else if (timbre === "celestial_pad") {
                 wave += Math.sin(2.0 * Math.PI * freq * t) * harmonicAmp;
                 wave += Math.sin(2.0 * Math.PI * (freq * (1.0 + richness)) * t) * (richness * harmonicAmp);
-            } else { // fm_drone
+            } else {
                 const mod = Math.sin(2.0 * Math.PI * (freq * modRatio) * t) * modIndex;
                 wave += Math.sin(2.0 * Math.PI * freq * t + mod) * harmonicAmp;
             }
@@ -2686,10 +2685,10 @@ function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRat
     return { bass: bassEnergy, vocal: vocalEnergy, treble: trebleEnergy };
 }
 
-// BỘ TỰ SINH HỌA ĐỒ GPU NỘI BỘ (ZERO FLUX / ZERO FALLBACK)
+// BỘ TỰ NƯỚNG HỌA ĐỒ GPU NỘI BỘ THEO ĐÚNG BẢN ĐỒ DNA
 function renderInternalGenerativeLayers(renderer, width, height, generativeBlueprint) {
     if (!generativeBlueprint.procedural_background_glsl || !generativeBlueprint.procedural_subject_glsl) {
-        throw new Error("Bản thiết kế họa đồ GPU của AI chưa hoàn thiện. Hệ thống từ chối dùng mẫu cứng.");
+        throw new Error("Bản thiết kế DNA của AI chưa hoàn thiện. Hệ thống từ chối dùng mẫu cứng.");
     }
 
     const glslBackgroundGen = generativeBlueprint.procedural_background_glsl;
@@ -2743,16 +2742,7 @@ function renderInternalGenerativeLayers(renderer, width, height, generativeBluep
     return { bgTex: bgRT.texture, fgTex: fgRT.texture, bgRT, fgRT };
 }
 
-// =========================================================================
-// [MASTER OMNI SUBJECT MATERIAL]: HỢP NHẤT TOÀN DIỆN MỌI ĐỘT PHÁ VẬT LÝ
-// - Động học 8 khớp xương phân cấp (Kinematic Skinning)
-// - Thể tích lồi 3D & Hậu diện 360 độ (DoubleSide Posterior Hull)
-// - Biến đổi pha thể tích Isosurface Metaball (Nước bắn, chảy tràn, phân rã không rách lưới)
-// - Ten-sơ nứt vỡ Voronoi giải tích (Shatter / Cellular Fracture)
-// - Cơ học va chạm tiếp xúc Coulomb & Ma trận xung lượng đa vật thể
-// - Dòng ma trận điểm ảnh Hamiltonian & Bù frame 2 pha
-// - Sơn dầu Glazing Phục Hưng 4 tầng (Grisaille + BSSRDF SSS + Melanin + Dual-Lobe Specular)
-// =========================================================================
+// BỘ SHADER MASTER TIỀN CẢNH: DNA KHỚP XƯƠNG + VẬT LÝ ISOSURFACE + SƠN DẦU GLAZING
 function createMasterOmniSubjectMaterial() {
     const vertexShader = `
         uniform float uTime;
@@ -2767,35 +2757,34 @@ function createMasterOmniSubjectMaterial() {
         uniform vec2 uDeformCenter;
         uniform float uDepthThickness;
 
-        // 1. ĐỘNG HỌC 8 KHỚP XƯƠNG PHÂN CẤP
         #define MAX_JOINTS 8
         uniform vec3 uJointPivots[MAX_JOINTS];
         uniform vec3 uJointRotations[MAX_JOINTS];
 
-        // 2. BIẾN ĐỔI PHA THỂ TÍCH ISOSURFACE METABALL (CHẤT LƯU, CHẢY TRÀN)
         uniform float uIsosurfaceActive;
         uniform vec3 uIsosurfaceCenter;
         uniform float uIsosurfaceStrength;
         uniform float uIsosurfaceSoftness;
         uniform float uIsosurfaceDisplaceScale;
 
-        // 3. TEN-SƠ NỨT VỠ VORONOI GIẢI TÍCH
         uniform float uFractureActive;
         uniform float uFractureImpactTime;
         uniform float uFractureCellScale;
         uniform float uFractureThreshold;
         uniform float uFractureImpulse;
 
-        // 4. CƠ HỌC TIẾP XÚC VA CHẠM ĐA THỰC THỂ COULOMB
         uniform float uContactActive;
         uniform vec3 uContactPoint;
         uniform vec3 uContactNormal;
         uniform float uContactRadius;
         uniform float uContactStiffness;
 
+        uniform float uInstancePhaseSpread;
+
         varying vec2 vUv;
         varying vec3 vViewPosition;
         varying vec3 vNormal;
+        varying float vInstanceSeed;
 
         mat3 getEulerRotationMatrix(vec3 r) {
             vec3 c = cos(r);
@@ -2814,11 +2803,18 @@ function createMasterOmniSubjectMaterial() {
             vUv = uv;
             vec3 pos = position;
 
-            // ĐÙN THỂ TÍCH KHỐI 3D THỰC TẾ
+            #ifdef USE_INSTANCING
+                float instId = float(gl_InstanceID);
+                vInstanceSeed = hashVoronoi(vec2(instId, instId * 1.618));
+            #else
+                vInstanceSeed = 0.0;
+            #endif
+
+            float localTime = uTime + vInstanceSeed * uInstancePhaseSpread;
+
             float zShell = (1.0 - length(uv - vec2(0.5)) * 2.0) * uDepthThickness;
             pos.z += zShell;
 
-            // BIẾN DẠNG 8 KHỚP XƯƠNG PHÂN CẤP
             vec3 skinnedOffset = vec3(0.0);
             float totalWeight = 0.0;
             for (int j = 0; j < MAX_JOINTS; j++) {
@@ -2838,7 +2834,6 @@ function createMasterOmniSubjectMaterial() {
                 pos += skinnedOffset / totalWeight;
             }
 
-            // BIẾN ĐỔI PHA THỂ TÍCH ISOSURFACE METABALL (TỰ TÁCH GIỌT / CHẢY TRÀN)
             if (uIsosurfaceActive > 0.5) {
                 float distBlob = length(pos - uIsosurfaceCenter);
                 if (distBlob > 0.001) {
@@ -2847,17 +2842,15 @@ function createMasterOmniSubjectMaterial() {
                 }
             }
 
-            // TEN-SƠ NỨT VỠ VORONOI GIẢI TÍCH
-            if (uFractureActive > 0.5 && uTime > uFractureImpactTime) {
+            if (uFractureActive > 0.5 && localTime > uFractureImpactTime) {
                 float cellRand = hashVoronoi(floor(uv * max(2.0, uFractureCellScale)));
                 if (cellRand > uFractureThreshold) {
-                    float explodeTime = uTime - uFractureImpactTime;
+                    float explodeTime = localTime - uFractureImpactTime;
                     vec3 shardDir = normalize(vec3(cos(cellRand * 6.28318), sin(cellRand * 6.28318), cellRand - 0.5));
                     pos += shardDir * (explodeTime * explodeTime * uFractureImpulse);
                 }
             }
 
-            // CƠ HỌC TIẾP XÚC COULOMB ĐA THỰC THỂ (CHỐNG XUYÊN THỦNG)
             if (uContactActive > 0.5) {
                 float distContact = length(pos - uContactPoint);
                 if (distContact < uContactRadius) {
@@ -2866,20 +2859,25 @@ function createMasterOmniSubjectMaterial() {
                 }
             }
 
-            // SÓNG TENSOR VẬT LÝ VÀ PHẢN HỒI ÂM THANH
             if (uKineticAmp > 0.0) {
                 float distToCenter = length(uv - uDeformCenter);
                 float falloff = clamp(1.0 - distToCenter, 0.0, 1.0);
-                float harmonicPhase = dot(uv, uWaveSpatialTensor.xy) + uTime * uKineticFreq;
+                float harmonicPhase = dot(uv, uWaveSpatialTensor.xy) + localTime * uKineticFreq;
                 float primaryWave = sin(harmonicPhase) * (uKineticAmp * uKineticScale);
-                float subWave = cos(dot(uv, uWaveSpatialTensor.zw) + uTime * (uKineticFreq * uWaveSpatialTensor.w)) * (uKineticAmp * uKineticScale * uSubWaveScale);
-                float vocalResponse = sin(uTime * (uKineticFreq * uVocalFreqMult)) * (uAudioVocal * uVocalScale);
+                float subWave = cos(dot(uv, uWaveSpatialTensor.zw) + localTime * (uKineticFreq * uWaveSpatialTensor.w)) * (uKineticAmp * uKineticScale * uSubWaveScale);
+                float vocalResponse = sin(localTime * (uKineticFreq * uVocalFreqMult)) * (uAudioVocal * uVocalScale);
                 pos.z += (primaryWave + subWave + vocalResponse) * falloff;
             }
 
-            vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+            #ifdef USE_INSTANCING
+                vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(pos, 1.0);
+                vNormal = normalize((modelViewMatrix * instanceMatrix * vec4(normal, 0.0)).xyz);
+            #else
+                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                vNormal = normalize(normalMatrix * normal);
+            #endif
+
             vViewPosition = -mvPosition.xyz;
-            vNormal = normalize(normalMatrix * normal);
             gl_Position = projectionMatrix * mvPosition;
         }
     `;
@@ -2913,14 +2911,12 @@ function createMasterOmniSubjectMaterial() {
         uniform vec2 uMotionBlurVector;
         uniform float uMotionBlurMult;
 
-        // SƠN DẦU GLAZING PHỤC HƯNG & TÁN XẠ BSSRDF
         uniform vec3 uSubsurfaceColor;
         uniform float uSubsurfaceWrap;
         uniform float uLipidSheenStrength;
         uniform float uMicroGrainScale;
         uniform float uMicroGrainDensity;
 
-        // BIỂU CẢM SINH HỌC GAUSSIAN
         uniform bool uHasFace;
         uniform vec2 uEyeLeft;
         uniform vec2 uEyeRight;
@@ -2936,7 +2932,6 @@ function createMasterOmniSubjectMaterial() {
         uniform float uSaccadeFreq;
         uniform float uSaccadeAmp;
 
-        // DÒNG MA TRẬN ĐIỂM ẢNH HAMILTONIAN
         uniform vec2 uFlowVector;
         uniform vec4 uFlowHarmonics;
         uniform float uFlowSpatialScale;
@@ -2955,6 +2950,7 @@ function createMasterOmniSubjectMaterial() {
         varying vec2 vUv;
         varying vec3 vViewPosition;
         varying vec3 vNormal;
+        varying float vInstanceSeed;
 
         float proceduralCellularGrain(vec2 p) {
             vec2 i = floor(p);
@@ -3115,7 +3111,6 @@ function createMasterOmniSubjectMaterial() {
             uPosteriorTint: { value: new THREE.Vector3(0.25, 0.22, 0.28) },
             uPosteriorOcclusion: { value: 0.65 },
 
-            // CƠ HỌC ĐA THỰC THỂ & TÔ-PÔ ISOSURFACE & NỨT VỠ VORONOI
             uIsosurfaceActive: { value: 0.0 },
             uIsosurfaceCenter: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
             uIsosurfaceStrength: { value: 0.0 },
@@ -3134,7 +3129,8 @@ function createMasterOmniSubjectMaterial() {
             uContactRadius: { value: 0.1 },
             uContactStiffness: { value: 0.5 },
 
-            // SƠN DẦU GLAZING & TÁN XẠ BSSRDF
+            uInstancePhaseSpread: { value: 2.5 },
+
             uSubsurfaceColor: { value: new THREE.Vector3(0.92, 0.28, 0.18) },
             uSubsurfaceWrap: { value: 0.35 },
             uLipidSheenStrength: { value: 0.45 },
@@ -3353,59 +3349,43 @@ function createCinematicLensPostMaterial() {
     });
 }
 
-// BỘ NÃO ĐẠO DIỄN TOÀN TRI GEMINI VỚI BẢN THIẾT KẾ ĐỘNG LỰC HỌC TỐI THƯỢNG
-async function requestHamiltonianContinuumTensor(promptText, sceneDuration, keyPool, postStatus) {
-    const directingPrompt = `[SUPREME FIRST-PRINCIPLES NEURO-ARTISTIC & DETERMINISTIC PHYSICS ARCHITECT]
-Chủ đề phân cảnh: "${promptText}". Thời lượng: ${sceneDuration}s (60 FPS).
-BẠN LÀ BẬC THẦY KỸ THUẬT VẬT LÝ TOÁN VÀ ĐIỆN ẢNH ĐỘC BẢN (KHÔNG DÙNG FORM MẪU RẬP KHUÔN, KHÔNG GIẢ ĐỊNH TRƯỚC HÌNH DÁNG).
-Hãy phân tích ngữ cảnh và trả về toàn bộ thông số giải tích theo đúng bản chất của thực thể trong cảnh:
+// BỘ NÃO BIÊN DỊCH BẢN ĐỒ DNA KHÔNG-THỜI GIAN 4D TỪ CHỈ ĐẠO CỦA TỔNG ĐẠO DIỄN
+async function requestHamiltonianContinuumTensor(shotBlueprint, sceneDuration, keyPool, postStatus) {
+    const directingPrompt = `[SUPREME 4D SPATIO-TEMPORAL DNA COMPILER]
+BẠN LÀ BỘ NÃO KỸ THUẬT ĐIỆN ẢNH & KIẾN TRÚC SƯ DNA VẬT LÝ.
+Tổng Đạo Diễn đã phê duyệt Bản thiết kế Phân cảnh:
+- Tên cú máy: "${shotBlueprint.title || ''}"
+- Thời lượng: ${sceneDuration}s (60 FPS)
+- Ngôn ngữ máy quay: ${JSON.stringify(shotBlueprint.cinematography || {})}
+- Diễn viên & Hành động chi tiết: ${JSON.stringify(shotBlueprint.subject_direction || {})}
+- Bối cảnh & Không gian: ${JSON.stringify(shotBlueprint.environment_direction || {})}
+- Kinh thánh Thế giới: ${JSON.stringify(shotBlueprint.production_bible || {})}
 
-1. "internal_generative_blueprint": Cung cấp 2 hàm GLSL nướng họa đồ GPU nội bộ:
-   - "procedural_background_glsl": vec3 renderBackground(vec2 uv)
-   - "procedural_subject_glsl": vec4 renderSubject(vec2 uv)
-2. "deterministic_physics": Cơ học biến đổi pha tô-pô, nứt vỡ và tiếp xúc đa vật thể:
-   - "isosurface_active": 1.0 nếu cảnh có chất lỏng/chảy tràn/tách giọt, 0.0 nếu không.
-   - "isosurface_center": [x,y,z] tâm khối trường thế năng.
-   - "isosurface_strength": Độ mạnh trường thế năng hút/tách giọt.
-   - "isosurface_softness": Hệ số làm mềm trường thế năng.
-   - "isosurface_displace_scale": Tỷ lệ chuyển dịch chất lưu.
-   - "fracture_active": 1.0 nếu có va chạm nứt vỡ/bắn mảnh vụn, 0.0 nếu không.
-   - "fracture_impact_time": Thời điểm va chạm (giây).
-   - "fracture_cell_scale": Tỷ lệ tế bào Voronoi vỡ vụn.
-   - "fracture_threshold": Ngưỡng tách mảnh vỡ (0.0 đến 1.0).
-   - "fracture_impulse": Xung lực đẩy mảnh vỡ bay ra.
-   - "contact_active": 1.0 nếu có hai thực thể tiếp xúc/cầm nắm/chạm nhau, 0.0 nếu không.
-   - "contact_point": [x,y,z] điểm tiếp xúc Coulomb.
-   - "contact_normal": [x,y,z] pháp tuyến đẩy chống xuyên thủng.
-   - "contact_radius": Bán kính vùng va chạm tiếp xúc.
-   - "contact_stiffness": Độ cứng lò xo phản lực tiếp xúc.
-3. "chromophore_glazing": Kỹ thuật sơn dầu Phục Hưng & Tán xạ SSS:
-   - "subsurface_color": [r, g, b] màu mao mạch máu/hồng cầu dưới da (Undertone).
-   - "subsurface_wrap": Hệ số tán xạ ánh sáng xuyên thấu (0.1 đến 0.6).
-   - "lipid_sheen_strength": Độ bóng lớp dầu lipid tự nhiên.
-   - "micro_grain_scale": Tỷ lệ tế bào vi mô / lỗ chân lông Turing.
-   - "micro_grain_density": Mật độ hạt vi mô tế bào.
-4. "universal_kinematic_rig": Động học 8 khớp xương tương ứng bản chất thực thể:
-   - "joint_pivots": Mảng 8 tọa độ điểm khớp [x, y, z].
-   - "joint_trajectories": Mảng 8 quỹ đạo xoay Euler [pitch, yaw, roll] theo thời gian.
-5. "volumetric_360_hull":
-   - "depth_thickness": Độ dày thể tích 3D thực tế.
-   - "posterior_tint": Màu sắc bề mặt lưng khi camera quay 360 độ.
-   - "posterior_occlusion": Hệ số che khuất mặt sau.
-6. "spatial_decomposition": subject_depth_z, background_depth_z, motion_scale_factor, deform_center, wave_spatial_tensor, kinetic_freq, kinetic_amp, kinetic_scale, vocal_scale, vocal_freq_multiplier, sub_wave_scale.
-7. "biological_features": has_face, eye_left, eye_right, eye_radius_x, eye_radius_y, blink_tightness, mouth_center, mouth_radius_x, mouth_radius_y, mouth_open_sensitivity, mouth_upper_ratio, mouth_lower_ratio, blink_interval_sec, blink_duration_sec, saccade_freq, saccade_amp.
-8. "cinematic_optics": light_pos, light_color, ambient_strength, diffuse_strength, specular_strength, surface_shininess, normal_strength, bokeh_radius, shadow_offset, shadow_opacity, shadow_falloff_inner, shadow_darkness, motion_blur_multiplier, film_grain, chromatic_aberration, halation, vignette, particle_density, particle_opacity, handheld_sway_freq, handheld_sway_amp, lens_breathing_amp.
-9. "pixel_motion_matrix": primary_flow_vector, flow_harmonics, flow_spatial_scale, flow_speed, curl_scale, micro_deformation_amp, flow_multiplier, bass_multiplier, anchor_center, anchor_radius, anchor_falloff, shimmer_coords, shimmer_speed.
-10. "subject_free_motion": easing_type, trajectory: [{"t": 0.0, "shift": [x,y,z], "scale": s, "rot": [p,y,r]}, {"t": 1.0, ...}].
-11. "camera_manifold": fov_degrees, camera_distance_z, pan_scale, easing_type, trajectory: [{"t": 0.0, "pan": [x,y], "zoom": z, "rot": r}, {"t": 1.0, ...}].
-12. "soundscape": Toàn bộ thông số âm thanh giải tích.`;
+NHIỆM VỤ TỐI THƯỢNG: LẬP BẢN ĐỒ DNA KHÔNG-THỜI GIAN ĐẦY ĐỦ CHO TỪNG FRAME:
+Hãy phân tích thực thể cụ thể và bối cảnh cụ thể để sinh ra mã DNA giải tích chính xác (Không dùng hình hộp vuông vô nghĩa):
+
+1. "internal_generative_blueprint": Cung cấp 2 hàm GLSL vẽ chi tiết bề mặt theo đúng DNA của cảnh:
+   - "procedural_background_glsl": vec3 renderBackground(vec2 uv) vẽ màu sắc, ánh sáng, địa hình của bối cảnh được mô tả.
+   - "procedural_subject_glsl": vec4 renderSubject(vec2 uv) vẽ đúng hình thái giải phẫu học, trang phục, diện mạo của chủ thể và kênh Alpha viền mềm.
+2. "population_instancing": Số lượng thực thể (1 cho cận cảnh/solo, hoặc từ 2 đến 120 cho đại cảnh/quần thể) kèm hệ số phân tán không gian và độ lệch pha thời gian.
+3. "deterministic_physics": Cơ học Isosurface Metaball biến đổi pha thể tích, nứt vỡ Voronoi và tiếp xúc Coulomb chống xuyên thủng.
+4. "chromophore_glazing": DNA sắc tố mao mạch máu dưới da (subsurface_color, subsurface_wrap, lipid_sheen_strength, micro_grain_scale, micro_grain_density).
+5. "universal_kinematic_rig": Động học 8 khớp xương tương ứng bản chất thực thể (joint_pivots, joint_trajectories).
+6. "volumetric_360_hull": Bề dày thể tích 3D và sắc thái mặt sau lưng khi camera quay 360 độ (depth_thickness, posterior_tint, posterior_occlusion).
+7. "spatial_decomposition": subject_depth_z, background_depth_z, motion_scale_factor, deform_center, wave_spatial_tensor, kinetic_freq, kinetic_amp, kinetic_scale, vocal_scale, vocal_freq_multiplier, sub_wave_scale.
+8. "biological_features": has_face, eye_left, eye_right, eye_radius_x, eye_radius_y, blink_tightness, mouth_center, mouth_radius_x, mouth_radius_y, mouth_open_sensitivity, mouth_upper_ratio, mouth_lower_ratio, blink_interval_sec, blink_duration_sec, saccade_freq, saccade_amp.
+9. "cinematic_optics": light_pos, light_color, ambient_strength, diffuse_strength, specular_strength, surface_shininess, normal_strength, bokeh_radius, shadow_offset, shadow_opacity, shadow_falloff_inner, shadow_darkness, motion_blur_multiplier, film_grain, chromatic_aberration, halation, vignette, particle_density, particle_opacity, handheld_sway_freq, handheld_sway_amp, lens_breathing_amp.
+10. "pixel_motion_matrix": primary_flow_vector, flow_harmonics, flow_spatial_scale, flow_speed, curl_scale, micro_deformation_amp, flow_multiplier, bass_multiplier, anchor_center, anchor_radius, anchor_falloff, shimmer_coords, shimmer_speed.
+11. "subject_free_motion": easing_type, trajectory: [{"t": 0.0, "shift": [x,y,z], "scale": s, "rot": [p,y,r]}, {"t": 1.0, ...}].
+12. "camera_manifold": fov_degrees, camera_distance_z, pan_scale, easing_type, trajectory: [{"t": 0.0, "pan": [x,y], "zoom": z, "rot": r}, {"t": 1.0, ...}].
+13. "soundscape": Toàn bộ thông số âm thanh giải tích tương ứng với bối cảnh.`;
 
     const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
     let totalTries = 0;
 
     while (true) {
         totalTries++;
-        await ensureNetworkOnline(postStatus, "đạo diễn thực tại giải tích tối thượng");
+        await ensureNetworkOnline(postStatus, "biên dịch DNA không-thời gian");
 
         const activeModel = candidateModels[totalTries % candidateModels.length];
         const activeKey = keyPool[totalTries % keyPool.length];
@@ -3435,7 +3415,7 @@ Hãy phân tích ngữ cảnh và trả về toàn bộ thông số giải tích
         } catch (_) {}
 
         const delayMs = Math.min(2500 + (totalTries * 1200), 15000);
-        postStatus("Đang đồng bộ hóa cỗ máy vật lý tối thượng...");
+        postStatus("Đang tái kết nối cỗ máy giải tích DNA...");
         await new Promise(r => setTimeout(r, delayMs));
     }
 }
@@ -3640,7 +3620,7 @@ self.onmessage = async function(e) {
         let cumulativeAudioFramesEncoded = 0;
         const shotsLog = [];
 
-        // VÒNG LẶP SẢN XUẤT CÁC PHÂN CẢNH THUẦN NỘI BỘ (ZERO FLUX / TỐI THƯỢNG)
+        // VÒNG LẶP SẢN XUẤT CÁC PHÂN CẢNH THEO ĐÚNG BẢN ĐỒ DNA
         for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
             const sceneSpec = rawScenesList[sIdx] || {};
             const currentSceneNum = sIdx + 1;
@@ -3658,24 +3638,32 @@ self.onmessage = async function(e) {
             const totalFrames = Math.round(shotDuration * fps);
             const frameMicros = 1000000 / fps;
 
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang thiết lập thực tại giải tích...`);
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang biên dịch DNA không-thời gian...`);
 
             if (sIdx > 0) {
                 await new Promise(r => setTimeout(r, 2000));
             }
-            
-            const rawPrompt = sceneSpec.action_description || sceneSpec.title || masterScript.title || "Kiệt tác điện ảnh độc bản";
 
-            // 1. GEMINI BIÊN DỊCH CẤU TRÚC ĐỘC BẢN & CƠ HỌC VẬT LÝ TỐI THƯỢNG
+            const shotBlueprint = {
+                title: sceneSpec.title || `Cảnh quay ${currentSceneNum}`,
+                cinematography: sceneSpec.cinematography || {},
+                subject_direction: sceneSpec.subject_direction || {},
+                environment_direction: sceneSpec.environment_direction || {},
+                sound_and_dialogue: sceneSpec.sound_and_dialogue || {},
+                production_bible: masterScript.production_bible || {},
+                action_description: sceneSpec.action_description || ''
+            };
+
+            // 1. GEMINI BIÊN DỊCH BẢN ĐỒ DNA ĐỘC BẢN CỦA CÚ MÁY
             const continuumPlan = await requestHamiltonianContinuumTensor(
-                rawPrompt,
+                shotBlueprint,
                 shotDuration,
                 validKeyPool,
                 postStatus
             );
 
-            // 2. TỰ SINH HỌA ĐỒ GPU NỘI BỘ (ZERO FLUX)
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang nung chất liệu và cấu trúc bề mặt...`);
+            // 2. TỰ NƯỚNG HỌA ĐỒ GPU NỘI BỘ THEO ĐÚNG DNA CỦA CẢNH
+            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang nung chất liệu và cấu trúc DNA...`);
             const generatedLayers = renderInternalGenerativeLayers(
                 sharedRenderer, 
                 width, 
@@ -3737,7 +3725,7 @@ self.onmessage = async function(e) {
             }
 
             // =========================================================================
-            // THIẾT LẬP CAMERA, CƠ HỌC ĐA THỰC THỂ & MASTER OMNI SUBJECT MATERIAL
+            // THIẾT LẬP CAMERA, ĐẠI CẢNH INSTANCING & MASTER OMNI SUBJECT MATERIAL THEO DNA
             // =========================================================================
             const decomp = continuumPlan.spatial_decomposition || {};
             const optics = continuumPlan.cinematic_optics || {};
@@ -3748,6 +3736,7 @@ self.onmessage = async function(e) {
             const vol360 = continuumPlan.volumetric_360_hull || {};
             const glazing = continuumPlan.chromophore_glazing || {};
             const physics = continuumPlan.deterministic_physics || {};
+            const population = continuumPlan.population_instancing || {};
 
             const camFov = Math.max(1.0, Math.min(170.0, Number(cameraManifold.fov_degrees) || 45.0));
             const camDist = Math.max(0.1, Number(cameraManifold.camera_distance_z) || 2.2);
@@ -3761,7 +3750,7 @@ self.onmessage = async function(e) {
             const visibleHeight = 2.0 * Math.tan(vFovRad / 2.0) * camDist;
             const visibleWidth = visibleHeight * (width / height);
 
-            // 1. TẦNG HẬU CẢNH: XÓA PHÔNG BOKEH
+            // 1. TẦNG HẬU CẢNH: XÓA PHÔNG BOKEH CHUẨN DNA
             const bgDepthZ = Number(decomp.background_depth_z) || -0.55;
             const bgScaleFactor = 1.0 - (bgDepthZ / camDist);
             const bgGeo = new THREE.PlaneGeometry(visibleWidth * bgScaleFactor * 1.35, visibleHeight * bgScaleFactor * 1.35);
@@ -3778,7 +3767,7 @@ self.onmessage = async function(e) {
             bgMesh.position.set(0, 0, bgDepthZ);
             quadScene.add(bgMesh);
 
-            // 2. BỤI THỂ TÍCH KHÍ QUYỂN BẮT SÁNG
+            // 2. BỤI THỂ TÍCH KHÍ QUYỂN BẮT SÁNG CHUẨN DNA
             const particleCount = Math.max(40, Math.min(500, parseInt(optics.particle_density, 10) || 160));
             const particleGeo = new THREE.BufferGeometry();
             const particlePositions = new Float32Array(particleCount * 3);
@@ -3807,7 +3796,7 @@ self.onmessage = async function(e) {
             const particleSystem = new THREE.Points(particleGeo, particleMat);
             quadScene.add(particleSystem);
 
-            // 3. TẦNG TIỀN CẢNH: MASTER OMNI SUBJECT MATERIAL
+            // 3. TẦNG TIỀN CẢNH: HỖ TRỢ ĐA CÁ THỂ / ĐẠI CẢNH GPU INSTANCING CHUẨN DNA
             const fgDepthZ = Number(decomp.subject_depth_z) || 0.35;
             const fgScaleFactor = 1.0 - (fgDepthZ / camDist);
             const fgGeo = new THREE.PlaneGeometry(visibleWidth * fgScaleFactor, visibleHeight * fgScaleFactor, 64, 64);
@@ -3817,7 +3806,6 @@ self.onmessage = async function(e) {
             fgMat.uniforms.uHasDualKeyframes.value = false;
             fgMat.uniforms.uResolution.value.set(width, height);
 
-            // Nạp thông số cơ học vật lý tối thượng (Isosurface, Fracture, Contact)
             fgMat.uniforms.uIsosurfaceActive.value = Number(physics.isosurface_active) || 0.0;
             if (Array.isArray(physics.isosurface_center)) {
                 fgMat.uniforms.uIsosurfaceCenter.value.set(Number(physics.isosurface_center[0]) || 0.0, Number(physics.isosurface_center[1]) || 0.0, Number(physics.isosurface_center[2]) || 0.0);
@@ -3842,7 +3830,6 @@ self.onmessage = async function(e) {
             fgMat.uniforms.uContactRadius.value = Number(physics.contact_radius) || 0.1;
             fgMat.uniforms.uContactStiffness.value = Number(physics.contact_stiffness) || 0.5;
 
-            // Nạp thông số Sơn dầu Glazing Phục Hưng & Tán xạ SSS
             if (Array.isArray(glazing.subsurface_color)) {
                 fgMat.uniforms.uSubsurfaceColor.value.set(
                     Number(glazing.subsurface_color[0]) || 0.92,
@@ -3860,6 +3847,7 @@ self.onmessage = async function(e) {
                 fgMat.uniforms.uPosteriorTint.value.set(Number(vol360.posterior_tint[0]) || 0.25, Number(vol360.posterior_tint[1]) || 0.22, Number(vol360.posterior_tint[2]) || 0.28);
             }
             fgMat.uniforms.uPosteriorOcclusion.value = Number(vol360.posterior_occlusion) || 0.65;
+            fgMat.uniforms.uInstancePhaseSpread.value = Number(population.instance_phase_spread) || 2.5;
 
             const pivots = skeletonData.joint_pivots || [];
             for (let j = 0; j < 8; j++) {
@@ -3954,8 +3942,25 @@ self.onmessage = async function(e) {
                 fgMat.uniforms.uSaccadeAmp.value = Number(bio.saccade_amp) || 0.0;
             }
 
-            const fgMesh = new THREE.Mesh(fgGeo, fgMat);
-            fgMesh.position.set(0, 0, fgDepthZ);
+            const totalInstances = Math.max(1, Math.min(120, parseInt(population.instance_count, 10) || 1));
+            const fgMesh = new THREE.InstancedMesh(fgGeo, fgMat, totalInstances);
+            const dummyMatrix = new THREE.Matrix4();
+            const spreadX = Number(population.distribution_spread_x) || 0.0;
+            const spreadY = Number(population.distribution_spread_y) || 0.0;
+            const spreadZ = Number(population.distribution_spread_z) || 0.0;
+
+            for (let i = 0; i < totalInstances; i++) {
+                if (i === 0) {
+                    dummyMatrix.setPosition(0, 0, fgDepthZ);
+                } else {
+                    const instX = (Math.random() - 0.5) * spreadX * visibleWidth;
+                    const instY = (Math.random() - 0.5) * spreadY * visibleHeight;
+                    const instZ = fgDepthZ - Math.random() * spreadZ;
+                    dummyMatrix.setPosition(instX, instY, instZ);
+                }
+                fgMesh.setMatrixAt(i, dummyMatrix);
+            }
+            fgMesh.instanceMatrix.needsUpdate = true;
             quadScene.add(fgMesh);
 
             lensPostMat.uniforms.uFilmGrain.value = Number(optics.film_grain) || 0.024;
@@ -3973,7 +3978,7 @@ self.onmessage = async function(e) {
             let prevSubPos = new THREE.Vector2(0, 0);
             let prevCamPos = new THREE.Vector2(0, 0);
 
-            // VÒNG LẶP RENDER 60 FPS: HỢP NHẤT TOÀN DIỆN MỌI ĐỘT PHÁ
+            // VÒNG LẶP RENDER 60 FPS: HỢP NHẤT TOÀN DIỆN MỌI ĐỘT PHÁ THEO DNA
             for (let f = 0; f < totalFrames; f++) {
                 const progress = f / Math.max(1, totalFrames - 1);
                 const currentSecond = f / fps;
@@ -3988,7 +3993,7 @@ self.onmessage = async function(e) {
                 fgMat.uniforms.uAudioVocal.value = audioDynamics.vocal;
                 fgMat.uniforms.uAudioTreble.value = audioDynamics.treble;
 
-                // 1. DIỄN HOẠT KHỚP ĐỘNG HỌC PHỔ QUÁT
+                // 1. DIỄN HOẠT KHỚP ĐỘNG HỌC PHỔ QUÁT THEO DNA
                 for (let j = 0; j < 8; j++) {
                     if (Array.isArray(jointTracks[j])) {
                         const jRot = interpolateSplineProperty(jointTracks[j], progress, 'rot', subjectEasing);
@@ -4013,7 +4018,7 @@ self.onmessage = async function(e) {
                 }
                 posAttr.needsUpdate = true;
 
-                // 3. CHỦ THỂ CỬ ĐỘNG 6-DOF
+                // 3. CHỦ THỂ CỬ ĐỘNG 6-DOF CHUẨN DNA
                 const subShift = interpolateSplineProperty(subjectTrajectory, progress, 'shift', subjectEasing);
                 const subScale = interpolateSplineProperty(subjectTrajectory, progress, 'scale', subjectEasing) || 1.0;
                 const subRot = interpolateSplineProperty(subjectTrajectory, progress, 'rot', subjectEasing);
@@ -4031,7 +4036,7 @@ self.onmessage = async function(e) {
                 fgMesh.scale.set(subScale, subScale, 1.0);
                 fgMesh.rotation.set(-subRot[0], subRot[1], subRot[2]);
 
-                // 4. CAMERA LƯỚT 360 ĐỘ TỰ DO & RUNG TAY HỮU CƠ
+                // 4. CAMERA LƯỚT 360 ĐỘ TỰ DO & RUNG TAY HỮU CƠ THEO DNA
                 const camPan = interpolateSplineProperty(cameraTrajectory, progress, 'pan', cameraEasing);
                 const camZoom = interpolateSplineProperty(cameraTrajectory, progress, 'zoom', cameraEasing) || 1.0;
                 const camRotZ = interpolateSplineProperty(cameraTrajectory, progress, 'rot', cameraEasing) || 0.0;
@@ -4080,7 +4085,6 @@ self.onmessage = async function(e) {
                 lensPostMat.uniforms.uSceneTexture.value = sceneRenderTarget.texture;
                 sharedRenderer.render(postScene, postCam);
 
-                // Khắc phụ đề và nén khung hình
                 compositeCtx.drawImage(webglCanvas, 0, 0, width, height);
                 renderCinemaSubtitlesOverlay(compositeCtx, width, height, currentSecond, sceneSpec.dialogue_cues);
 
@@ -4098,7 +4102,7 @@ self.onmessage = async function(e) {
 
                 if (f % 30 === 0) {
                     const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang kết xuất động lực học tối thượng (${percent}%)...`, percent);
+                    postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang kết xuất DNA động lực học (${percent}%)...`, percent);
                 }
             }
 
@@ -4118,7 +4122,7 @@ self.onmessage = async function(e) {
             shotsLog.push({ shot_id: currentSceneNum, title: sceneSpec.title || `Cảnh quay ${currentSceneNum}`, duration: shotDuration });
         }
 
-        postStatus("Đang hoàn tất kiệt tác điện ảnh tối thượng...", 100);
+        postStatus("Đang hoàn tất kiệt tác điện ảnh DNA...", 100);
 
         if (supportsAudio && audioEngine && audioEngine.state !== 'closed') {
             try { await audioEngine.flush(); } catch (_) {}
@@ -9578,7 +9582,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     notify(`Mã nhận diện mới: #${newSeed}`);
                 };
 
-// DỰNG PHIM ĐIỆN ẢNH CHUẨN XÁC VÀ BẢO MẬT BỘ NHỚ (KHÔNG KHUÔN MẪU MẶC ĐỊNH)
+// DỰNG PHIM ĐIỆN ẢNH VỚI TỔNG ĐẠO DIỄN TOÀN QUYỀN (MASTER SHOWRUNNER ENGINE)
                 const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null, inputTextRef = null, pendingAttachmentsRef = null) => {
                     if (isGenerating && isGenerating.value) return;
                     if (isGenerating) isGenerating.value = true;
@@ -9591,8 +9595,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     } catch (_) {}
 
                     let resolvedImageInput = directImageInput;
-                    
-                    // BÓC TÁCH CHUẨN XÁC: Chuyển Object đính kèm thành chuỗi Data URI hợp lệ
                     if (resolvedImageInput && typeof resolvedImageInput === 'object') {
                         if (resolvedImageInput.data) {
                             resolvedImageInput = resolvedImageInput.data.startsWith('data:')
@@ -9644,15 +9646,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         let userPrompt = (customPrompt || (inputTextRef ? inputTextRef.value : '') || '').trim();
                         
                         if (!userPrompt && resolvedImageInput) {
-                            userPrompt = "Chuyển động điện ảnh nghệ thuật mượt mà và sống động từ hình ảnh gốc";
+                            userPrompt = "Phân tích hình ảnh gốc và phát triển thành một kịch bản điện ảnh sống động tiếp nối.";
                         }
 
                         if (!userPrompt && !resolvedImageInput && !msg?.content) {
-                            throw new Error("Vui lòng cung cấp chủ đề hoặc ý tưởng cú máy điện ảnh.");
+                            throw new Error("Vui lòng cung cấp chủ đề hoặc ý tưởng phân cảnh điện ảnh.");
                         }
 
                         const healthyKey = (typeof getNextHealthyApiKey === 'function' ? getNextHealthyApiKey()?.key : '') || '';
-                        if (!healthyKey) throw new Error("Khóa điện toán G-Deep Core chưa được thiết lập.");
+                        if (!healthyKey) throw new Error("Chưa cấu hình chìa khóa API trong Cài đặt.");
 
                         let w = 1024, h = 576;
                         if (userAspectRatio === "9:16") { w = 768; h = 1344; }
@@ -9661,7 +9663,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         w = Math.round(w / 16) * 16;
                         h = Math.round(h / 16) * 16;
 
-                        if (searchStatusText) searchStatusText.value = `Đang thiết kế kịch bản...`;
+                        if (searchStatusText) searchStatusText.value = `Tổng Đạo Diễn đang nhận lệnh và lập Kịch bản Điện ảnh...`;
 
                         const voiceCharactersInfo = toRaw(cinemaVoiceCharacters.value).map(c => ({
                             name: c.name, gender: c.gender, voice: c.geminiVoice
@@ -9670,33 +9672,51 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                             speaker: c.speaker, startTimeSec: c.startTimeSec, text: c.text
                         }));
 
-                        const avgShotDuration = Math.max(3, Math.round(requestedDuration / 3));
+                        const masterDirectorPrompt = `[SUPREME EXECUTIVE SHOWRUNNER & CINEMA DIRECTOR]
+Ý niệm của người dùng: "${userPrompt}".
+Tổng thời lượng phim: ${requestedDuration} giây. Khung hình: ${userAspectRatio}.
 
-                        const promptScript = `[G-DEEP CINEMA DIRECTOR]
-Chủ đề: "${userPrompt}". 
-Tổng thời lượng BẮT BUỘC: ${requestedDuration} giây. Tỷ lệ khung hình: ${userAspectRatio}.
-Nhiệm vụ: Phân rã thành các cú máy (shots) điện ảnh liền mạch. TỔNG THỜI LƯỢNG CÁC CÚ MÁY PHẢI ĐÚNG BẰNG ${requestedDuration} GIÂY.
-Tuyệt đối KHÔNG rập khuôn độ dài. Hãy thiết kế nhịp độ (Pacing) linh hoạt: Cảnh hành động cắt nhanh (1-2s), Cảnh toàn/cảm xúc lướt chậm (5-10s).
-${voiceCharactersInfo.length > 0 ? `Các nhân vật: ${JSON.stringify(voiceCharactersInfo)}` : ''}
-${dialogueTimeline.length > 0 ? `Dòng thời gian lời thoại: ${JSON.stringify(dialogueTimeline)}` : ''}
+BẠN LÀ TỔNG ĐẠO DIỄN ĐIỆN ẢNH VÀ TRƯỞNG BIÊN KỊCH.
+Nhiệm vụ của bạn là biến ý niệm trên thành một Kịch bản Điện ảnh Chi tiết (Master Screenplay & Production Bible).
+Tuyệt đối không viết qua loa. Mỗi cảnh quay phải quy định rõ: Diễn viên là ai (khuôn mặt, vóc dáng, trang phục), Bối cảnh thế nào (ánh sáng, thời tiết, địa hình), và Hành động diễn biến ra sao!
 
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
+Yêu cầu xuất JSON chuẩn xác duy nhất:
 {
-  "title": "Tên tác phẩm",
+  "title": "Tên tác phẩm điện ảnh",
+  "logline": "Tóm tắt cốt truyện trong 1 câu",
   "total_duration": ${requestedDuration},
   "overall_aspect_ratio": "${userAspectRatio}",
   "overall_resolution": { "width": ${w}, "height": ${h} },
+  "production_bible": {
+    "visual_tone": "Tông màu chủ đạo và phong cách ánh sáng (ví dụ: Ánh sáng chiều tà ấm áp, tương phản cao, phong cách phim 35mm)",
+    "main_subject_description": "Mô tả chi tiết nhân vật/chủ thể chính xuyên suốt (khuôn mặt, độ tuổi, vóc dáng, màu tóc, trang phục, chất liệu)",
+    "world_setting_description": "Mô tả thế giới và trường quay xung quanh (địa hình, kiến trúc, cây cối, bầu trời, thời tiết)"
+  },
   "voice_characters": ${JSON.stringify(voiceCharactersInfo)},
   "dialogue_cues": ${JSON.stringify(dialogueTimeline)},
   "scenes": [
     {
       "scene_index": 1,
       "title": "Tên cú máy",
-      "target_duration": 4.5,
-      "action_description": "Mô tả chi tiết động lực học điện ảnh (Dolly in, Pan left, Flowing water...)",
-      "image_plan": {
-        "prompt": "Detailed English visual prompt for high quality 8k film still"
-      }
+      "target_duration": 5.0,
+      "cinematography": {
+        "shot_type": "Close-up / Medium Shot / Wide Shot / Extreme Wide",
+        "camera_movement": "Dolly in lướt chậm / Pan ngang / Quanh 360 độ / Rung tay hữu cơ",
+        "lens_and_lighting": "Ống kính 50mm Anamorphic, ánh sáng viền vàng ấm, bóng đổ dài trên mặt đất"
+      },
+      "subject_direction": {
+        "actor_description": "Mô tả cụ thể ngoại hình nhân vật trong cảnh này (ví dụ: Người thợ lặn mặc áo bảo hộ xước xát, ánh mắt chăm chú)",
+        "action_choreography": "Hành động chi tiết (ví dụ: Bước 2 bước về phía trước, đưa tay lên gạt giọt nước, nghiêng đầu sang trái)"
+      },
+      "environment_direction": {
+        "setting_details": "Chi tiết tiền cảnh và hậu cảnh (ví dụ: Bãi đá rêu phong ẩm ướt ở tiền cảnh, vách núi hùng vĩ mờ sương ở hậu cảnh)",
+        "atmospheric_effects": "Hạt bụi vàng lơ lửng, sương mù mỏng bay ngang, sóng biển dập dềnh"
+      },
+      "sound_and_dialogue": {
+        "dialogue_text": "Câu thoại (nếu có)",
+        "ambient_sfx": "Tiếng gió rít qua khe đá, tiếng bước chân sỏi, tiếng thở nhẹ"
+      },
+      "action_description": "Mô tả tổng hợp cú máy để phục vụ đạo diễn hình ảnh"
     }
   ]
 }`;
@@ -9704,7 +9724,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
                         let masterScript = null;
                         let scriptTries = 0;
                         
-                        // VÒNG LẶP ĐỢI MẠNG ĐỂ LẤY KỊCH BẢN THẬT, KHÔNG DÙNG KỊCH BẢN MẪU
                         while (!masterScript) {
                             scriptTries++;
                             while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
@@ -9713,13 +9732,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
                             }
 
                             const res = await dispatchBackgroundTask({
-                                contents: [{ role: 'user', parts: [{ text: promptScript }] }],
-                                generationConfig: { temperature: 0.15, maxOutputTokens: 2048, responseMimeType: "application/json" }
+                                contents: [{ role: 'user', parts: [{ text: masterDirectorPrompt }] }],
+                                generationConfig: { temperature: 0.25, maxOutputTokens: 4000, responseMimeType: "application/json" }
                             });
                             masterScript = SearchIntelligenceEngine.robustJsonRepair(res?.candidates?.[0]?.content?.parts?.[0]?.text);
 
                             if (!masterScript) {
-                                if (searchStatusText) searchStatusText.value = "Đang kết nối lại bộ não đạo diễn...";
+                                if (searchStatusText) searchStatusText.value = "Tổng Đạo Diễn đang trau chuốt lại kịch bản...";
                                 await new Promise(r => setTimeout(r, 3000));
                             }
                         }
@@ -9730,7 +9749,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
                             masterScript.scenes[0].directImageDataUrl = resolvedImageInput;
                         }
 
-                        if (searchStatusText) searchStatusText.value = `Đang khởi chạy xưởng phim...`;
+                        if (searchStatusText) searchStatusText.value = `Đang chuyển kịch bản vào trường quay...`;
 
                         const allAvailableKeys = (apiKeyPool.value || []).map(k => k.key).filter(Boolean);
                         const result = await AICinemaWorkerBridge.runProductionInWorker({
@@ -9747,13 +9766,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON, KHÔNG CÓ LỜI DẪN:
                         const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
                         targetMsg.renderedVideoUrl = videoUrl;
 
-                        const shotsDetail = (result.shotsLog || []).map(s => `- **${s.title} (${s.duration}s)**`).join('\n');
+                        const shotsDetail = (result.shotsLog || []).map(s => `- **${s.title} (${s.duration}s)**: ${s.action || ''}`).join('\n');
 
                         targetMsg.content = (targetMsg.content || '') +
-                            `\n\n🎬 **${masterScript.title || 'Tác Phẩm Điện Ảnh Hoàn Thiện'}**\n` +
+                            `\n\n🎬 **${masterScript.title || 'Tác Phẩm Điện Ảnh Độc Bản'}**\n` +
+                            `*${masterScript.logline || ''}*\n\n` +
                             `- **Thời lượng:** ${result.narrativePlan.total_duration} giây\n` +
-                            `- **Khung hình:** ${userAspectRatio}\n\n` +
-                            `🎞️ **Danh mục phân cảnh:**\n${shotsDetail}`;
+                            `- **Khung hình:** ${userAspectRatio}\n` +
+                            `- **Phong cách:** ${masterScript.production_bible?.visual_tone || 'Điện ảnh 35mm'}\n\n` +
+                            `🎞️ **Phân cảnh chi tiết:**\n${shotsDetail}`;
 
                         targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                         scheduleDbSave(targetMsg);
