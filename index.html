@@ -10684,8 +10684,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     const sendMessage = async (isRegenerate = false, existingBotMsgTarget = null) => {
                         if (isGenerating.value && !isRegenerate) return;
 
-                        if (enableCinemaStudio.value && !isRegenerate && (inputText.value.trim() || pendingAttachments.value.length > 0)) {
-                            const cinemaPrompt = inputText.value.trim();
+// === KHỐI ĐIỀU PHỐI ĐA PHƯƠNG TIỆN (G-DEEP ULTRA NATIVE COMPUTE IMAGE ENGINE) ===
+                        if ((enableCinemaStudio.value || enableImageGen.value) && !isRegenerate && (inputText.value.trim() || pendingAttachments.value.length > 0)) {
+                            const promptText = inputText.value.trim();
                             const currentAtts = [...pendingAttachments.value];
                             inputText.value = "";
                             sessionStorage.removeItem('gdeep_draft_input');
@@ -10693,18 +10694,304 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             resizeTextarea();
 
                             const attachedImg = currentAtts.find(a => a.mimeType && a.mimeType.startsWith('image/'));
+                            const prefix = enableCinemaStudio.value ? "🎬 Cảnh quay điện ảnh:" : "🎨 Điện toán Hình thái học (WASM-Base64):";
                             const userMsg = createMessageRecord({
                                 threadId: currentThreadId.value,
                                 role: 'user',
-                                content: `🎬 Cảnh quay nghệ thuật: ${cinemaPrompt || (attachedImg ? 'Tạo video từ hình ảnh' : '')}`,
+                                content: `${prefix} ${promptText || (attachedImg ? 'Từ hình ảnh gốc' : '')}`,
                                 attachments: currentAtts,
-                                htmlContent: compileMarkdownSync(`🎬 **Cảnh quay nghệ thuật:** ${cinemaPrompt || (attachedImg ? 'Tạo video từ hình ảnh' : '')}`, true)
+                                htmlContent: compileMarkdownSync(`**${prefix}** ${promptText || (attachedImg ? 'Từ hình ảnh gốc' : '')}`, true)
                             });
                             currentMessages.value.push(userMsg);
                             scheduleDbSave(userMsg);
                             scrollToBottom();
 
-                            await animateImageToVideo(null, cinemaPrompt, attachedImg || null);
+                            if (enableCinemaStudio.value) {
+                                await animateImageToVideo(null, promptText, attachedImg || null);
+                            } else if (enableImageGen.value) {
+                                isGenerating.value = true;
+                                triggerHaptic('heavy');
+                                const targetMsg = createMessageRecord({
+                                    threadId: currentThreadId.value, role: 'model', content: '', htmlContent: ''
+                                });
+                                currentMessages.value.push(targetMsg);
+
+                                // 1. TÍNH TOÁN THÔNG SỐ KHUNG HÌNH THEO CẤU HÌNH G-DEEP ULTRA
+                                const parseAspectRatioValue = (ratioStr) => {
+                                    if (!ratioStr || typeof ratioStr !== 'string') return 1.0;
+                                    const parts = ratioStr.split(':').map(Number);
+                                    return (parts.length === 2 && parts[1] > 0) ? (parts[0] / parts[1]) : 1.0;
+                                };
+
+                                const targetAR = parseAspectRatioValue(imageConfig.aspectRatio);
+                                const currentStyleDesc = getImageStylePromptModifier(imageConfig.style);
+                                const currentSeed = imageConfig.keepCharacter ? imageConfig.characterSeed : Math.floor(Math.random() * 899999) + 100000;
+
+                                // 2. KHO KÝ ỨC HỌC TĂNG CƯỜNG THUẬT TOÁN (RL PYTHON VAULT)
+                                const RL_PYTHON_VAULT = 'gdeep_tmge_python_vault';
+                                const getRelevantPythonExp = (query) => {
+                                    try {
+                                        const vault = JSON.parse(localStorage.getItem(RL_PYTHON_VAULT) || '[]');
+                                        const tokens = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+                                        return vault.filter(item => tokens.some(t => item.prompt.toLowerCase().includes(t)))
+                                                    .sort((a, b) => b.reward - a.reward)
+                                                    .slice(0, 2);
+                                    } catch (_) { return []; }
+                                };
+
+                                const commitPythonExp = (prompt, script, reward, loops) => {
+                                    try {
+                                        let vault = JSON.parse(localStorage.getItem(RL_PYTHON_VAULT) || '[]');
+                                        vault.unshift({ prompt, script, reward, loops, timestamp: Date.now() });
+                                        if (vault.length > 30) vault = vault.slice(0, 30);
+                                        localStorage.setItem(RL_PYTHON_VAULT, JSON.stringify(vault));
+                                    } catch (_) {}
+                                };
+
+                                // 3. BỘ ĐIỀU PHỐI API KHÔNG FALLBACK, TỰ ĐỘNG THỬ LẠI VÔ HẠN
+                                const infiniteResilientDispatch = async (payload, statusHint) => {
+                                    let attemptCount = 0;
+                                    while (true) {
+                                        if (abortController?.signal?.aborted) throw new DOMException("Người dùng dừng tiến trình", "AbortError");
+                                        attemptCount++;
+
+                                        while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
+                                            searchStatusText.value = `[Đang đợi mạng] Chờ kết nối Internet phục hồi... (Lần ${attemptCount})`;
+                                            await new Promise(r => setTimeout(r, 2000));
+                                        }
+
+                                        const keyObj = getNextHealthyApiKey();
+                                        if (!keyObj?.key) {
+                                            searchStatusText.value = `[Đang đợi API Key] Luân chuyển danh sách khóa...`;
+                                            await new Promise(r => setTimeout(r, 2500));
+                                            continue;
+                                        }
+
+                                        searchStatusText.value = `${statusHint}`;
+                                        try {
+                                            const res = await dispatchBackgroundTaskWithFallback(payload);
+                                            const rawContent = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                                            if (rawContent && rawContent.trim()) {
+                                                markApiKeySuccess(keyObj);
+                                                return rawContent;
+                                            }
+                                        } catch (err) {
+                                            markApiKeyFailure(keyObj);
+                                        }
+                                        await new Promise(r => setTimeout(r, 1200));
+                                    }
+                                };
+
+                                try {
+                                    if (!promptText) throw new Error("Vui lòng nhập nội dung muốn tạo ảnh.");
+
+                                    const learnedAxioms = getRelevantPythonExp(promptText);
+                                    let learnedGuidance = "";
+                                    if (learnedAxioms.length > 0) {
+                                        learnedGuidance = "\n[TRI THỨC THUẬT TOÁN ĐÃ THÀNH CÔNG TỪ CÁC PHIÊN TRƯỚC]:\n" +
+                                            learnedAxioms.map((ax, idx) => `Mẫu #${idx + 1} (Prompt: "${ax.prompt}"):\n${ax.script}`).join('\n---\n');
+                                    }
+
+                                    // =========================================================================
+                                    // [MẮT XÍCH N+1: GEMINI LẬP TRÌNH MA TRẬN ĐIỂM ẢNH PYTHON BẢN ĐỊA]
+                                    // =========================================================================
+                                    const pythonDirectorInstruction = `[CONSTITUTION: COMPUTATIONAL IMAGING & MATRIX SYNTHESIS SCIENTIST]
+Bạn là Đại Kiến Trúc Sư Xử Lý Ảnh Số & Toán Học Ma Trận.
+Nhiệm vụ: Chuyển hóa tuyệt đối ý niệm người dùng thành một kịch bản mã nguồn Python tính toán ma trận điểm ảnh độc lập để chạy trên nhân Pyodide WASM của trình duyệt.
+
+QUY TẮC BẮT BUỘC (FIRST-PRINCIPLES MATRIX SYNTHESIS):
+1. THƯ VIỆN ĐƯỢC PHÉP DÙNG: numpy, matplotlib.pyplot, scipy, io, base64 (chạy offline trên WebAssembly).
+2. TẠO HÌNH BẰNG TOÁN HỌC MA TRẬN & GIẢI TÍCH QUANG HỌC:
+   - Dùng np.meshgrid() để khởi tạo tọa độ không gian chuẩn hóa.
+   - Tính toán trường khoảng cách có dấu (SDF), biến dạng sóng, hàm nhiễu hữu cơ (fractal noise), bóng đổ quang học và phổ màu sắc PBR.
+   - Ghép nối cấu trúc giải phẫu học, chủ thể và hậu cảnh thành mảng RGB float [0.0, 1.0] hoặc uint8 [0, 255].
+3. ĐÓNG GÓI VĂN BẢN BASE64 BẮT BUỘC:
+   - Kịch bản Python PHẢI kết thúc bằng việc nén mảng ảnh vào bộ đệm và gán chuỗi Base64 vào biến:
+     fig, ax = plt.subplots(figsize=(6.0 * aspect_ratio, 6.0), dpi=140)
+     ax.imshow(rgb_array)
+     ax.axis('off')
+     plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
+     plt.margins(0, 0)
+     buf = io.BytesIO()
+     plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=140)
+     plt.close(fig)
+     _gdeep_plot_base64 = base64.b64encode(buf.getvalue()).decode('ascii')
+4. KHÔNG SỬ DỤNG MÔ HÌNH NGOÀI, KHÔNG IMPORT REQUESTS/NETWORK.`;
+
+                                    const genesisResponseSchema = {
+                                        type: "OBJECT",
+                                        properties: {
+                                            computational_design: {
+                                                type: "OBJECT",
+                                                properties: {
+                                                    matrix_composition: { type: "STRING" },
+                                                    color_spectral_theory: { type: "STRING" }
+                                                },
+                                                required: ["matrix_composition", "color_spectral_theory"]
+                                            },
+                                            python_code: { type: "STRING" }
+                                        },
+                                        required: ["computational_design", "python_code"]
+                                    };
+
+                                    let masterBlueprint = null;
+                                    let initialPayload = {
+                                        systemInstruction: { parts: [{ text: pythonDirectorInstruction }] },
+                                        contents: [{
+                                            role: 'user',
+                                            parts: [{
+                                                text: `YÊU CẦU: "${promptText}".
+Phong cách: ${imageConfig.style} (${currentStyleDesc}).
+Tỷ lệ khung hình: ${imageConfig.aspectRatio} (AR=${targetAR}).
+Seed ngẫu nhiên: ${currentSeed}.
+${learnedGuidance}
+Hãy thiết kế thuật toán ma trận và xuất mã nguồn Python hoàn chỉnh gán vào biến _gdeep_plot_base64.`
+                                            }]
+                                        }],
+                                        generationConfig: {
+                                            temperature: 0.3,
+                                            maxOutputTokens: 8192,
+                                            responseMimeType: "application/json",
+                                            responseSchema: genesisResponseSchema
+                                        }
+                                    };
+
+                                    while (!masterBlueprint || !masterBlueprint.python_code) {
+                                        const rawResp = await infiniteResilientDispatch(initialPayload, "Đang kiến tạo thuật toán ma trận hình thái...");
+                                        masterBlueprint = SearchIntelligenceEngine.robustJsonRepair(rawResp);
+                                    }
+
+                                    // =========================================================================
+                                    // [MẮT XÍCH N+2: NHÂN PYODIDE WASM CỦA G-DEEP THỰC THI & XUẤT BASE64]
+                                    // =========================================================================
+                                    let loopIteration = 0;
+                                    let isConverged = false;
+                                    let finalBase64 = "";
+                                    let convergenceScore = 0;
+
+                                    while (!isConverged) {
+                                        loopIteration++;
+
+                                        searchStatusText.value = `[WASM Kernel #${loopIteration}] Đang giải ma trận điểm ảnh trên máy cục bộ...`;
+                                        let currentScript = masterBlueprint.python_code.replace(/```(?:python)?/gi, '').replace(/```/g, '').trim();
+
+                                        let runResult = await PythonEngine.run(currentScript);
+
+                                        // Nếu mã Python lỗi (Syntax/Runtime): Gemini tự sửa lỗi vô hạn
+                                        while (runResult.outcome !== 'COMPLETED' || !runResult.plotBase64) {
+                                            searchStatusText.value = `[Tự sửa mã Python #${loopIteration}] Đang hiệu chỉnh thuật toán ma trận...`;
+                                            const fixPayload = {
+                                                systemInstruction: { parts: [{ text: pythonDirectorInstruction }] },
+                                                contents: [{
+                                                    role: 'user',
+                                                    parts: [{
+                                                        text: `LỖI THỰC THI PYTHON WASM:
+${runResult.output}
+
+MÃ PYTHON GỐC:
+${currentScript}
+
+Hãy sửa lại mã nguồn hoàn chỉnh đảm bảo chạy thành công và gán chuỗi kết quả vào _gdeep_plot_base64.`
+                                                    }]
+                                                }],
+                                                generationConfig: {
+                                                    temperature: 0.1,
+                                                    maxOutputTokens: 8192,
+                                                    responseMimeType: "application/json",
+                                                    responseSchema: genesisResponseSchema
+                                                }
+                                            };
+                                            const healedRaw = await infiniteResilientDispatch(fixPayload, "Đang vá lỗi kịch bản Python WASM...");
+                                            const healedBP = SearchIntelligenceEngine.robustJsonRepair(healedRaw);
+                                            if (healedBP && healedBP.python_code) {
+                                                masterBlueprint = healedBP;
+                                                currentScript = masterBlueprint.python_code.replace(/```(?:python)?/gi, '').replace(/```/g, '').trim();
+                                                runResult = await PythonEngine.run(currentScript);
+                                            }
+                                        }
+
+                                        finalBase64 = runResult.plotBase64;
+
+                                        // =====================================================================
+                                        // [THẨM ĐỊNH THỊ GIÁC NGẦM: GEMINI MULTIMODAL VISION ĐỐI SOÁT ẢNH BASE64]
+                                        // =====================================================================
+                                        searchStatusText.value = `[Thẩm định ngầm #${loopIteration}] Gemini Multimodal Vision đang đối soát...`;
+
+                                        const critiqueInstruction = `[CONSTITUTION: VISUAL AUDITOR & CODE CRITIC]
+Bạn là Trưởng ban Giám định Thị giác Siêu khắt khe.
+Nhiệm vụ: Đối chiếu bức ảnh thực tế vừa được nhân Python WASM giải ra với prompt ban đầu của người dùng.
+Tiêu chuẩn chấm điểm:
+- semantic_fidelity (0-100): Đúng chủ thể và phong cách yêu cầu không?
+- visual_coherence (0-100): Độ sắc nét, bố cục, độ mịn màng của ma trận pixel.
+- weighted_score: Điểm tổng hợp trung bình.
+- converged: true khi weighted_score >= 90 VÀ semantic_fidelity >= 90.`;
+
+                                        const critiqueSchema = {
+                                            type: "OBJECT",
+                                            properties: {
+                                                semantic_fidelity: { type: "NUMBER" },
+                                                visual_coherence: { type: "NUMBER" },
+                                                weighted_score: { type: "NUMBER" },
+                                                converged: { type: "BOOLEAN" },
+                                                critique_analysis: { type: "STRING" },
+                                                revised_python_code: { type: "STRING" }
+                                            },
+                                            required: ["semantic_fidelity", "visual_coherence", "weighted_score", "converged", "critique_analysis"]
+                                        };
+
+                                        const critiquePayload = {
+                                            systemInstruction: { parts: [{ text: critiqueInstruction }] },
+                                            contents: [{
+                                                role: 'user',
+                                                parts: [
+                                                    { text: `YÊU CẦU BAN ĐẦU: "${promptText}". Phong cách: ${imageConfig.style}. Tỷ lệ: ${imageConfig.aspectRatio}. Hãy thẩm định ảnh Base64 thực tế này.` },
+                                                    { inlineData: { mimeType: "image/png", data: finalBase64 } }
+                                                ]
+                                            }],
+                                            generationConfig: {
+                                                temperature: 0.2,
+                                                maxOutputTokens: 8192,
+                                                responseMimeType: "application/json",
+                                                responseSchema: critiqueSchema
+                                            }
+                                        };
+
+                                        const critiqueRaw = await infiniteResilientDispatch(critiquePayload, "Gemini đang thẩm định hình thái học thị giác...");
+                                        const critiqueResult = SearchIntelligenceEngine.robustJsonRepair(critiqueRaw);
+
+                                        convergenceScore = Number(critiqueResult?.weighted_score) || 0;
+                                        const semanticScore = Number(critiqueResult?.semantic_fidelity) || 0;
+
+                                        if ((critiqueResult?.converged === true || convergenceScore >= 90) && semanticScore >= 90) {
+                                            isConverged = true;
+                                            commitPythonExp(promptText, masterBlueprint.python_code, convergenceScore, loopIteration);
+                                        } else {
+                                            if (critiqueResult?.revised_python_code) {
+                                                masterBlueprint.python_code = critiqueResult.revised_python_code;
+                                            }
+                                            triggerHaptic('light');
+                                        }
+                                    }
+
+                                    // =========================================================================
+                                    // [MẮT XÍCH N+3: XUẤT BẢN CHUỖI VĂN BẢN BASE64 THUẦN TÚY RA GIAO DIỆN]
+                                    // =========================================================================
+                                    const imgSrc = `data:image/png;base64,${finalBase64}`;
+                                    targetMsg.content = `🌌 **Kiệt tác Điện toán Ma trận (G-Deep WASM Engine)**\n*Ý niệm:* ${promptText}\n*Phong cách:* ${imageConfig.style} · *Tỷ lệ:* ${imageConfig.aspectRatio} · *Mã nhận diện:* #${currentSeed}\n\n<img src="${imgSrc}" alt="Autonomous WASM Art" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/20 hover:brightness-110 transition-all cursor-zoom-in" />\n\n🎯 *Tác phẩm được kiến tạo trực tiếp từ chuỗi **Điện toán Tự thân Ma trận (NumPy/Pyodide WASM)** với chuỗi văn bản Base64 thuần túy (Đạt **${convergenceScore}/100đ** qua **${loopIteration} vòng thẩm định ngầm**).*`;
+                                    targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                                    scheduleDbSave(targetMsg);
+                                    scrollToBottom(true);
+                                    notify(`Đã kết xuất hoàn tất từ Nhân Điện toán Pyodide (${convergenceScore}/100đ)!`);
+
+                                } catch (err) {
+                                    targetMsg.content = (targetMsg.content || '') + `\n\n*(Tiến trình dừng: ${err.message})*`;
+                                    targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                                    scheduleDbSave(targetMsg);
+                                } finally {
+                                    isGenerating.value = false;
+                                    searchStatusText.value = "";
+                                }
+                            }
                             return;
                         }
 
@@ -11089,29 +11376,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     "\n\n[ĐIỆN TOÁN ĐỘC LẬP PYTHON WASM]",
                                     "Khi được yêu cầu giải toán, tính toán dữ liệu hoặc lập trình, bạn BẮT BUỘC phải sử dụng công cụ Code Execution (Chạy mã) để thực thi mã Python và lấy kết quả.",
                                     "TUYỆT ĐỐI KHÔNG CHỈ VIẾT MÃ THUẦN TÚY (MARKDOWN) MÀ KHÔNG CHẠY THỬ."
-                                ].join('\n');
-                            }
-
-                            if (enableImageGen.value) {
-                                const randomSeed = imageConfig.keepCharacter ? imageConfig.characterSeed : Math.floor(Math.random() * 899999) + 100000;
-                                let w = 1024, h = 1024;
-                                if (imageConfig.aspectRatio === "9:16") { w = 768; h = 1344; }
-                                else if (imageConfig.aspectRatio === "16:9") { w = 1344; h = 768; }
-                                else if (imageConfig.aspectRatio === "4:3") { w = 1152; h = 864; }
-                                else if (imageConfig.aspectRatio === "3:4") { w = 864; h = 1152; }
-                                else if (imageConfig.aspectRatio === "21:9") { w = 1344; h = 576; }
-                                w = Math.round(w / 16) * 16;
-                                h = Math.round(h / 16) * 16;
-
-                                const selectedImageModel = getImageGenModel(imageConfig.style);
-                                systemPrompt += [
-                                    "\n[CHẾ ĐỘ SÁNG TẠO HÌNH ẢNH NGHỆ THUẬT]",
-                                    "QUY TẮC BẮT BUỘC:",
-                                    "1. Bạn KHÔNG được dùng công cụ lập trình hay chạy code Python để tạo chuỗi.",
-                                    "2. Dịch ý tưởng người dùng sang tiếng Anh thành một đoạn mô tả chi tiết. Nối các từ bằng ký tự %20 (ví dụ: a%20majestic%20mountain).",
-                                    "3. Đặt thẻ ảnh Markdown NGAY DÒNG ĐẦU TIÊN của phản hồi:",
-                                    '<img src="https://image.pollinations.ai/prompt/{PROMPT_TIENG_ANH_NOI_BANG_%20}?width=' + w + '&height=' + h + '&model=' + selectedImageModel + '&nologo=true&seed=' + randomSeed + '" alt="Tác phẩm nghệ thuật" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-105 transition-all" />',
-                                    "4. Xuống dòng và viết lời bình tiếng Việt về tác phẩm."
                                 ].join('\n');
                             }
 
