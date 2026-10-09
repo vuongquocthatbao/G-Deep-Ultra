@@ -2444,10 +2444,8 @@
 
     </div>
 
-<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (PRESERVE BUFFER · NPOT SAFE · ZERO BLACK SCREEN · PURE THREE.JS) -->
+<!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (AUTOREGRESSIVE SHADER VIRTUAL MACHINE · DUAL-PHASE FLOW WRAPPER · ZERO HARDCODED PHYSICS) -->
 <script id="cinema-worker-code" type="text/plain">
-
-
 if (typeof self.window === 'undefined') { self.window = self; }
 if (typeof self.document === 'undefined') {
     self.document = { createElement: () => ({ style: {} }), createElementNS: () => ({ style: {} }) };
@@ -2477,2158 +2475,370 @@ function robustJsonParse(rawString) {
     return null;
 }
 
-const getArrVal = (arr, idx, defVal) => {
-    if (Array.isArray(arr)) {
-        const v = Number(arr[idx]);
-        return isNaN(v) ? defVal : v;
-    }
-    if (typeof arr === 'number' && !isNaN(arr)) {
-        return idx === 0 ? arr : defVal;
-    }
-    return defVal;
-};
-
-async function ensureNetworkOnline(postStatus, taskName) {
-    while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
-        postStatus(`Đang chờ khôi phục tín hiệu kết nối để ${taskName}...`);
-        await new Promise(r => setTimeout(r, 2000));
-    }
-}
-
-// =========================================================================
-// [STAGE 2 & 3]: BỘ NUNG VÉC-TƠ VÀ GIẢI THUẬT QUANG HỌC RASTER HÓA
-// =========================================================================
-async function rasterizeVectorToCanvas(svgString, width, height) {
-    const canvas = new OffscreenCanvas(width, height);
+async function bitmapToBase64(bitmap, maxWidth = 512) {
+    if (!bitmap) return "";
+    const scale = Math.min(1.0, maxWidth / bitmap.width);
+    const w = Math.round(bitmap.width * scale);
+    const h = Math.round(bitmap.height * scale);
+    const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext('2d');
-
-    let cleanSvg = String(svgString || '')
-        .replace(/^```(?:xml|svg)?/gi, '')
-        .replace(/```$/gi, '')
-        .replace(/\\"/g, '"')
-        .replace(/\\'/g, "'")
-        .replace(/\\n/g, ' ')
-        .replace(/\\r/g, ' ')
-        .replace(/\\t/g, ' ')
-        .replace(/\\\\/g, '')
-        .trim();
-
-    const startIdx = cleanSvg.indexOf('<svg');
-    const endIdx = cleanSvg.lastIndexOf('</svg>');
-
-    if (startIdx !== -1 && endIdx > startIdx) {
-        cleanSvg = cleanSvg.slice(startIdx, endIdx + 6);
-    } else {
-        cleanSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">${cleanSvg}</svg>`;
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+    const arrayBuffer = await blob.arrayBuffer();
+    let binary = '';
+    const bytes = new Uint8Array(arrayBuffer);
+    for (let i = 0; i < bytes.length; i += 8192) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
     }
-
-    if (!cleanSvg.includes('xmlns=')) {
-        cleanSvg = cleanSvg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
-    }
-    cleanSvg = cleanSvg.replace(/<svg([^>]*)>/i, (m, attrs) => {
-        let a = attrs;
-        if (!a.includes('width=')) a += ` width="${width}"`;
-        if (!a.includes('height=')) a += ` height="${height}"`;
-        if (!a.includes('viewBox=')) a += ` viewBox="0 0 ${width} ${height}"`;
-        return `<svg${a}>`;
-    });
-
-    let decodedViaBitmap = false;
-    try {
-        const blob = new Blob([cleanSvg], { type: 'image/svg+xml;charset=utf-8' });
-        const bitmap = await createImageBitmap(blob, { resizeWidth: width, resizeHeight: height });
-        ctx.clearRect(0, 0, width, height);
-        ctx.drawImage(bitmap, 0, 0, width, height);
-        bitmap.close();
-        decodedViaBitmap = true;
-    } catch (_) {
-        decodedViaBitmap = false;
-    }
-
-    if (!decodedViaBitmap) {
-        ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = "#04050a";
-        ctx.fillRect(0, 0, width, height);
-
-        const getAttr = (tag, name) => {
-            const m = tag.match(new RegExp(`${name}=["']([^"']*)["']`, 'i'));
-            return m ? m[1].trim() : null;
-        };
-
-        const parseCoord = (val, maxRef) => {
-            if (!val) return 0;
-            if (val.endsWith('%')) return (parseFloat(val) / 100) * maxRef;
-            return parseFloat(val) || 0;
-        };
-
-        const gradMap = {};
-        const linearRegex = /<linearGradient([^>]*)>([\s\S]*?)<\/linearGradient>/gi;
-        let lMatch;
-        while ((lMatch = linearRegex.exec(cleanSvg)) !== null) {
-            const gid = getAttr(lMatch[1], 'id');
-            if (gid) {
-                const x1 = parseCoord(getAttr(lMatch[1], 'x1') || '0', width);
-                const y1 = parseCoord(getAttr(lMatch[1], 'y1') || '0', height);
-                const x2 = parseCoord(getAttr(lMatch[1], 'x2') || '100%', width);
-                const y2 = parseCoord(getAttr(lMatch[1], 'y2') || '100%', height);
-                try {
-                    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
-                    const stopRegex = /<stop([^>]*)\/?>/gi;
-                    let sMatch;
-                    while ((sMatch = stopRegex.exec(lMatch[2])) !== null) {
-                        const offsetStr = getAttr(sMatch[1], 'offset') || '0';
-                        const offset = offsetStr.endsWith('%') ? parseFloat(offsetStr) / 100 : parseFloat(offsetStr);
-                        const color = getAttr(sMatch[1], 'stop-color') || '#ffffff';
-                        grad.addColorStop(Math.min(1, Math.max(0, offset || 0)), color);
-                    }
-                    gradMap[gid] = grad;
-                } catch (_) {}
-            }
-        }
-
-        const radialRegex = /<radialGradient([^>]*)>([\s\S]*?)<\/radialGradient>/gi;
-        let rMatch;
-        while ((rMatch = radialRegex.exec(cleanSvg)) !== null) {
-            const gid = getAttr(rMatch[1], 'id');
-            if (gid) {
-                const cx = parseCoord(getAttr(rMatch[1], 'cx') || '50%', width);
-                const cy = parseCoord(getAttr(rMatch[1], 'cy') || '50%', height);
-                const r = parseCoord(getAttr(rMatch[1], 'r') || '50%', Math.max(width, height));
-                const fx = parseCoord(getAttr(rMatch[1], 'fx') || getAttr(rMatch[1], 'cx') || '50%', width);
-                const fy = parseCoord(getAttr(rMatch[1], 'fy') || getAttr(rMatch[1], 'cy') || '50%', height);
-                try {
-                    const grad = ctx.createRadialGradient(fx, fy, 0, cx, cy, r);
-                    const stopRegex = /<stop([^>]*)\/?>/gi;
-                    let sMatch;
-                    while ((sMatch = stopRegex.exec(rMatch[2])) !== null) {
-                        const offsetStr = getAttr(sMatch[1], 'offset') || '0';
-                        const offset = offsetStr.endsWith('%') ? parseFloat(offsetStr) / 100 : parseFloat(offsetStr);
-                        const color = getAttr(sMatch[1], 'stop-color') || '#ffffff';
-                        grad.addColorStop(Math.min(1, Math.max(0, offset || 0)), color);
-                    }
-                    gradMap[gid] = grad;
-                } catch (_) {}
-            }
-        }
-
-        const resolveStyle = (val) => {
-            if (!val || val === 'none') return null;
-            const uMatch = val.match(/url\(#([^)]+)\)/i);
-            if (uMatch && gradMap[uMatch[1]]) return gradMap[uMatch[1]];
-            return val;
-        };
-
-        const elemRegex = /<(path|rect|circle|ellipse|line|polygon|polyline)([^>]*?)\/?>/gi;
-        let eMatch;
-        while ((eMatch = elemRegex.exec(cleanSvg)) !== null) {
-            const tag = eMatch[1].toLowerCase();
-            const attrs = eMatch[2];
-            const fill = resolveStyle(getAttr(attrs, 'fill'));
-            const stroke = resolveStyle(getAttr(attrs, 'stroke'));
-            const strokeWidth = parseFloat(getAttr(attrs, 'stroke-width') || '1') || 1;
-            const opacity = parseFloat(getAttr(attrs, 'opacity') || '1');
-
-            ctx.save();
-            ctx.globalAlpha = Math.min(1, Math.max(0, isNaN(opacity) ? 1 : opacity));
-            if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = strokeWidth; }
-
-            try {
-                if (tag === 'rect') {
-                    const rx = parseCoord(getAttr(attrs, 'x') || '0', width);
-                    const ry = parseCoord(getAttr(attrs, 'y') || '0', height);
-                    const rw = parseCoord(getAttr(attrs, 'width') || String(width), width);
-                    const rh = parseCoord(getAttr(attrs, 'height') || String(height), height);
-                    if (fill) { ctx.fillStyle = fill; ctx.fillRect(rx, ry, rw, rh); }
-                    if (stroke) ctx.strokeRect(rx, ry, rw, rh);
-                } else if (tag === 'circle') {
-                    const cx = parseCoord(getAttr(attrs, 'cx') || '0', width);
-                    const cy = parseCoord(getAttr(attrs, 'cy') || '0', height);
-                    const r = parseCoord(getAttr(attrs, 'r') || '10', width);
-                    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-                    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-                    if (stroke) ctx.stroke();
-                } else if (tag === 'path') {
-                    const d = getAttr(attrs, 'd');
-                    if (d && typeof Path2D !== 'undefined') {
-                        const pathObj = new Path2D(d.replace(/\\/g, ' '));
-                        if (fill) { ctx.fillStyle = fill; ctx.fill(pathObj); }
-                        if (stroke) ctx.stroke(pathObj);
-                    }
-                }
-            } catch (_) {}
-            ctx.restore();
-        }
-    }
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.needsUpdate = true;
-    return tex;
-}
-
-function buildAdaptiveVolumetricLayersFromTexture(baseTexture, width, height, decompPlan) {
-    if (!baseTexture || !baseTexture.image) return null;
-
-    const layerMode = decompPlan.layer_mode || "subject_isolate";
-    const overscan = Math.max(0.0, Number(decompPlan.bg_overscan ?? 0.15));
-
-    const fgCanvas = new OffscreenCanvas(width, height);
-    const fgCtx = fgCanvas.getContext('2d');
-    fgCtx.drawImage(baseTexture.image, 0, 0, width, height);
-
-    const bgCanvas = new OffscreenCanvas(width, height);
-    const bgCtx = bgCanvas.getContext('2d');
-    const ow = width * overscan, oh = height * overscan;
-    bgCtx.drawImage(baseTexture.image, -ow, -oh, width + ow * 2.0, height + oh * 2.0);
-
-    if (layerMode === "panoramic_landscape") {
-        const horizonRatio = Math.max(0.0, Math.min(1.0, Number(decompPlan.horizon_y ?? 0.5)));
-        const horizonY = horizonRatio * height;
-        const transitionSpan = Math.max(0.01, Number(decompPlan.horizon_transition_span ?? 0.1));
-
-        fgCtx.globalCompositeOperation = 'destination-in';
-        const grad = fgCtx.createLinearGradient(0, horizonY - height * transitionSpan * 0.5, 0, horizonY + height * transitionSpan * 0.5);
-        grad.addColorStop(0, 'rgba(0,0,0,0)');
-        grad.addColorStop(1, 'rgba(0,0,0,1)');
-        fgCtx.fillStyle = grad;
-        fgCtx.fillRect(0, 0, width, height);
-        fgCtx.globalCompositeOperation = 'source-over';
-    } else {
-        const rawBox = Array.isArray(decompPlan.subject_box) && decompPlan.subject_box.length === 4 
-            ? decompPlan.subject_box : [0.0, 0.0, 1.0, 1.0];
-
-        const normYmin = Math.max(0.0, Math.min(Number(rawBox[0]) || 0.0, Number(rawBox[2]) || 1.0));
-        const normYmax = Math.min(1.0, Math.max(Number(rawBox[0]) || 0.0, Number(rawBox[2]) || 1.0));
-        const normXmin = Math.max(0.0, Math.min(Number(rawBox[1]) || 0.0, Number(rawBox[3]) || 1.0));
-        const normXmax = Math.min(1.0, Math.max(Number(rawBox[1]) || 0.0, Number(rawBox[3]) || 1.0));
-
-        const ymin = normYmin * height, xmin = normXmin * width;
-        const ymax = normYmax * height, xmax = normXmax * width;
-        const bw = Math.max(1.0, xmax - xmin);
-        const bh = Math.max(1.0, ymax - ymin);
-        const cx = xmin + bw * 0.5, cy = ymin + bh * 0.5;
-
-        const featherInner = Math.max(0.0, Number(decompPlan.feather_inner_ratio ?? 0.3));
-        const featherOuter = Math.max(featherInner + 0.01, Number(decompPlan.feather_outer_ratio ?? 0.7));
-        const padRatio = Math.max(0.0, Number(decompPlan.feather_pad_ratio ?? 0.1));
-        const padX = bw * padRatio, padY = bh * padRatio;
-
-        const r0 = Math.max(0.0, Math.min(bw, bh) * featherInner);
-        const r1 = Math.max(r0 + 0.1, Math.max(bw, bh) * featherOuter + Math.max(padX, padY));
-
-        fgCtx.globalCompositeOperation = 'destination-in';
-        const grad = fgCtx.createRadialGradient(cx, cy, r0, cx, cy, r1);
-        grad.addColorStop(0, 'rgba(0,0,0,1)');
-        grad.addColorStop(0.85, 'rgba(0,0,0,0.95)');
-        grad.addColorStop(1, 'rgba(0,0,0,0)');
-
-        fgCtx.save();
-        fgCtx.translate(cx, cy);
-        fgCtx.scale(1.0, bh / Math.max(1.0, bw));
-        fgCtx.fillStyle = grad;
-        fgCtx.beginPath();
-        fgCtx.arc(0, 0, Math.max(1.0, bw * featherOuter + padX), 0, Math.PI * 2);
-        fgCtx.fill();
-        fgCtx.restore();
-        fgCtx.globalCompositeOperation = 'source-over';
-    }
-
-    const fgTex = new THREE.CanvasTexture(fgCanvas);
-    fgTex.minFilter = THREE.LinearFilter;
-    fgTex.magFilter = THREE.LinearFilter;
-    fgTex.flipY = true;
-    fgTex.needsUpdate = true;
-
-    const bgTex = new THREE.CanvasTexture(bgCanvas);
-    bgTex.minFilter = THREE.LinearFilter;
-    bgTex.magFilter = THREE.LinearFilter;
-    bgTex.flipY = true;
-    bgTex.needsUpdate = true;
-
-    return { fgTex, bgTex };
+    return btoa(binary);
 }
 
 // =========================================================================
-// [STAGE 3]: SHADER MASTER KẾT XUẤT QUANG HỌC PBR & TIẾN TRÌNH GEODESIC
+// [VÒNG LẶP TỰ HỒI QUY]: GEMINI PHÂN TÍCH FRAME TRƯỚC ĐỂ SINH FRAME SAU
 // =========================================================================
-function createMasterOmniSubjectMaterial() {
-    const vertexShader = `
-        uniform float uTime;
-        uniform float uAudioVocal;
-        uniform float uKineticAmp;
-        uniform float uKineticFreq;
-        uniform float uKineticScale;
-        uniform float uVocalScale;
-        uniform float uVocalFreqMult;
-        uniform float uSubWaveScale;
-        uniform vec4 uWaveSpatialTensor;
-        uniform vec2 uDeformCenter;
-        uniform float uDepthThickness;
-
-        #define MAX_JOINTS 8
-        uniform vec3 uJointPivots[MAX_JOINTS];
-        uniform vec3 uJointRotations[MAX_JOINTS];
-
-        uniform float uIsosurfaceActive;
-        uniform vec3 uIsosurfaceCenter;
-        uniform float uIsosurfaceStrength;
-        uniform float uIsosurfaceSoftness;
-        uniform float uIsosurfaceDisplaceScale;
-
-        uniform float uFractureActive;
-        uniform float uFractureImpactTime;
-        uniform float uFractureCellScale;
-        uniform float uFractureThreshold;
-        uniform float uFractureImpulse;
-
-        uniform float uContactActive;
-        uniform vec3 uContactPoint;
-        uniform vec3 uContactNormal;
-        uniform float uContactRadius;
-        uniform float uContactStiffness;
-
-        uniform float uInstancePhaseSpread;
-
-        varying vec2 vUv;
-        varying vec3 vViewPosition;
-        varying vec3 vNormal;
-        varying float vInstanceSeed;
-
-        mat3 getEulerRotationMatrix(vec3 r) {
-            vec3 c = cos(r);
-            vec3 s = sin(r);
-            mat3 rx = mat3(1.0, 0.0, 0.0, 0.0, c.x, -s.x, 0.0, s.x, c.x);
-            mat3 ry = mat3(c.y, 0.0, s.y, 0.0, 1.0, 0.0, -s.y, 0.0, c.y);
-            mat3 rz = mat3(c.z, -s.z, 0.0, s.z, c.z, 0.0, 0.0, 0.0, 1.0);
-            return rz * ry * rx;
-        }
-
-        float hashVoronoi(vec2 p) {
-            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-        }
-
-        void main() {
-            vUv = uv;
-            vec3 pos = position;
-
-            #ifdef USE_INSTANCING
-                float instId = float(gl_InstanceID);
-                vInstanceSeed = hashVoronoi(vec2(instId, instId * 1.618));
-            #else
-                vInstanceSeed = 0.0;
-            #endif
-
-            float localTime = uTime + vInstanceSeed * uInstancePhaseSpread;
-
-            float distFromCenter = length(uv - uDeformCenter);
-            float zShell = max(0.0, 1.0 - distFromCenter) * uDepthThickness;
-            pos.z += zShell;
-
-            // 1. Phân hệ Biến dạng Khớp Động học
-            vec3 skinnedOffset = vec3(0.0);
-            float totalWeight = 0.0;
-            for (int j = 0; j < MAX_JOINTS; j++) {
-                vec3 pivot = uJointPivots[j];
-                vec3 rot = uJointRotations[j];
-                float dist = length(uv - pivot.xy);
-                float weight = exp(-dist * max(1.0, 1.0 / max(0.001, uDepthThickness)));
-                if (weight > 0.001) {
-                    mat3 rotMat = getEulerRotationMatrix(rot);
-                    vec3 localPos = pos - pivot;
-                    vec3 transformedPos = (rotMat * localPos) + pivot;
-                    skinnedOffset += (transformedPos - pos) * weight;
-                    totalWeight += weight;
-                }
-            }
-            if (totalWeight > 0.001) {
-                pos += skinnedOffset / totalWeight;
-            }
-
-            // 2. Phân hệ Bề mặt Đẳng thế
-            if (uIsosurfaceActive > 0.5) {
-                float distBlob = length(pos - uIsosurfaceCenter);
-                if (distBlob > 0.001) {
-                    float potential = uIsosurfaceStrength / (distBlob * distBlob + uIsosurfaceSoftness);
-                    pos += normalize(pos - uIsosurfaceCenter) * (potential * uIsosurfaceDisplaceScale);
-                }
-            }
-
-            // 3. Phân hệ Đứt gãy Voronoi
-            if (uFractureActive > 0.5 && localTime > uFractureImpactTime) {
-                float cellRand = hashVoronoi(floor(uv * max(2.0, uFractureCellScale)));
-                if (cellRand > uFractureThreshold) {
-                    float explodeTime = localTime - uFractureImpactTime;
-                    vec3 shardDir = normalize(vec3(cos(cellRand * 6.28318), sin(cellRand * 6.28318), cellRand - 0.5));
-                    pos += shardDir * (explodeTime * explodeTime * uFractureImpulse);
-                }
-            }
-
-            // 4. Phân hệ Va chạm Tiếp xúc
-            if (uContactActive > 0.5) {
-                float distContact = length(pos - uContactPoint);
-                if (distContact < uContactRadius) {
-                    float penetration = uContactRadius - distContact;
-                    pos += uContactNormal * (penetration * uContactStiffness);
-                }
-            }
-
-            // 5. Sóng Động học Kinetic
-            if (uKineticAmp > 0.0 && uKineticFreq > 0.0) {
-                float harmonicPhase = dot(uv, uWaveSpatialTensor.xy) + localTime * uKineticFreq;
-                float primaryWave = sin(harmonicPhase) * (uKineticAmp * uKineticScale);
-                float subWave = cos(dot(uv, uWaveSpatialTensor.zw) + localTime * (uKineticFreq * uWaveSpatialTensor.w)) * (uKineticAmp * uKineticScale * uSubWaveScale);
-                float vocalResponse = sin(localTime * (uKineticFreq * uVocalFreqMult)) * (uAudioVocal * uVocalScale);
-                pos.z += (primaryWave + subWave + vocalResponse) * max(0.0, 1.0 - distFromCenter);
-            }
-
-            #ifdef USE_INSTANCING
-                vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(pos, 1.0);
-                vNormal = normalize((modelViewMatrix * instanceMatrix * vec4(normal, 0.0)).xyz);
-            #else
-                vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-                vNormal = normalize(normalMatrix * normal);
-            #endif
-
-            vViewPosition = -mvPosition.xyz;
-            gl_Position = projectionMatrix * mvPosition;
-        }
-    `;
-
-    const fragmentShader = `
-        precision highp float;
-
-        uniform sampler2D uTextureStart;
-        uniform sampler2D uTextureEnd;
-        uniform float uProgress;
-        uniform bool uHasDualKeyframes;
-
-        uniform vec2 uResolution;
-        uniform float uTime;
-        uniform float uAudioBass;
-        uniform float uAudioVocal;
-        uniform float uAudioTreble;
-        uniform float uVocalThreshold;
-        uniform float uTrebleThreshold;
-        uniform float uShimmerAmp;
-        uniform vec2 uShimmerCoords;
-        uniform float uShimmerSpeed;
-
-        uniform vec3 uLightPos;
-        uniform vec3 uLightColor;
-        uniform float uAmbientStrength;
-        uniform float uDiffuseStrength;
-        uniform float uSpecStrength;
-        uniform float uShininess;
-        uniform float uNormalStrength;
-        uniform vec2 uMotionBlurVector;
-        uniform float uMotionBlurMult;
-
-        uniform vec3 uSubsurfaceColor;
-        uniform float uSubsurfaceWrap;
-        uniform float uLipidSheenStrength;
-        uniform float uMicroGrainScale;
-        uniform float uMicroGrainDensity;
-
-        uniform bool uHasFace;
-        uniform vec2 uEyeLeft;
-        uniform vec2 uEyeRight;
-        uniform vec2 uEyeSigmaInv;
-        uniform float uBlinkTightness;
-        uniform vec2 uMouthCenter;
-        uniform vec2 uMouthSigmaInv;
-        uniform float uMouthSensitivity;
-        uniform float uMouthUpperRatio;
-        uniform float uMouthLowerRatio;
-        uniform float uBlinkInterval;
-        uniform float uBlinkDuration;
-        uniform float uSaccadeFreq;
-        uniform float uSaccadeAmp;
-
-        uniform vec2 uFlowVector;
-        uniform vec4 uFlowHarmonics;
-        uniform float uFlowSpatialScale;
-        uniform float uFlowSpeed;
-        uniform float uCurlScale;
-        uniform float uMicroAmp;
-        uniform float uFlowMultiplier;
-        uniform float uBassMultiplier;
-        uniform vec2 uAnchorCenter;
-        uniform float uAnchorRadius;
-        uniform float uAnchorFalloff;
-
-        uniform vec3 uPosteriorTint;
-        uniform float uPosteriorOcclusion;
-
-        varying vec2 vUv;
-        varying vec3 vViewPosition;
-        varying vec3 vNormal;
-        varying float vInstanceSeed;
-
-        float proceduralCellularGrain(vec2 p) {
-            vec2 i = floor(p);
-            vec2 f = fract(p);
-            float minDist = 1.0;
-            for (int y = -1; y <= 1; y++) {
-                for (int x = -1; x <= 1; x++) {
-                    vec2 neighbor = vec2(float(x), float(y));
-                    vec2 point = fract(sin(vec2(dot(i + neighbor, vec2(127.1, 311.7)), dot(i + neighbor, vec2(269.5, 183.3)))) * 43758.5453);
-                    vec2 diff = neighbor + point - f;
-                    minDist = min(minDist, length(diff));
-                }
-            }
-            return minDist;
-        }
-
-        vec2 computeDynamicCurlField(vec2 p) {
-            float n1 = sin(p.x * uFlowHarmonics.x + uTime * uFlowSpeed) * cos(p.y * uFlowHarmonics.y + uTime * (uFlowSpeed * uFlowHarmonics.z));
-            float n2 = cos(p.x * uFlowHarmonics.y - uTime * (uFlowSpeed * uFlowHarmonics.w)) * sin(p.y * uFlowHarmonics.x + uTime * uFlowSpeed);
-            return vec2(n1, -n2) * (uFlowMultiplier * uCurlScale);
-        }
-
-        void main() {
-            vec2 uv = vUv;
-            bool isBackFace = !gl_FrontFacing;
-
-            // 1. Diễn hoạt Sinh học
-            if (!isBackFace && uHasFace) {
-                float blinkCycle = max(0.001, uBlinkInterval);
-                float blinkTime = mod(uTime, blinkCycle);
-                if (blinkTime < uBlinkDuration && uBlinkDuration > 0.0) {
-                    float blinkProgress = sin((blinkTime / uBlinkDuration) * 3.14159265);
-                    vec2 dLeft = uv - uEyeLeft;
-                    float distSqLeft = dot(dLeft * dLeft, uEyeSigmaInv);
-                    if (distSqLeft < 1.0) {
-                        float pinch = exp(-0.5 * distSqLeft) * blinkProgress * uBlinkTightness;
-                        uv.y = uEyeLeft.y + (uv.y - uEyeLeft.y) * (1.0 - pinch);
-                    }
-                    vec2 dRight = uv - uEyeRight;
-                    float distSqRight = dot(dRight * dRight, uEyeSigmaInv);
-                    if (distSqRight < 1.0) {
-                        float pinch = exp(-0.5 * distSqRight) * blinkProgress * uBlinkTightness;
-                        uv.y = uEyeRight.y + (uv.y - uEyeRight.y) * (1.0 - pinch);
-                    }
-                }
-
-                if (uSaccadeAmp > 0.0) {
-                    float saccade = sin(floor(uTime * max(0.1, uSaccadeFreq)) * 3.14159) * uSaccadeAmp;
-                    if (dot((uv - uEyeLeft) * (uv - uEyeLeft), uEyeSigmaInv) < 1.0 || dot((uv - uEyeRight) * (uv - uEyeRight), uEyeSigmaInv) < 1.0) {
-                        uv.x += saccade;
-                    }
-                }
-
-                if (uAudioVocal > uVocalThreshold && uMouthSensitivity > 0.0) {
-                    vec2 dMouth = uv - uMouthCenter;
-                    float distSqMouth = dot(dMouth * dMouth, uMouthSigmaInv);
-                    if (distSqMouth < 1.0) {
-                        float openAmt = exp(-0.5 * distSqMouth) * (uAudioVocal * uMouthSensitivity);
-                        uv.y += (uv.y > uMouthCenter.y ? openAmt * uMouthUpperRatio : -openAmt * uMouthLowerRatio);
-                    }
-                }
-            }
-
-            float distToAnchor = (uAnchorRadius > 0.0) ? length(uv - uAnchorCenter) : 1.0;
-            float anchorWeight = (uAnchorRadius > 0.0) ? smoothstep(uAnchorRadius * uAnchorFalloff, uAnchorRadius, distToAnchor) : 1.0;
-
-            vec2 dynamicCurl = computeDynamicCurlField(uv * max(0.1, uFlowSpatialScale));
-            vec2 bassImpulse = uFlowVector * (uAudioBass * uBassMultiplier);
-            vec2 totalVelocity = (uFlowVector * uFlowMultiplier + dynamicCurl + bassImpulse) * (uMicroAmp * anchorWeight);
-
-            // 2. Flow-Matching Geodesic Advection
-            float tau = smoothstep(0.0, 1.0, uProgress);
-            vec2 uvK0 = clamp(uv + totalVelocity * tau, vec2(0.001), vec2(0.999));
-            vec2 uvK1 = clamp(uv - totalVelocity * (1.0 - tau), vec2(0.001), vec2(0.999));
-
-            vec4 colK0 = vec4(0.0);
-            vec4 colK1 = vec4(0.0);
-            const int BLUR_TAPS = 4;
-            for (int i = 0; i < BLUR_TAPS; i++) {
-                float stepFrac = (float(i) / float(BLUR_TAPS - 1) - 0.5);
-                vec2 bOff = uMotionBlurVector * (stepFrac * uMotionBlurMult);
-                colK0 += texture2D(uTextureStart, clamp(uvK0 + bOff, vec2(0.001), vec2(0.999)));
-                colK1 += texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, clamp(uvK1 + bOff, vec2(0.001), vec2(0.999)));
-            }
-            colK0 /= float(BLUR_TAPS);
-            colK1 /= float(BLUR_TAPS);
-
-            float delta = length(colK0.rgb - colK1.rgb);
-            float disocclusionMask = clamp(delta * 1.5, 0.0, 1.0);
-            float morphWeight = mix(tau, step(0.5, tau), disocclusionMask * 0.45);
-
-            vec4 baseAlbedo = mix(colK0, colK1, morphWeight);
-            if (baseAlbedo.a < 0.002) discard;
-
-            if (isBackFace) {
-                baseAlbedo.rgb = mix(baseAlbedo.rgb, uPosteriorTint, 0.45) * uPosteriorOcclusion;
-            }
-
-            // 3. Tái tạo Ma trận Pháp tuyến K0-K1
-            vec2 pixelStep = vec2(1.0 / max(1.0, uResolution.x), 1.0 / max(1.0, uResolution.y));
-            float lumL0 = dot(texture2D(uTextureStart, uvK0 - vec2(pixelStep.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
-            float lumR0 = dot(texture2D(uTextureStart, uvK0 + vec2(pixelStep.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
-            float lumD0 = dot(texture2D(uTextureStart, uvK0 - vec2(0.0, pixelStep.y)).rgb, vec3(0.299, 0.587, 0.114));
-            float lumU0 = dot(texture2D(uTextureStart, uvK0 + vec2(0.0, pixelStep.y)).rgb, vec3(0.299, 0.587, 0.114));
-            vec3 bump0 = vec3((lumL0 - lumR0) * uNormalStrength, (lumD0 - lumU0) * uNormalStrength, 1.0);
-
-            float lumL1 = dot(texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, uvK1 - vec2(pixelStep.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
-            float lumR1 = dot(texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, uvK1 + vec2(pixelStep.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
-            float lumD1 = dot(texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, uvK1 - vec2(0.0, pixelStep.y)).rgb, vec3(0.299, 0.587, 0.114));
-            float lumU1 = dot(texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, uvK1 + vec2(0.0, pixelStep.y)).rgb, vec3(0.299, 0.587, 0.114));
-            vec3 bump1 = vec3((lumL1 - lumR1) * uNormalStrength, (lumD1 - lumU1) * uNormalStrength, 1.0);
-
-            vec3 bumpNormal = normalize(mix(bump0, bump1, morphWeight));
-
-            if (uMicroGrainDensity > 0.0) {
-                float cellGrain = proceduralCellularGrain(uv * max(10.0, uMicroGrainScale));
-                vec3 grainPerturb = vec3((cellGrain - 0.5) * uMicroGrainDensity, (cellGrain - 0.5) * uMicroGrainDensity, 0.0);
-                bumpNormal = normalize(bumpNormal + grainPerturb);
-            }
-
-            vec3 normal = normalize(mix(vNormal, bumpNormal, 0.5));
-            if (isBackFace) normal = -normal;
-
-            vec3 lightDir = normalize(uLightPos - vec3(uv - vec2(0.5), 0.0));
-            vec3 viewDir = normalize(vViewPosition);
-
-            // 4. BSSRDF SSS & Cook-Torrance Dual-Lobe
-            float NdotL = max(0.0, dot(normal, lightDir));
-            float sssWrap = max(0.0, (dot(normal, lightDir) + uSubsurfaceWrap) / (1.0 + max(0.001, uSubsurfaceWrap)));
-            vec3 sssLight = mix(vec3(NdotL), uSubsurfaceColor, (1.0 - NdotL) * 0.45) * sssWrap;
-
-            vec3 halfVector = normalize(lightDir + viewDir);
-            float NdotH = max(0.0, dot(normal, halfVector));
-            float roughSpec = pow(NdotH, max(1.0, uShininess * 0.5));
-            float lipidSpec = pow(NdotH, max(2.0, uShininess * 2.5)) * uLipidSheenStrength;
-
-            vec3 litColor = baseAlbedo.rgb * (uAmbientStrength + uDiffuseStrength * sssLight * uLightColor)
-                          + vec3((roughSpec * uSpecStrength + lipidSpec) * uLightColor);
-
-            if (uAudioTreble > uTrebleThreshold && uShimmerAmp > 0.0) {
-                float shimmer = sin(dot(uv, uShimmerCoords) + uTime * uShimmerSpeed) * (uAudioTreble * uShimmerAmp);
-                litColor += vec3(shimmer);
-            }
-
-            gl_FragColor = vec4(litColor, baseAlbedo.a);
-        }
-    `;
-
-    return new THREE.ShaderMaterial({
-        vertexShader,
-        fragmentShader,
-        uniforms: {
-            uTextureStart: { value: null },
-            uTextureEnd: { value: null },
-            uProgress: { value: 0.0 },
-            uHasDualKeyframes: { value: false },
-
-            uResolution: { value: new THREE.Vector2(1024, 576) },
-            uTime: { value: 0.0 },
-            uAudioBass: { value: 0.0 },
-            uAudioVocal: { value: 0.0 },
-            uAudioTreble: { value: 0.0 },
-            uVocalThreshold: { value: 0.0 },
-            uTrebleThreshold: { value: 0.0 },
-            uShimmerAmp: { value: 0.0 },
-            uShimmerCoords: { value: new THREE.Vector2(1.0, 1.0) },
-            uShimmerSpeed: { value: 0.0 },
-
-            uDepthThickness: { value: 0.2 },
-            uPosteriorTint: { value: new THREE.Vector3(0.25, 0.22, 0.28) },
-            uPosteriorOcclusion: { value: 0.65 },
-
-            uIsosurfaceActive: { value: 0.0 },
-            uIsosurfaceCenter: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
-            uIsosurfaceStrength: { value: 0.0 },
-            uIsosurfaceSoftness: { value: 0.04 },
-            uIsosurfaceDisplaceScale: { value: 0.0 },
-
-            uFractureActive: { value: 0.0 },
-            uFractureImpactTime: { value: 999.0 },
-            uFractureCellScale: { value: 12.0 },
-            uFractureThreshold: { value: 0.5 },
-            uFractureImpulse: { value: 0.0 },
-
-            uContactActive: { value: 0.0 },
-            uContactPoint: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
-            uContactNormal: { value: new THREE.Vector3(0.0, 1.0, 0.0) },
-            uContactRadius: { value: 0.1 },
-            uContactStiffness: { value: 0.5 },
-
-            uInstancePhaseSpread: { value: 2.5 },
-
-            uSubsurfaceColor: { value: new THREE.Vector3(0.92, 0.28, 0.18) },
-            uSubsurfaceWrap: { value: 0.35 },
-            uLipidSheenStrength: { value: 0.45 },
-            uMicroGrainScale: { value: 240.0 },
-            uMicroGrainDensity: { value: 0.08 },
-
-            uJointPivots: { value: new Array(8).fill(0).map(() => new THREE.Vector3(0.5, 0.5, 0.0)) },
-            uJointRotations: { value: new Array(8).fill(0).map(() => new THREE.Vector3(0.0, 0.0, 0.0)) },
-
-            uWaveSpatialTensor: { value: new THREE.Vector4(0.0, 0.0, 0.0, 0.0) },
-            uDeformCenter: { value: new THREE.Vector2(0.5, 0.5) },
-            uKineticAmp: { value: 0.0 },
-            uKineticFreq: { value: 0.0 },
-            uKineticScale: { value: 1.0 },
-            uVocalScale: { value: 0.0 },
-            uVocalFreqMult: { value: 1.0 },
-            uSubWaveScale: { value: 1.0 },
-
-            uFlowSpatialScale: { value: 1.0 },
-            uFlowSpeed: { value: 0.0 },
-            uFlowVector: { value: new THREE.Vector2(0.0, 0.0) },
-            uFlowHarmonics: { value: new THREE.Vector4(1.0, 1.0, 1.0, 1.0) },
-            uCurlScale: { value: 0.0 },
-            uMicroAmp: { value: 0.0 },
-            uFlowMultiplier: { value: 1.0 },
-            uBassMultiplier: { value: 0.0 },
-            uAnchorCenter: { value: new THREE.Vector2(0.5, 0.5) },
-            uAnchorRadius: { value: 0.0 },
-            uAnchorFalloff: { value: 0.0 },
-
-            uLightPos: { value: new THREE.Vector3(0.0, 0.0, 1.5) },
-            uLightColor: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
-            uAmbientStrength: { value: 0.8 },
-            uDiffuseStrength: { value: 0.4 },
-            uSpecStrength: { value: 0.2 },
-            uShininess: { value: 16.0 },
-            uNormalStrength: { value: 1.0 },
-            uMotionBlurVector: { value: new THREE.Vector2(0.0, 0.0) },
-            uMotionBlurMult: { value: 0.0 },
-
-            uHasFace: { value: false },
-            uEyeLeft: { value: new THREE.Vector2(0.0, 0.0) },
-            uEyeRight: { value: new THREE.Vector2(0.0, 0.0) },
-            uEyeSigmaInv: { value: new THREE.Vector2(1.0, 1.0) },
-            uBlinkTightness: { value: 0.0 },
-            uMouthCenter: { value: new THREE.Vector2(0.0, 0.0) },
-            uMouthSigmaInv: { value: new THREE.Vector2(1.0, 1.0) },
-            uMouthSensitivity: { value: 0.0 },
-            uMouthUpperRatio: { value: 1.0 },
-            uMouthLowerRatio: { value: 0.5 },
-            uBlinkInterval: { value: 4.0 },
-            uBlinkDuration: { value: 0.0 },
-            uSaccadeFreq: { value: 1.0 },
-            uSaccadeAmp: { value: 0.0 }
-        },
-        side: THREE.DoubleSide,
-        transparent: true,
-        depthTest: true,
-        depthWrite: true
-    });
-}
-
-function createUnifiedUltimateBackgroundMaterial() {
-    const vertexShader = `
-        varying vec2 vUv;
-        void main() {
-            vUv = uv;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-    `;
-
-    const fragmentShader = `
-        precision highp float;
-
-        uniform sampler2D uTextureStart;
-        uniform sampler2D uTextureEnd;
-        uniform float uProgress;
-        uniform bool uHasDualKeyframes;
-
-        uniform float uBokehRadius;
-        uniform vec2 uShadowCenter;
-        uniform vec2 uShadowSize;
-        uniform float uShadowOpacity;
-        uniform float uShadowFalloffInner;
-        uniform float uShadowDarkness;
-
-        varying vec2 vUv;
-
-        void main() {
-            vec2 uv = vUv;
-
-            vec4 colStart = vec4(0.0);
-            vec4 colEnd = vec4(0.0);
-            float totalWeight = 0.0;
-            const int SAMPLES = 8;
-            for (int i = 0; i < SAMPLES; i++) {
-                float angle = float(i) * (6.283185307179586 / float(SAMPLES));
-                vec2 offset = vec2(cos(angle), sin(angle)) * uBokehRadius;
-                colStart += texture2D(uTextureStart, clamp(uv + offset, vec2(0.001), vec2(0.999)));
-                colEnd += texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, clamp(uv + offset, vec2(0.001), vec2(0.999)));
-                totalWeight += 1.0;
-            }
-            colStart /= totalWeight;
-            colEnd /= totalWeight;
-
-            vec4 col = mix(colStart, colEnd, smoothstep(0.0, 1.0, uProgress));
-
-            if (uShadowOpacity > 0.0) {
-                vec2 shadowDelta = (uv - uShadowCenter) / max(uShadowSize, vec2(0.001));
-                float shadowDist = length(shadowDelta);
-                if (shadowDist < 1.0) {
-                    float shadowFalloff = smoothstep(1.0, uShadowFalloffInner, shadowDist) * uShadowOpacity;
-                    col.rgb *= (1.0 - shadowFalloff * uShadowDarkness);
-                }
-            }
-
-            gl_FragColor = col;
-        }
-    `;
-
-    return new THREE.ShaderMaterial({
-        vertexShader,
-        fragmentShader,
-        uniforms: {
-            uTextureStart: { value: null },
-            uTextureEnd: { value: null },
-            uProgress: { value: 0.0 },
-            uHasDualKeyframes: { value: false },
-
-            uBokehRadius: { value: 0.0 },
-            uShadowCenter: { value: new THREE.Vector2(0.5, 0.5) },
-            uShadowSize: { value: new THREE.Vector2(0.0, 0.0) },
-            uShadowOpacity: { value: 0.0 },
-            uShadowFalloffInner: { value: 0.1 },
-            uShadowDarkness: { value: 0.0 }
-        },
-        depthTest: true,
-        depthWrite: true
-    });
-}
-
-function createCinematicLensPostMaterial() {
-    const vertexShader = `
-        varying vec2 vUv;
-        void main() {
-            vUv = uv;
-            gl_Position = vec4(position, 1.0);
-        }
-    `;
-
-    const fragmentShader = `
-        precision highp float;
-
-        uniform sampler2D uSceneTexture;
-        uniform vec2 uResolution;
-        uniform float uTime;
-        uniform float uFilmGrain;
-        uniform float uChromaticAberration;
-        uniform float uHalation;
-        uniform float uVignette;
-
-        varying vec2 vUv;
-
-        vec3 acesFilmicToneMapping(vec3 x) {
-            float a = 2.51;
-            float b = 0.03;
-            float c = 2.43;
-            float d = 0.59;
-            float e = 0.14;
-            return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-        }
-
-        float hashNoise(vec2 p, float t) {
-            return fract(sin(dot(p + fract(t * 17.13), vec2(12.9898, 78.233))) * 43758.5453123);
-        }
-
-        void main() {
-            vec2 uv = vUv;
-            vec2 distFromCenter = uv - 0.5;
-            float rSq = dot(distFromCenter, distFromCenter);
-
-            vec2 caOffset = distFromCenter * (rSq * uChromaticAberration);
-            float r = texture2D(uSceneTexture, clamp(uv + caOffset, 0.001, 0.999)).r;
-            float g = texture2D(uSceneTexture, uv).g;
-            float b = texture2D(uSceneTexture, clamp(uv - caOffset, 0.001, 0.999)).b;
-            vec3 color = vec3(r, g, b);
-
-            if (uHalation > 0.0) {
-                float luminance = dot(color, vec3(0.299, 0.587, 0.114));
-                if (luminance > 0.62) {
-                    float halationWeight = smoothstep(0.62, 1.0, luminance) * uHalation;
-                    color += vec3(1.0, 0.22, 0.05) * halationWeight * 0.55;
-                }
-            }
-
-            color = acesFilmicToneMapping(color);
-
-            if (uFilmGrain > 0.0) {
-                float grain = (hashNoise(uv * uResolution, uTime) - 0.5) * uFilmGrain;
-                color += vec3(grain);
-            }
-
-            if (uVignette > 0.0) {
-                float vig = 1.0 - smoothstep(0.12, 0.88, rSq * 2.1) * uVignette;
-                color *= vig;
-            }
-
-            gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
-        }
-    `;
-
-    return new THREE.ShaderMaterial({
-        vertexShader,
-        fragmentShader,
-        uniforms: {
-            uSceneTexture: { value: null },
-            uResolution: { value: new THREE.Vector2(1024, 576) },
-            uTime: { value: 0.0 },
-            uFilmGrain: { value: 0.024 },
-            uChromaticAberration: { value: 0.015 },
-            uHalation: { value: 0.35 },
-            uVignette: { value: 0.28 }
-        },
-        depthTest: false,
-        depthWrite: false
-    });
-}
-
-// =========================================================================
-// [STAGE 4]: HỘI TỤ THỊ GIÁC HỒI TIẾP VỚI GEMINI VISION (ZERO SCENE REBUILD)
-// =========================================================================
-async function executeStage4VisionFeedbackLoop(renderer, scene, camera, renderTarget, postScene, postCam, lensPostMat, fgMat, userOriginalPrompt, keyPool, postStatus) {
-    if (!renderer || !userOriginalPrompt || !keyPool || !keyPool.length) return;
-
-    try {
-        if (typeof postStatus === 'function') postStatus("Đang kiểm tra độ hội tụ hình ảnh với Gemini Vision...", 15);
-
-        // 1. Kết xuất thử nghiệm Frame t = 0 ra buffer
-        renderer.setRenderTarget(renderTarget);
-        renderer.render(scene, camera);
-        renderer.setRenderTarget(null);
-        lensPostMat.uniforms.uSceneTexture.value = renderTarget.texture;
-        renderer.render(postScene, postCam);
-
-        // 2. Chuyển đổi Framebuffer thành Blob Base64
-        const blob = await renderer.domElement.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
-        const arrayBuf = await blob.arrayBuffer();
-        let binary = '';
-        const bytes = new Uint8Array(arrayBuf);
-        const CHUNK_SIZE = 8192;
-        for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
-            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SIZE));
-        }
-        const frameBase64 = btoa(binary);
-
-        const feedbackPrompt = `[STAGE 4: ABSTRACT VISION FEEDBACK CONVERGENCE LOOP]
-Ý niệm gốc của tác phẩm: "${userOriginalPrompt}".
-Hình ảnh đính kèm là khung hình đầu tiên vừa được kết xuất giải tích trên GPU.
-Hãy so sánh độ chính xác và mức độ tiệm cận của hình ảnh này so với ý niệm gốc.
-
-TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON DELTA UPDATE CHỨA CÁC THAM SỐ CẦN TINH CHỈNH:
+async function requestAutoregressiveState(currentSecond, anchorBase64, sceneSpec, keyPool, postStatus) {
+    const isGenesis = (currentSecond === 0);
+    const visualContext = isGenesis 
+        ? "Đây là giây khởi đầu (t=0.0). Hãy thiết lập thực tại toán học từ khoảng không." 
+        : "Hình ảnh đính kèm là không gian 3D bạn vừa tạo ra ở giây trước. Hãy quan sát và viết tiếp mã nguồn để phát triển không gian này mượt mà.";
+
+    const directorPrompt = `[AUTOREGRESSIVE SHADER VIRTUAL MACHINE - T=${currentSecond}.0s]
+Yêu cầu phân cảnh: "${sceneSpec.action_description || sceneSpec.title || 'Abstract generative space'}".
+${visualContext}
+
+BẠN LÀ MỘT KỸ SƯ SHADERTOY ĐẠI TÀI. HỆ THỐNG CLIENT LÀ MỘT MÁY ẢO RỖNG.
+Bạn phải cung cấp HÀM GLSL TRUNG TÂM và MA TRẬN VI PHÂN để máy ảo bẻ cong không gian.
+
+QUY TẮC BẮT BUỘC:
+1. Bạn phải viết hàm: "vec4 render_scene(vec2 uv, float time)"
+   (Trong đó uv đã được chuẩn hóa ở giữa màn hình [-1.0, 1.0]. Trả về màu vec4).
+2. Tự thiết lập toàn bộ thuật toán Raymarching, SDF, PBR, Khí quyển bên trong hàm render_scene. Tuyệt đối không giả định Client có sẵn ánh sáng hay camera.
+3. Cung cấp Ma trận Dòng chảy 2 pha (Dual-Phase Flow) và Dao động Đàn hồi để Client áp dụng bù trừ vi sai vào tia UV trước khi gọi hàm render_scene của bạn.
+
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 {
-  "convergence_score": float (từ 0.0 đến 10.0),
-  "delta_uniforms": {
-    "uAmbientStrength": float,
-    "uDiffuseStrength": float,
-    "uSpecStrength": float,
-    "uShininess": float,
-    "uNormalStrength": float,
-    "uSubsurfaceWrap": float,
-    "uLipidSheenStrength": float,
-    "uDepthThickness": float
+  "glsl_render_scene": "vec4 render_scene(vec2 uv, float time) { \\n  // Your Raymarching & SDF code here \\n  return vec4(col, 1.0); \\n}",
+  "flow_matrices": [
+    { "center": [0.5, 0.5], "radius": [0.2, 0.2], "direction": [0.01, 0.0], "speed": 1.0, "falloff": 2.0 }
+  ],
+  "elastic_matrices": [
+    { "anchor": [0.5, 0.5], "radius": [0.2, 0.2], "vector": [0.0, 0.02], "frequency_hz": 1.5, "amplitude": 0.05, "falloff": 2.0 }
+  ],
+  "audio_synth": {
+    "master_gain": 0.8,
+    "waves": [ { "freq_start": 110.0, "freq_end": 120.0, "gain": 0.2, "type": "sine" } ]
   }
 }`;
 
-        const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
-        for (const m of candidateModels) {
-            for (const activeKey of keyPool) {
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{
-                                role: 'user',
-                                parts: [
-                                    { text: feedbackPrompt },
-                                    { inlineData: { mimeType: "image/jpeg", data: frameBase64 } }
-                                ]
-                            }],
-                            generationConfig: { temperature: 0.15, maxOutputTokens: 1024, responseMimeType: "application/json" }
-                        })
-                    });
-
-                    if (res.ok) {
-                        const data = await res.json();
-                        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                        const parsed = robustJsonParse(rawText);
-                        if (parsed && parsed.delta_uniforms) {
-                            const delta = parsed.delta_uniforms;
-                            // CẬP NHẬT TRỰC TIẾP GPU UNIFORMS (ZERO SCENE REBUILD)
-                            for (const k in delta) {
-                                if (fgMat.uniforms[k] && typeof delta[k] === 'number') {
-                                    fgMat.uniforms[k].value = Number(delta[k]);
-                                }
-                            }
-                            if (typeof postStatus === 'function') {
-                                postStatus(`Đã hoàn tất hội tụ quang học (${parsed.convergence_score || 9.8}/10)`, 20);
-                            }
-                            return;
-                        }
-                    }
-                } catch (_) {}
-            }
-        }
-    } catch (_) {}
-}
-
-// BỘ TỔNG HỢP ÂM THANH GIẢI TÍCH
-function synthesizeAutonomousScoreAndFoley(soundscape, duration, sampleRate, leftChannel, rightChannel) {
-    const totalSamples = leftChannel.length;
-    if (!totalSamples || !soundscape || typeof soundscape !== 'object') return;
-
-    const masterGain = Math.max(0.0, Math.min(1.0, Number(soundscape.master_gain ?? 0.8)));
-    if (masterGain <= 0.0001) return;
-
-    const score = soundscape.music_score || {};
-    const chords = Array.isArray(score.harmony_chords) ? score.harmony_chords : [];
-    const melody = Array.isArray(score.melody_motifs) ? score.melody_motifs : [];
-    const bassline = Array.isArray(score.bass_track) ? score.bass_track : [];
-    const transients = Array.isArray(score.rhythm_transients) ? score.rhythm_transients : [];
-    const timbre = score.instrumentation_timbre || {};
-    const fmMod = Number(timbre.fm_harmonic_index || 1.5);
-
-    if (chords.length > 0) {
-        const chordDuration = Math.max(1.0, duration / chords.length);
-        for (let cIdx = 0; cIdx < chords.length; cIdx++) {
-            const chordNotes = Array.isArray(chords[cIdx]) ? chords[cIdx] : [chords[cIdx]];
-            const startSample = Math.floor(cIdx * chordDuration * sampleRate);
-            const endSample = Math.min(totalSamples, Math.floor((cIdx + 1) * chordDuration * sampleRate));
-
-            for (const freq of chordNotes) {
-                const f = Number(freq);
-                if (f <= 20.0 || f >= 12000.0) continue;
-                const omega = 2.0 * Math.PI * f / sampleRate;
-
-                for (let i = startSample; i < endSample; i++) {
-                    const localT = (i - startSample) / sampleRate;
-                    const env = Math.min(1.0, localT * 2.0) * Math.exp(-0.25 * localT);
-                    const sampleVal = Math.sin(omega * i + Math.sin(omega * fmMod * i) * 0.2) * (env * 0.12 * masterGain);
-                    leftChannel[i] += sampleVal * 0.85;
-                    rightChannel[i] += sampleVal * 0.85;
-                }
-            }
-        }
-    }
-
-    for (const note of melody) {
-        const f = Number(note.note_hz);
-        if (f <= 20.0 || f >= 15000.0) continue;
-        const noteStart = Math.floor(Math.max(0.0, Number(note.start_frac || 0.0)) * duration * sampleRate);
-        const noteLen = Math.floor(Math.max(0.05, Number(note.duration_frac || 0.1)) * duration * sampleRate);
-        const noteEnd = Math.min(totalSamples, noteStart + noteLen);
-        const vel = Math.max(0.0, Math.min(1.0, Number(note.velocity || 0.8))) * masterGain * 0.18;
-        const omega = 2.0 * Math.PI * f / sampleRate;
-
-        for (let i = noteStart; i < noteEnd; i++) {
-            const frac = (i - noteStart) / Math.max(1, noteLen);
-            const env = Math.sin(frac * Math.PI);
-            const sampleVal = Math.sin(omega * i) * (env * vel);
-            leftChannel[i] += sampleVal * 0.7;
-            rightChannel[i] += sampleVal * 0.9;
-        }
-    }
-
-    for (const b of bassline) {
-        const f = Number(b.freq_hz);
-        if (f <= 15.0 || f >= 400.0) continue;
-        const bStart = Math.floor(Math.max(0.0, Number(b.start_frac || 0.0)) * duration * sampleRate);
-        const bLen = Math.floor(Math.max(0.1, Number(b.duration_frac || 0.25)) * duration * sampleRate);
-        const bEnd = Math.min(totalSamples, bStart + bLen);
-        const omega = 2.0 * Math.PI * f / sampleRate;
-
-        for (let i = bStart; i < bEnd; i++) {
-            const frac = (i - bStart) / Math.max(1, bLen);
-            const env = Math.exp(-1.5 * frac);
-            const sampleVal = Math.sin(omega * i) * (env * 0.22 * masterGain);
-            leftChannel[i] += sampleVal;
-            rightChannel[i] += sampleVal;
-        }
-    }
-
-    for (const r of transients) {
-        const tStart = Math.floor(Math.max(0.0, Number(r.time_frac || 0.0)) * duration * sampleRate);
-        const tPitch = Math.max(40.0, Number(r.tonal_pitch_hz || 80.0));
-        const tInt = Math.max(0.0, Math.min(1.0, Number(r.intensity || 0.7))) * masterGain * 0.25;
-        const tLen = Math.min(totalSamples - tStart, Math.floor(0.2 * sampleRate));
-
-        for (let i = 0; i < tLen; i++) {
-            const frac = i / tLen;
-            const pitchDrop = tPitch * Math.exp(-18.0 * (i / sampleRate));
-            const omega = 2.0 * Math.PI * pitchDrop / sampleRate;
-            const noise = (Math.random() * 2.0 - 1.0) * 0.3;
-            const sampleVal = (Math.sin(omega * i) + noise) * (Math.exp(-22.0 * frac) * tInt);
-            leftChannel[tStart + i] += sampleVal;
-            rightChannel[tStart + i] += sampleVal;
-        }
-    }
-
-    const foley = soundscape.environmental_foley || {};
-    const atmNoise = foley.atmospheric_pressure_noise || {};
-    const atmGain = Math.max(0.0, Math.min(1.0, Number(atmNoise.gain || 0.0))) * masterGain * 0.2;
-    const cutoff = Math.max(50.0, Math.min(16000.0, Number(atmNoise.filter_cutoff_hz || 1200.0)));
-    const modSpeed = Math.max(0.0, Number(atmNoise.mod_speed_hz || 0.2));
-
-    if (atmGain > 0.001) {
-        let b0 = 0.0, b1 = 0.0, b2 = 0.0;
-        const rc = 1.0 / (2.0 * Math.PI * cutoff);
-        const dt = 1.0 / sampleRate;
-        const alpha = dt / (rc + dt);
-
-        for (let i = 0; i < totalSamples; i++) {
-            const white = Math.random() * 2.0 - 1.0;
-            b0 = b0 + alpha * (white - b0);
-            b1 = b1 + alpha * (b0 - b1);
-            b2 = b2 + alpha * (b1 - b2);
-
-            const windLfo = 1.0 + Math.sin(2.0 * Math.PI * modSpeed * (i / sampleRate)) * 0.4;
-            const sVal = b2 * atmGain * windLfo;
-            leftChannel[i] += sVal * 0.8;
-            rightChannel[i] += sVal * 1.1;
-        }
-    }
-
-    for (let i = 0; i < totalSamples; i++) {
-        leftChannel[i] = Math.tanh(leftChannel[i]);
-        rightChannel[i] = Math.tanh(rightChannel[i]);
-    }
-}
-
-function parseAudioBytes(audioBytes) {
-    let pcmBytes = audioBytes;
-    let detectedSampleRate = 24000;
-    let detectedChannels = 1;
-    let bitsPerSample = 16;
-
-    if (audioBytes.length >= 44 &&
-        audioBytes[0] === 0x52 && audioBytes[1] === 0x49 && audioBytes[2] === 0x46 && audioBytes[3] === 0x46) {
-        let offset = 12;
-        const totalLen = audioBytes.length;
-
-        while (offset < totalLen - 8) {
-            const chunkId = String.fromCharCode(audioBytes[offset], audioBytes[offset+1], audioBytes[offset+2], audioBytes[offset+3]);
-            const chunkSize = new DataView(audioBytes.buffer, audioBytes.byteOffset + offset + 4).getUint32(0, true);
-
-            if (chunkId === 'fmt ' && offset + 8 + 16 <= totalLen) {
-                const fmtView = new DataView(audioBytes.buffer, audioBytes.byteOffset + offset + 8);
-                detectedChannels = fmtView.getUint16(2, true) || 1;
-                detectedSampleRate = fmtView.getUint32(4, true) || 24000;
-                bitsPerSample = fmtView.getUint16(14, true) || 16;
-            } else if (chunkId === 'data') {
-                const validChunkSize = Math.min(chunkSize, totalLen - (offset + 8));
-                pcmBytes = audioBytes.subarray(offset + 8, offset + 8 + validChunkSize);
-                break;
-            }
-            offset += 8 + chunkSize;
-            if (chunkSize <= 0) break;
-        }
-    }
-
-    const bytesPerSample = Math.max(1, Math.floor(bitsPerSample / 8));
-    const blockAlign = bytesPerSample * detectedChannels;
-    const safeByteLength = Math.floor(pcmBytes.byteLength / blockAlign) * blockAlign;
-    const numFrames = safeByteLength / blockAlign;
-    const float32 = new Float32Array(numFrames);
-    const dataView = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, safeByteLength);
-
-    for (let f = 0; f < numFrames; f++) {
-        let frameSum = 0;
-        for (let ch = 0; ch < detectedChannels; ch++) {
-            const byteIndex = f * blockAlign + ch * bytesPerSample;
-            let sampleVal = 0;
-            if (bytesPerSample === 2) sampleVal = dataView.getInt16(byteIndex, true) / 32768.0;
-            else if (bytesPerSample === 1) sampleVal = (dataView.getUint8(byteIndex) - 128) / 128.0;
-            else if (bytesPerSample === 4) sampleVal = dataView.getFloat32(byteIndex, true);
-            frameSum += sampleVal;
-        }
-        float32[f] = frameSum / detectedChannels;
-    }
-
-    return { samples: float32, sampleRate: detectedSampleRate, duration: numFrames / detectedSampleRate };
-}
-
-async function synthesizeVoiceWithKeyPool(text, voiceName, keyPool, postStatus) {
-    if (!text || !text.trim()) return null;
-    const voiceModels = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.1-flash-lite-tts-preview"];
-    for (const m of voiceModels) {
-        for (let k = 0; k < keyPool.length; k++) {
-            const activeKey = keyPool[k];
-            try {
-                if (typeof postStatus === 'function') postStatus(`Đang thu âm lời thoại nhân vật (${voiceName})...`);
-                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ role: 'user', parts: [{ text: text }] }],
-                        generationConfig: {
-                            responseModalities: ["AUDIO"],
-                            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName || "Puck" } } }
-                        }
-                    })
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    const inlineData = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-                    if (inlineData?.data) {
-                        const audioBytes = Uint8Array.from(atob(inlineData.data), c => c.charCodeAt(0));
-                        return parseAudioBytes(audioBytes);
-                    }
-                }
-            } catch (_) {}
-        }
-    }
-    return null;
-}
-
-function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRate) {
-    if (!channelData || !channelData.length) return { bass: 0.0, vocal: 0.0, treble: 0.0 };
-
-    const centerIdx = Math.floor(currentSecond * sampleRate);
-    const windowSize = 512;
-    const startIdx = Math.max(0, centerIdx - Math.floor(windowSize / 2));
-    const endIdx = Math.min(channelData.length, startIdx + windowSize);
-    const count = Math.max(1, endIdx - startIdx);
-
-    let energySum = 0.0, hfFlux = 0.0, prevSample = 0.0;
-    for (let i = startIdx; i < endIdx; i++) {
-        const s = channelData[i];
-        energySum += s * s;
-        if (i > startIdx) hfFlux += Math.abs(s - prevSample);
-        prevSample = s;
-    }
-
-    const rms = Math.sqrt(energySum / count);
-    const hf = hfFlux / count;
-    return {
-        bass: Math.min(1.0, rms * 1.8),
-        vocal: Math.min(1.0, rms),
-        treble: Math.min(1.0, hf * 3.5)
-    };
-}
-
-// =========================================================================
-// [STAGE 1]: BỘ NÃO ĐẠO DIỄN TOÀN TRI XUẤT BLUEPRINT THAM SỐ TOÀN CẦU
-// =========================================================================
-async function requestHamiltonianContinuumTensor(shotBlueprint, sceneDuration, keyPool, postStatus) {
-    const directingPrompt = `[PURE UNIVERSAL PARAMETRIC PIPELINE - STAGE 1: DYNAMIC BLUEPRINT GENERATOR]
-Phân cảnh: "${shotBlueprint.title || ''}". Thời lượng: ${sceneDuration}s (60 FPS).
-Bối cảnh điện ảnh: ${JSON.stringify(shotBlueprint.production_bible || {})}.
-Diễn biến cú máy: "${shotBlueprint.action_description || ''}".
-Neo giữ tiếp nối: ${JSON.stringify(shotBlueprint.previous_scene_anchor || null)}.
-
-BẠN LÀ TỔNG ĐẠO DIỄN VẬT LÝ TOÁN VÀ ĐIỆN ẢNH TỐI THƯỢNG.
-HÃY XUẤT BLUEPRINT THAM SỐ TOÀN DIỆN (ZERO HARDCODED BIAS):
-
-1. "system_config":
-   - "version": "4.0-pure-parametric",
-   - "max_convergence_steps": int (từ 1 đến 3)
-2. "scene_graph":
-   - "camera": {
-       "projection_type": "perspective",
-       "field_of_view": float,
-       "position": [x, y, z],
-       "target": [x, y, z]
-     },
-   - "environment": {
-       "lighting_setup": [
-         {
-           "light_type": "directional" hoặc "point" hoặc "ambient",
-           "color": [r, g, b],
-           "intensity": float,
-           "vector_or_position": [x, y, z]
-         }
-       ],
-       "fog_or_atmosphere": {
-         "enabled": bool,
-         "parameters": { "density": float, "color": [r, g, b] }
-       }
-     }
-3. "vector_keyframes": {
-   - "start_svg": Chuỗi SVG hoàn chỉnh trạng thái t=0.0 (dùng đa tầng gradient),
-   - "end_svg": Chuỗi SVG hoàn chỉnh trạng thái t=1.0 (dùng đa tầng gradient)
-}
-4. "deterministic_physics": {
-   - "isosurface_active": float,
-   - "isosurface_center": [x,y,z],
-   - "isosurface_strength": float,
-   - "isosurface_softness": float,
-   - "isosurface_displace_scale": float,
-   - "fracture_active": float,
-   - "fracture_impact_time": float,
-   - "fracture_cell_scale": float,
-   - "fracture_threshold": float,
-   - "fracture_impulse": float,
-   - "contact_active": float,
-   - "contact_point": [x,y,z],
-   - "contact_normal": [x,y,z],
-   - "contact_radius": float,
-   - "contact_stiffness": float
-}
-5. "chromophore_glazing": {
-   - "subsurface_color": [r,g,b],
-   - "subsurface_wrap": float,
-   - "lipid_sheen_strength": float,
-   - "micro_grain_scale": float,
-   - "micro_grain_density": float
-}
-6. "universal_kinematic_rig": {
-   - "joint_pivots": [[x,y,z], ... 8 pivots],
-   - "joint_trajectories": [ [{"t": 0.0, "rot": [rx,ry,rz]}, {"t": 1.0, ...}], ... 8 tracks ]
-}
-7. "volumetric_360_hull": {
-   - "depth_thickness": float,
-   - "posterior_tint": [r,g,b],
-   - "posterior_occlusion": float
-}
-8. "spatial_decomposition": {
-   - "subject_depth_z": float,
-   - "background_depth_z": float,
-   - "motion_scale_factor": float,
-   - "deform_center": [x,y],
-   - "wave_spatial_tensor": [x,y,z,w],
-   - "kinetic_freq": float,
-   - "kinetic_amp": float,
-   - "kinetic_scale": float,
-   - "vocal_scale": float,
-   - "vocal_freq_multiplier": float,
-   - "sub_wave_scale": float,
-   - "layer_mode": "subject_isolate" hoặc "panoramic_landscape",
-   - "subject_box": [ymin, xmin, ymax, xmax],
-   - "feather_inner_ratio": float,
-   - "feather_outer_ratio": float,
-   - "feather_pad_ratio": float,
-   - "bg_overscan": float,
-   - "horizon_y": float,
-   - "horizon_transition_span": float
-}
-9. "biological_features": { has_face: bool, eye_left: [x,y], eye_right: [x,y], eye_radius_x: float, eye_radius_y: float, blink_tightness: float, mouth_center: [x,y], mouth_radius_x: float, mouth_radius_y: float, mouth_open_sensitivity: float, mouth_upper_ratio: float, mouth_lower_ratio: float, blink_interval_sec: float, blink_duration_sec: float, saccade_freq: float, saccade_amp: float }
-10. "cinematic_optics": { light_pos: [x,y,z], light_color: [r,g,b], ambient_strength: float, diffuse_strength: float, specular_strength: float, surface_shininess: float, normal_strength: float, bokeh_radius: float, shadow_offset: [x,y], shadow_opacity: float, shadow_falloff_inner: float, shadow_darkness: float, motion_blur_multiplier: float, film_grain: float, chromatic_aberration: float, halation: float, vignette: float, particle_density: int, particle_opacity: float }
-11. "pixel_motion_matrix": { primary_flow_vector: [x,y], flow_harmonics: [x,y,z,w], flow_spatial_scale: float, flow_speed: float, curl_scale: float, micro_deformation_amp: float, flow_multiplier: float, bass_multiplier: float, anchor_center: [x,y], anchor_radius: float, anchor_falloff: float, shimmer_coords: [x,y], shimmer_speed: float }
-12. "subject_free_motion": { easing_type: "smoothstep" | "sine" | "cubic" | "linear", trajectory: [{"t": 0.0, "shift": [x,y,z], "rot": [rx,ry,rz], "scale": float}, {"t": 1.0, ...}] }
-13. "camera_manifold": { fov_degrees: float, camera_distance_z: float, pan_scale: float, easing_type: "smoothstep" | "sine" | "cubic" | "linear", trajectory: [{"t": 0.0, "pan": [x,y], "zoom": float, "rot": float}, {"t": 1.0, ...}] }
-14. "population_instancing": { instance_count: int, distribution_spread_x: float, distribution_spread_y: float, distribution_spread_z: float, instance_phase_spread: float }
-15. "soundscape": {
-      "master_gain": float,
-      "vocal_threshold_power": float,
-      "treble_threshold_power": float,
-      "music_score": { "tempo_bpm": float, "harmony_chords": [[f1,f2,f3],...], "melody_motifs": [...], "bass_track": [...], "rhythm_transients": [...], "instrumentation_timbre": { "fm_harmonic_index": float } },
-      "environmental_foley": { "atmospheric_pressure_noise": { "gain": float, "filter_cutoff_hz": float, "mod_speed_hz": float }, "modal_resonances": [...] }
-    }
-
-TRẢ VỀ DUY NHẤT JSON HOÀN CHỈNH:`;
-
-    const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+    const candidateModels = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash"];
     let totalTries = 0;
 
     while (true) {
         totalTries++;
-        await ensureNetworkOnline(postStatus, "Stage 1: Dynamic Blueprint Generation");
-
         const activeModel = candidateModels[totalTries % candidateModels.length];
         const activeKey = keyPool[totalTries % keyPool.length];
 
         try {
+            if (typeof postStatus === 'function') {
+                postStatus(`[Giây ${currentSecond}] Tự hồi quy không gian qua Gemini Vision (${activeModel})...`);
+            }
+
+            const payloadContents = [{ text: directorPrompt }];
+            if (!isGenesis && anchorBase64) {
+                payloadContents.push({ inlineData: { mimeType: "image/jpeg", data: anchorBase64 } });
+            }
+
             const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${activeKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ role: 'user', parts: [{ text: directingPrompt }] }],
-                    generationConfig: {
-                        temperature: 0.35,
-                        maxOutputTokens: 6000,
-                        responseMimeType: "application/json"
-                    }
+                    contents: [{ role: 'user', parts: payloadContents }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 6000, responseMimeType: "application/json" }
                 })
             });
 
             if (res.ok) {
                 const data = await res.json();
-                const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                const parsed = robustJsonParse(rawText);
-                
-                if (parsed && parsed.vector_keyframes?.start_svg && parsed.vector_keyframes?.end_svg && parsed.spatial_decomposition) {
-                    return parsed;
-                }
+                const parsed = robustJsonParse(data?.candidates?.[0]?.content?.parts?.[0]?.text);
+                if (parsed && typeof parsed.glsl_render_scene === 'string') return parsed;
             }
         } catch (_) {}
 
-        const delayMs = Math.min(2500 + (totalTries * 1200), 15000);
-        postStatus("Đang tái kết nối cỗ máy Blueprint...");
-        await new Promise(r => setTimeout(r, delayMs));
-    }
-}
-
-function interpolateSplineProperty(track, progress, propKey, easingType) {
-    if (!Array.isArray(track) || track.length === 0) return (propKey === 'rot' || propKey === 'zoom' || propKey === 'scale') ? 0.0 : [0.0, 0.0, 0.0];
-    if (track.length === 1 || progress <= track[0].t) return track[0][propKey] || (Array.isArray(track[0].pos) ? track[0].pos : [0.0, 0.0, 0.0]);
-    if (progress >= track[track.length - 1].t) return track[track.length - 1][propKey] || [0.0, 0.0, 0.0];
-
-    for (let i = 0; i < track.length - 1; i++) {
-        const p0 = track[i], p1 = track[i + 1];
-        if (progress >= p0.t && progress <= p1.t) {
-            const f = (progress - p0.t) / Math.max(0.0001, p1.t - p0.t);
-            let smoothF = f;
-            if (easingType === "sine") smoothF = 0.5 * (1.0 - Math.cos(f * Math.PI));
-            else if (easingType === "cubic") smoothF = f < 0.5 ? 4.0 * f * f * f : 1.0 - Math.pow(-2.0 * f + 2.0, 3.0) / 2.0;
-            else if (easingType === "linear") smoothF = f;
-            else smoothF = f * f * (3.0 - 2.0 * f);
-
-            let v0 = p0[propKey], v1 = p1[propKey];
-            if (Array.isArray(v0)) {
-                return v0.map((val, idx) => Number(val) + (Number((v1[idx] !== undefined ? v1[idx] : val) - val) * smoothF));
-            } else {
-                return Number(v0) + (Number(v1 - v0) * smoothF);
-            }
-        }
-    }
-    return [0.0, 0.0, 0.0];
-}
-
-function renderCinemaSubtitlesOverlay(ctx, width, height, currentSecond, dialogueCues) {
-    if (!Array.isArray(dialogueCues) || dialogueCues.length === 0) return;
-
-    for (const cue of dialogueCues) {
-        const start = Number(cue.startTimeSec) || 0.0;
-        const dur = Math.max(1.0, (cue.text?.length || 0) * 0.075);
-        const end = start + dur;
-
-        if (currentSecond >= start && currentSecond <= end) {
-            const text = String(cue.text || '').trim();
-            if (!text) continue;
-
-            const fontSize = Math.max(14, Math.round(height * 0.038));
-            ctx.save();
-            ctx.font = `bold ${fontSize}px "Plus Jakarta Sans", sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'bottom';
-
-            const paddingX = fontSize * 0.9;
-            const paddingY = fontSize * 0.35;
-            const textMetrics = ctx.measureText(text);
-            const textWidth = textMetrics.width;
-
-            const boxX = (width - textWidth) * 0.5 - paddingX;
-            const boxY = height - Math.round(height * 0.08) - fontSize - paddingY * 2;
-            const boxW = textWidth + paddingX * 2;
-            const boxH = fontSize + paddingY * 2;
-
-            ctx.fillStyle = 'rgba(4, 6, 12, 0.78)';
-            ctx.beginPath();
-            ctx.roundRect(boxX, boxY, boxW, boxH, 12);
-            ctx.fill();
-
-            ctx.strokeStyle = 'rgba(168, 199, 250, 0.35)';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-
-            ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
-            ctx.shadowBlur = 8;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillText(text, width * 0.5, boxY + boxH - paddingY);
-
-            ctx.restore();
-            break;
-        }
+        await new Promise(r => setTimeout(r, 800));
     }
 }
 
 // =========================================================================
-// RUNTIME TIẾN TRÌNH KẾT XUẤT NATIVE 60 FPS
+// MÁY ẢO SHADERTOY JIT (CUNG CẤP HẠ TẦNG DUAL-PHASE FLOW WRAPPER)
+// =========================================================================
+function compileAndVerifyShader(gl, glslSource) {
+    const shader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(shader, glslSource);
+    gl.compileShader(shader);
+    const ok = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+    if (!ok) {
+        const log = gl.getShaderInfoLog(shader);
+        gl.deleteShader(shader);
+        return { success: false, log };
+    }
+    gl.deleteShader(shader);
+    return { success: true };
+}
+
+function buildJitVirtualMachineMaterial(geminiRenderSceneGlsl, width, height, matrices) {
+    const flows = Array.isArray(matrices.flow_matrices) ? matrices.flow_matrices : [];
+    const elastics = Array.isArray(matrices.elastic_matrices) ? matrices.elastic_matrices : [];
+
+    const cleanGeminiGlsl = String(geminiRenderSceneGlsl || '')
+        .replace(/```(?:glsl)?/gi, '').replace(/```/g, '').trim();
+
+    const vertexShader = `
+        varying vec2 vUv;
+        void main() {
+            vUv = vec2(uv.x, 1.0 - uv.y);
+            gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+    `;
+
+    const fragmentShader = `
+        precision highp float;
+        uniform vec2 uResolution;
+        uniform float uTime;
+
+        #define MAX_FLOW 6
+        uniform int uFlowCount;
+        uniform vec2 uFlowCenter[MAX_FLOW];
+        uniform vec2 uFlowRadius[MAX_FLOW];
+        uniform vec2 uFlowDirection[MAX_FLOW];
+        uniform float uFlowSpeed[MAX_FLOW];
+        uniform float uFlowFalloff[MAX_FLOW];
+
+        #define MAX_ELASTIC 6
+        uniform int uElasticCount;
+        uniform vec2 uElasticAnchor[MAX_ELASTIC];
+        uniform vec2 uElasticRadius[MAX_ELASTIC];
+        uniform vec2 uElasticVector[MAX_ELASTIC];
+        uniform float uElasticFreq[MAX_ELASTIC];
+        uniform float uElasticAmp[MAX_ELASTIC];
+        uniform float uElasticFalloff[MAX_ELASTIC];
+
+        varying vec2 vUv;
+
+        // --- HÀM TỪ GEMINI ---
+        ${cleanGeminiGlsl}
+
+        // --- ENGINE WRAPPER KHO BÁU BẺ CONG KHÔNG GIAN ---
+        void main() {
+            vec2 uv = vUv;
+            
+            // Dao động đàn hồi vi sai
+            for (int j = 0; j < MAX_ELASTIC; j++) {
+                if (j >= uElasticCount) break;
+                vec2 delta = (uv - uElasticAnchor[j]) / max(uElasticRadius[j], vec2(0.001));
+                float distSq = dot(delta, delta);
+                if (distSq < 1.0) {
+                    float elasticity = pow(clamp(sqrt(distSq), 0.0, 1.0), 1.5) * pow(clamp(1.0 - sqrt(distSq), 0.0, 1.0), uElasticFalloff[j]);
+                    float wave = sin(uTime * uElasticFreq[j] * 6.2831853);
+                    uv -= uElasticVector[j] * wave * uElasticAmp[j] * elasticity;
+                }
+            }
+
+            // Dòng chảy 2 pha khử rách điểm ảnh
+            vec2 flowOffsetA = vec2(0.0); vec2 flowOffsetB = vec2(0.0);
+            float flowWeight = 0.0; float flowInf = 0.0;
+
+            for (int i = 0; i < MAX_FLOW; i++) {
+                if (i >= uFlowCount) break;
+                vec2 delta = (uv - uFlowCenter[i]) / max(uFlowRadius[i], vec2(0.001));
+                float distSq = dot(delta, delta);
+                if (distSq < 1.0) {
+                    float influence = pow(clamp(1.0 - sqrt(distSq), 0.0, 1.0), uFlowFalloff[i]);
+                    float progA = fract(uTime * uFlowSpeed[i]);
+                    float progB = fract(uTime * uFlowSpeed[i] + 0.5);
+                    flowOffsetA += uFlowDirection[i] * (progA - 0.5) * influence;
+                    flowOffsetB += uFlowDirection[i] * (progB - 0.5) * influence;
+                    flowWeight = mix(flowWeight, abs(1.0 - 2.0 * progA), influence);
+                    flowInf = max(flowInf, influence);
+                }
+            }
+            
+            vec2 warpedUv = uv + mix(vec2(0.0), mix(flowOffsetA, flowOffsetB, flowWeight), flowInf);
+
+            // Chuẩn hóa tọa độ trung tâm cho hàm của Gemini
+            vec2 normalizedUv = warpedUv * 2.0 - 1.0;
+            normalizedUv.x *= uResolution.x / uResolution.y;
+
+            // Chuyển giao quyền kiểm soát màu sắc hoàn toàn cho AI
+            gl_FragColor = render_scene(normalizedUv, uTime);
+        }
+    `;
+
+    const mat = new THREE.ShaderMaterial({
+        vertexShader,
+        fragmentShader,
+        uniforms: {
+            uResolution: { value: new THREE.Vector2(width, height) },
+            uTime: { value: 0.0 },
+
+            uFlowCount: { value: Math.min(6, flows.length) },
+            uFlowCenter: { value: new Array(6).fill(0).map(() => new THREE.Vector2(0.5, 0.5)) },
+            uFlowRadius: { value: new Array(6).fill(0).map(() => new THREE.Vector2(0.2, 0.2)) },
+            uFlowDirection: { value: new Array(6).fill(0).map(() => new THREE.Vector2(0.0, 0.0)) },
+            uFlowSpeed: { value: new Float32Array(6).fill(0.5) },
+            uFlowFalloff: { value: new Float32Array(6).fill(2.0) },
+
+            uElasticCount: { value: Math.min(6, elastics.length) },
+            uElasticAnchor: { value: new Array(6).fill(0).map(() => new THREE.Vector2(0.5, 0.5)) },
+            uElasticRadius: { value: new Array(6).fill(0).map(() => new THREE.Vector2(0.2, 0.2)) },
+            uElasticVector: { value: new Array(6).fill(0).map(() => new THREE.Vector2(0.0, 0.0)) },
+            uElasticFreq: { value: new Float32Array(6).fill(1.0) },
+            uElasticAmp: { value: new Float32Array(6).fill(0.0) },
+            uElasticFalloff: { value: new Float32Array(6).fill(2.0) }
+        },
+        depthTest: false,
+        depthWrite: false
+    });
+
+    for (let i = 0; i < Math.min(6, flows.length); i++) {
+        const fl = flows[i];
+        mat.uniforms.uFlowCenter.value[i].set(fl.center?.[0]||0.5, fl.center?.[1]||0.5);
+        mat.uniforms.uFlowRadius.value[i].set(fl.radius?.[0]||0.2, fl.radius?.[1]||0.2);
+        mat.uniforms.uFlowDirection.value[i].set(fl.direction?.[0]||0.0, fl.direction?.[1]||0.0);
+        mat.uniforms.uFlowSpeed.value[i] = Number(fl.speed) || 0.5;
+        mat.uniforms.uFlowFalloff.value[i] = Number(fl.falloff) || 2.0;
+    }
+    for (let j = 0; j < Math.min(6, elastics.length); j++) {
+        const el = elastics[j];
+        mat.uniforms.uElasticAnchor.value[j].set(el.anchor?.[0]||0.5, el.anchor?.[1]||0.5);
+        mat.uniforms.uElasticRadius.value[j].set(el.radius?.[0]||0.2, el.radius?.[1]||0.2);
+        mat.uniforms.uElasticVector.value[j].set(el.vector?.[0]||0.0, el.vector?.[1]||0.0);
+        mat.uniforms.uElasticFreq.value[j] = Number(el.frequency_hz) || 1.0;
+        mat.uniforms.uElasticAmp.value[j] = Number(el.amplitude) || 0.04;
+        mat.uniforms.uElasticFalloff.value[j] = Number(el.falloff) || 2.0;
+    }
+    return mat;
+}
+
+// =========================================================================
+// RUNTIME TIẾN TRÌNH KẾT XUẤT (VÒNG LẶP TỰ HỒI QUY QUA TỪNG GIÂY)
 // =========================================================================
 self.onmessage = async function(e) {
-    const { masterScript, userOriginalPrompt, apiKey, apiKeys } = e.data;
+    const { masterScript, apiKey, apiKeys } = e.data;
     const heartbeatTimer = setInterval(() => self.postMessage({ type: 'HEARTBEAT', ts: Date.now() }), 2000);
     const postStatus = (text, percent = null) => self.postMessage({ type: 'STATUS', text, percent });
 
-    let sharedRenderer = null;
-    let webglCanvas = null;
-    let compositeCanvas = null;
-    let compositeCtx = null;
-    let rawMuxer = null;
-    let activeEncoder = null;
-    let audioEngine = null;
-    let opfsFileHandle = null;
-    let opfsWritable = null;
-    let isUsingOpfs = false;
+    let sharedRenderer = null, webglCanvas = null, rawMuxer = null, activeEncoder = null;
+    let opfsFileHandle = null, opfsWritable = null;
 
     try {
         const overallDuration = Number(masterScript.total_duration) || 15;
         const fps = 60;
-        const shotSampleRate = 48000;
         const validKeyPool = (Array.isArray(apiKeys) && apiKeys.length > 0) ? apiKeys : [apiKey];
-        const voiceCharacters = masterScript.voice_characters || [];
 
         let width = Math.floor((masterScript.overall_resolution?.width || 1024) / 16) * 16;
         let height = Math.floor((masterScript.overall_resolution?.height || 576) / 16) * 16;
-
         const rawScenesList = Array.isArray(masterScript.scenes) ? masterScript.scenes : [masterScript];
         const totalScenes = rawScenesList.length;
 
-        let supportsAudio = (typeof AudioEncoder !== 'undefined' && typeof AudioData !== 'undefined');
-
-        let muxerTarget = null;
-        try {
-            if (typeof navigator !== 'undefined' && navigator.storage?.getDirectory) {
-                const root = await navigator.storage.getDirectory();
-                opfsFileHandle = await root.getFileHandle(`gdeep_film_${Date.now()}.mp4`, { create: true });
-                if (opfsFileHandle.createWritable) {
-                    opfsWritable = await opfsFileHandle.createWritable();
-                    const TargetClass = self.Mp4Muxer?.FileSystemWritableFileStreamTarget || self.FileSystemWritableFileStreamTarget;
-                    muxerTarget = new TargetClass(opfsWritable);
-                    isUsingOpfs = true;
-                }
-            }
-        } catch (_) {}
-
-        if (!muxerTarget) {
-            const FallbackClass = self.Mp4Muxer?.ArrayBufferTarget || self.ArrayBufferTarget;
-            muxerTarget = new FallbackClass();
-        }
-
-        const MuxerClass = self.Mp4Muxer?.Muxer || self.Muxer;
-        rawMuxer = new MuxerClass({
-            target: muxerTarget,
-            video: { codec: 'avc', width, height },
-            audio: supportsAudio ? { codec: 'aac', numberOfChannels: 2, sampleRate: shotSampleRate } : undefined,
-            fastStart: isUsingOpfs ? false : 'in-memory'
+        let muxerTarget = new (self.Mp4Muxer?.ArrayBufferTarget || self.ArrayBufferTarget)();
+        rawMuxer = new (self.Mp4Muxer?.Muxer || self.Muxer)({
+            target: muxerTarget, video: { codec: 'avc', width, height }, fastStart: true
         });
 
-        if (supportsAudio) {
-            try {
-                audioEngine = new AudioEncoder({
-                    output: (chunk, meta) => rawMuxer && rawMuxer.addAudioChunk(chunk, meta),
-                    error: err => console.warn("[AudioEncoder]", err)
-                });
-                audioEngine.configure({
-                    codec: 'mp4a.40.2',
-                    numberOfChannels: 2,
-                    sampleRate: shotSampleRate,
-                    bitrate: 192000
-                });
-            } catch (_) {
-                supportsAudio = false;
-                audioEngine = null;
-            }
-        }
-
-        let selectedCodec = 'avc1.4d002a';
-        if (typeof VideoEncoder.isConfigSupported === 'function') {
-            const checkMain = await VideoEncoder.isConfigSupported({ codec: 'avc1.4d002a', width, height });
-            if (!checkMain.supported) selectedCodec = 'avc1.42001f';
-        }
-
-        activeEncoder = new VideoEncoder({
-            output: (chunk, meta) => rawMuxer.addVideoChunk(chunk, meta),
-            error: err => console.warn("[VideoEncoder]", err)
-        });
-        activeEncoder.configure({
-            codec: selectedCodec,
-            width,
-            height,
-            bitrate: Math.min(12000000, Math.round(width * height * fps * 0.14)),
-            framerate: fps
-        });
+        activeEncoder = new VideoEncoder({ output: (c, m) => rawMuxer.addVideoChunk(c, m), error: () => {} });
+        activeEncoder.configure({ codec: 'avc1.4d002a', width, height, bitrate: Math.min(12000000, Math.round(width * height * fps * 0.14)), framerate: fps });
 
         webglCanvas = new OffscreenCanvas(width, height);
-        sharedRenderer = new THREE.WebGLRenderer({
-            canvas: webglCanvas,
-            antialias: true,
-            powerPreference: "high-performance",
-            preserveDrawingBuffer: true
-        });
+        sharedRenderer = new THREE.WebGLRenderer({ canvas: webglCanvas, antialias: false, preserveDrawingBuffer: true });
         sharedRenderer.setSize(width, height, false);
 
-        compositeCanvas = new OffscreenCanvas(width, height);
-        compositeCtx = compositeCanvas.getContext('2d', { alpha: false, desynchronized: true });
-
-        const sceneRenderTarget = new THREE.WebGLRenderTarget(width, height, {
-            minFilter: THREE.LinearFilter,
-            magFilter: THREE.LinearFilter,
-            format: THREE.RGBAFormat
-        });
-
-        const postScene = new THREE.Scene();
-        const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-        const postQuadGeo = new THREE.PlaneGeometry(2, 2);
-        const lensPostMat = createCinematicLensPostMaterial();
-        lensPostMat.uniforms.uResolution.value.set(width, height);
-        const postMesh = new THREE.Mesh(postQuadGeo, lensPostMat);
-        postScene.add(postMesh);
-
-        const quadScene = new THREE.Scene();
+        const vmScene = new THREE.Scene(), vmCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), vmQuadGeo = new THREE.PlaneGeometry(2, 2);
 
         let cumulativeGlobalFrameCount = 0;
-        let cumulativeAudioFramesEncoded = 0;
         const shotsLog = [];
 
+        // VÒNG LẶP SẢN XUẤT CÁC PHÂN CẢNH
         for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
             const sceneSpec = rawScenesList[sIdx] || {};
-            const currentSceneNum = sIdx + 1;
+            const shotDuration = Number(sceneSpec.target_duration) || Math.round(overallDuration / totalScenes);
             
-            let shotDuration = Number(sceneSpec.target_duration) || Math.round(overallDuration / totalScenes);
-            if (Array.isArray(sceneSpec.dialogue_cues) && sceneSpec.dialogue_cues.length > 0) {
-                for (const cue of sceneSpec.dialogue_cues) {
-                    const cueEstimatedEnd = (Number(cue.startTimeSec) || 0.0) + Math.max(1.0, (cue.text?.length || 0) * 0.075);
-                    if (cueEstimatedEnd > shotDuration) {
-                        shotDuration = Math.ceil(cueEstimatedEnd + 0.5);
-                    }
-                }
-            }
+            let anchorBase64 = null;
+            let currentJitMat = null;
+            let currentMesh = null;
 
-            const totalFrames = Math.round(shotDuration * fps);
-            const frameMicros = 1000000 / fps;
-
-            postStatus(`[Stage 1 Blueprint] Đang giải mã phân cảnh [${currentSceneNum}/${totalScenes}]...`);
-            if (sIdx > 0) await new Promise(r => setTimeout(r, 1200));
-
-            const shotBlueprint = {
-                title: sceneSpec.title || `Cảnh quay ${currentSceneNum}`,
-                scene_index: currentSceneNum,
-                total_scenes: totalScenes,
-                cinematography: sceneSpec.cinematography || {},
-                subject_direction: sceneSpec.subject_direction || {},
-                environment_direction: sceneSpec.environment_direction || {},
-                sound_and_dialogue: sceneSpec.sound_and_dialogue || {},
-                production_bible: masterScript.production_bible || {},
-                action_description: sceneSpec.action_description || '',
-                previous_scene_anchor: (sIdx > 0 && shotsLog[sIdx - 1]) ? {
-                    previous_title: shotsLog[sIdx - 1].title,
-                    previous_end_state: "Tiếp tục trực tiếp từ bố cục cảnh trước, bảo đảm màu sắc và vị trí nhân vật không bị nhảy vọt."
-                } : null
-            };
-
-            // STAGE 1: DYNAMIC BLUEPRINT GENERATION
-            const continuumPlan = await requestHamiltonianContinuumTensor(
-                shotBlueprint,
-                shotDuration,
-                validKeyPool,
-                postStatus
-            );
-
-            // STAGE 2: COMPILER & RASTERIZE KEYFRAMES
-            postStatus(`[Stage 2 Assembly] Đang nạp Scene Graph và nung chất liệu Vector...`);
-            let masterTexStart, masterTexEnd;
-            try {
-                masterTexStart = await rasterizeVectorToCanvas(continuumPlan.vector_keyframes.start_svg, width, height);
-                masterTexEnd = await rasterizeVectorToCanvas(continuumPlan.vector_keyframes.end_svg, width, height);
-            } catch (err) {
-                const fbcv = new OffscreenCanvas(width, height);
-                const fbctx = fbcv.getContext('2d');
-                fbctx.fillStyle = "#04050a"; fbctx.fillRect(0, 0, width, height);
-                masterTexStart = new THREE.CanvasTexture(fbcv);
-                masterTexEnd = new THREE.CanvasTexture(fbcv);
-            }
-
-            // TIẾN TRÌNH ÂM HỌC
-            postStatus(`[Stage 2] Đang tổng hợp nhạc nền giao hưởng và âm thanh vật lý...`);
-            const totalShotAudioSamples = Math.ceil(shotDuration * shotSampleRate);
-            const leftChannel = new Float32Array(totalShotAudioSamples);
-            const rightChannel = new Float32Array(totalShotAudioSamples);
-
-            synthesizeAutonomousScoreAndFoley(continuumPlan.soundscape, shotDuration, shotSampleRate, leftChannel, rightChannel);
-
-            if (Array.isArray(sceneSpec.dialogue_cues) && sceneSpec.dialogue_cues.length > 0) {
-                for (const cue of sceneSpec.dialogue_cues) {
-                    const charObj = voiceCharacters.find(c => c.name === cue.speaker);
-                    const voiceName = charObj ? (charObj.geminiVoice || "Puck") : "Puck";
-                    const voicePcm = await synthesizeVoiceWithKeyPool(cue.text, voiceName, validKeyPool, postStatus);
-                    if (voicePcm) {
-                        const startSample = Math.floor((Number(cue.startTimeSec) || 0.0) * shotSampleRate);
-                        const ratio = voicePcm.sampleRate / shotSampleRate;
-                        const len = Math.floor(voicePcm.samples.length / ratio);
-                        for (let j = 0; j < len; j++) {
-                            const idx = startSample + j;
-                            if (idx >= totalShotAudioSamples) break;
-                            const sVal = voicePcm.samples[Math.floor(j * ratio)];
-                            leftChannel[idx] += sVal * 1.1;
-                            rightChannel[idx] += sVal * 1.1;
-                        }
-                    }
-                }
-            }
-
-            if (supportsAudio && audioEngine && audioEngine.state === 'configured') {
-                const aacFrameSize = 1024;
-                const totalPaddedChunks = Math.ceil(totalShotAudioSamples / aacFrameSize);
-
-                for (let c = 0; c < totalPaddedChunks; c++) {
-                    while (audioEngine.encodeQueueSize > 10) await new Promise(r => setTimeout(r, 6));
-                    const offset = c * aacFrameSize;
-                    const chunkLen = Math.min(aacFrameSize, totalShotAudioSamples - offset);
-                    const planarData = new Float32Array(aacFrameSize * 2);
-                    planarData.set(leftChannel.subarray(offset, offset + chunkLen), 0);
-                    planarData.set(rightChannel.subarray(offset, offset + chunkLen), aacFrameSize);
-
-                    const aData = new AudioData({
-                        format: 'f32-planar',
-                        sampleRate: shotSampleRate,
-                        numberOfFrames: aacFrameSize,
-                        numberOfChannels: 2,
-                        timestamp: Math.round((cumulativeAudioFramesEncoded / shotSampleRate) * 1000000),
-                        data: planarData
-                    });
-                    audioEngine.encode(aData);
-                    aData.close();
-                    cumulativeAudioFramesEncoded += aacFrameSize;
-                }
-            }
-
-            // STAGE 2 SCENE GRAPH MOUNTING
-            const decomp = continuumPlan.spatial_decomposition || {};
-            const optics = continuumPlan.cinematic_optics || {};
-            const bio = continuumPlan.biological_features || {};
-            const pixMat = continuumPlan.pixel_motion_matrix || {};
-            const cameraManifold = continuumPlan.camera_manifold || {};
-            const skeletonData = continuumPlan.universal_kinematic_rig || {};
-            const vol360 = continuumPlan.volumetric_360_hull || {};
-            const glazing = continuumPlan.chromophore_glazing || {};
-            const physics = continuumPlan.deterministic_physics || {};
-            const population = continuumPlan.population_instancing || {};
-            const sceneGraph = continuumPlan.scene_graph || {};
-
-            const camFov = Math.max(1.0, Math.min(170.0, Number(cameraManifold.fov_degrees || sceneGraph.camera?.field_of_view || 45.0)));
-            const camDist = Math.max(0.1, Number(cameraManifold.camera_distance_z || sceneGraph.camera?.position?.[2] || 2.2));
-
-            const quadCamera = new THREE.PerspectiveCamera(camFov, width / height, 0.01, 1000.0);
-            quadCamera.up.set(0, 1, 0);
-            quadCamera.position.set(0, 0, camDist);
-            quadCamera.lookAt(0, 0, 0);
-
-            const vFovRad = (quadCamera.fov * Math.PI) / 180.0;
-            const visibleHeight = 2.0 * Math.tan(vFovRad / 2.0) * camDist;
-            const visibleWidth = visibleHeight * (width / height);
-
-            const startLayers = buildAdaptiveVolumetricLayersFromTexture(masterTexStart, width, height, decomp);
-            const endLayers = buildAdaptiveVolumetricLayersFromTexture(masterTexEnd, width, height, decomp);
-
-            // 1. Hậu Cảnh Mesh
-            const bgDepthZ = Number(decomp.background_depth_z) || -0.55;
-            const bgScaleFactor = 1.0 - (bgDepthZ / camDist);
-            const bgGeo = new THREE.PlaneGeometry(visibleWidth * bgScaleFactor * 1.35, visibleHeight * bgScaleFactor * 1.35);
-            const bgMat = createUnifiedUltimateBackgroundMaterial();
-            bgMat.uniforms.uTextureStart.value = startLayers.bgTex;
-            bgMat.uniforms.uTextureEnd.value = endLayers.bgTex;
-            bgMat.uniforms.uHasDualKeyframes.value = true;
-            bgMat.uniforms.uBokehRadius.value = Number(optics.bokeh_radius) || 0.0;
-            bgMat.uniforms.uShadowOpacity.value = Number(optics.shadow_opacity) || 0.0;
-            bgMat.uniforms.uShadowFalloffInner.value = Number(optics.shadow_falloff_inner) || 0.1;
-            bgMat.uniforms.uShadowDarkness.value = Number(optics.shadow_darkness) || 0.0;
-
-            const bgMesh = new THREE.Mesh(bgGeo, bgMat);
-            bgMesh.position.set(0, 0, bgDepthZ);
-            quadScene.add(bgMesh);
-
-            // 2. Hạt Bụi Khí Quyển
-            const particleCount = Math.max(40, Math.min(500, parseInt(optics.particle_density, 10) || 160));
-            const particleGeo = new THREE.BufferGeometry();
-            const particlePositions = new Float32Array(particleCount * 3);
-            const particleVelocities = new Float32Array(particleCount * 3);
-
-            for (let pIdx = 0; pIdx < particleCount; pIdx++) {
-                particlePositions[pIdx * 3 + 0] = (Math.random() - 0.5) * visibleWidth * 1.4;
-                particlePositions[pIdx * 3 + 1] = (Math.random() - 0.5) * visibleHeight * 1.4;
-                particlePositions[pIdx * 3 + 2] = -0.4 + Math.random() * 2.2;
+            // [TỬ HUYỆT ĐÃ KHẮC PHỤC]: VÒNG LẶP TỰ HỒI QUY QUA TỪNG GIÂY
+            for (let sec = 0; sec < shotDuration; sec++) {
                 
-                particleVelocities[pIdx * 3 + 0] = (Math.random() - 0.5) * 0.02;
-                particleVelocities[pIdx * 3 + 1] = (Math.random() - 0.5) * 0.02 + 0.008;
-                particleVelocities[pIdx * 3 + 2] = (Math.random() - 0.5) * 0.02;
-            }
-            particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+                // 1. Nhờ Gemini phân tích frame cũ và nâng cấp Shader cho giây mới
+                const aiPlan = await requestAutoregressiveState(sec, anchorBase64, sceneSpec, validKeyPool, postStatus);
 
-            const lCol = Array.isArray(optics.light_color) ? optics.light_color : [1.0, 0.95, 0.9];
-            const particleMat = new THREE.PointsMaterial({
-                color: new THREE.Color(Number(lCol[0]) || 1.0, Number(lCol[1]) || 1.0, Number(lCol[2]) || 1.0),
-                size: Math.max(1.5, visibleHeight * 0.007),
-                transparent: true,
-                opacity: Number(optics.particle_opacity) || 0.42,
-                blending: THREE.AdditiveBlending,
-                depthWrite: false
-            });
-            const particleSystem = new THREE.Points(particleGeo, particleMat);
-            quadScene.add(particleSystem);
-
-            // 3. Tiền Cảnh Instanced Mesh
-            const fgDepthZ = Number(decomp.subject_depth_z) || 0.35;
-            const fgScaleFactor = 1.0 - (fgDepthZ / camDist);
-            const fgGeo = new THREE.PlaneGeometry(visibleWidth * fgScaleFactor, visibleHeight * fgScaleFactor, 64, 64);
-            const fgMat = createMasterOmniSubjectMaterial();
-            fgMat.uniforms.uTextureStart.value = startLayers.fgTex;
-            fgMat.uniforms.uTextureEnd.value = endLayers.fgTex;
-            fgMat.uniforms.uHasDualKeyframes.value = true;
-            fgMat.uniforms.uResolution.value.set(width, height);
-
-            fgMat.uniforms.uIsosurfaceActive.value = Number(physics.isosurface_active) || 0.0;
-            if (Array.isArray(physics.isosurface_center)) {
-                fgMat.uniforms.uIsosurfaceCenter.value.set(Number(physics.isosurface_center[0]) || 0.0, Number(physics.isosurface_center[1]) || 0.0, Number(physics.isosurface_center[2]) || 0.0);
-            }
-            fgMat.uniforms.uIsosurfaceStrength.value = Number(physics.isosurface_strength) || 0.0;
-            fgMat.uniforms.uIsosurfaceSoftness.value = Number(physics.isosurface_softness) || 0.04;
-            fgMat.uniforms.uIsosurfaceDisplaceScale.value = Number(physics.isosurface_displace_scale) || 0.0;
-
-            fgMat.uniforms.uFractureActive.value = Number(physics.fracture_active) || 0.0;
-            fgMat.uniforms.uFractureImpactTime.value = Number(physics.fracture_impact_time) || 999.0;
-            fgMat.uniforms.uFractureCellScale.value = Number(physics.fracture_cell_scale) || 12.0;
-            fgMat.uniforms.uFractureThreshold.value = Number(physics.fracture_threshold) || 0.5;
-            fgMat.uniforms.uFractureImpulse.value = Number(physics.fracture_impulse) || 0.0;
-
-            fgMat.uniforms.uContactActive.value = Number(physics.contact_active) || 0.0;
-            if (Array.isArray(physics.contact_point)) {
-                fgMat.uniforms.uContactPoint.value.set(Number(physics.contact_point[0]) || 0.0, Number(physics.contact_point[1]) || 0.0, Number(physics.contact_point[2]) || 0.0);
-            }
-            if (Array.isArray(physics.contact_normal)) {
-                fgMat.uniforms.uContactNormal.value.set(Number(physics.contact_normal[0]) || 0.0, Number(physics.contact_normal[1]) || 1.0, Number(physics.contact_normal[2]) || 0.0);
-            }
-            fgMat.uniforms.uContactRadius.value = Number(physics.contact_radius) || 0.1;
-            fgMat.uniforms.uContactStiffness.value = Number(physics.contact_stiffness) || 0.5;
-
-            if (Array.isArray(glazing.subsurface_color)) {
-                fgMat.uniforms.uSubsurfaceColor.value.set(
-                    Number(glazing.subsurface_color[0]) || 0.92,
-                    Number(glazing.subsurface_color[1]) || 0.28,
-                    Number(glazing.subsurface_color[2]) || 0.18
-                );
-            }
-            fgMat.uniforms.uSubsurfaceWrap.value = Number(glazing.subsurface_wrap) || 0.35;
-            fgMat.uniforms.uLipidSheenStrength.value = Number(glazing.lipid_sheen_strength) || 0.45;
-            fgMat.uniforms.uMicroGrainScale.value = Number(glazing.micro_grain_scale) || 240.0;
-            fgMat.uniforms.uMicroGrainDensity.value = Number(glazing.micro_grain_density) || 0.08;
-
-            fgMat.uniforms.uDepthThickness.value = Number(vol360.depth_thickness) || 0.18;
-            if (Array.isArray(vol360.posterior_tint)) {
-                fgMat.uniforms.uPosteriorTint.value.set(Number(vol360.posterior_tint[0]) || 0.25, Number(vol360.posterior_tint[1]) || 0.22, Number(vol360.posterior_tint[2]) || 0.28);
-            }
-            fgMat.uniforms.uPosteriorOcclusion.value = Number(vol360.posterior_occlusion) || 0.65;
-            fgMat.uniforms.uInstancePhaseSpread.value = Number(population.instance_phase_spread) || 2.5;
-
-            const pivots = skeletonData.joint_pivots || [];
-            for (let j = 0; j < 8; j++) {
-                if (Array.isArray(pivots[j])) {
-                    fgMat.uniforms.uJointPivots.value[j].set(Number(pivots[j][0]) || 0.5, Number(pivots[j][1]) || 0.5, Number(pivots[j][2]) || 0.0);
-                }
-            }
-
-            if (Array.isArray(decomp.wave_spatial_tensor)) {
-                fgMat.uniforms.uWaveSpatialTensor.value.set(
-                    Number(decomp.wave_spatial_tensor[0]) || 0.0,
-                    Number(decomp.wave_spatial_tensor[1]) || 0.0,
-                    Number(decomp.wave_spatial_tensor[2]) || 0.0,
-                    Number(decomp.wave_spatial_tensor[3]) || 0.0
-                );
-            }
-            if (Array.isArray(decomp.deform_center)) {
-                fgMat.uniforms.uDeformCenter.value.set(Number(decomp.deform_center[0]) || 0.0, Number(decomp.deform_center[1]) || 0.0);
-            }
-
-            fgMat.uniforms.uKineticFreq.value = Number(decomp.kinetic_freq) || 0.0;
-            fgMat.uniforms.uKineticAmp.value = Number(decomp.kinetic_amp) || 0.0;
-            fgMat.uniforms.uKineticScale.value = Number(decomp.kinetic_scale) || 0.0;
-            fgMat.uniforms.uVocalScale.value = Number(decomp.vocal_scale) || 0.0;
-            fgMat.uniforms.uVocalFreqMult.value = Number(decomp.vocal_freq_multiplier) || 1.0;
-            fgMat.uniforms.uSubWaveScale.value = Number(decomp.sub_wave_scale) || 1.0;
-
-            if (Array.isArray(pixMat.primary_flow_vector)) {
-                fgMat.uniforms.uFlowVector.value.set(Number(pixMat.primary_flow_vector[0]) || 0.0, Number(pixMat.primary_flow_vector[1]) || 0.0);
-            }
-            if (Array.isArray(pixMat.flow_harmonics)) {
-                fgMat.uniforms.uFlowHarmonics.value.set(
-                    Number(pixMat.flow_harmonics[0]) || 0.0,
-                    Number(pixMat.flow_harmonics[1]) || 0.0,
-                    Number(pixMat.flow_harmonics[2]) || 0.0,
-                    Number(pixMat.flow_harmonics[3]) || 0.0
-                );
-            }
-            fgMat.uniforms.uFlowSpatialScale.value = Number(pixMat.flow_spatial_scale) || 1.0;
-            fgMat.uniforms.uFlowSpeed.value = Number(pixMat.flow_speed) || 0.0;
-            fgMat.uniforms.uCurlScale.value = Number(pixMat.curl_scale) || 0.0;
-            fgMat.uniforms.uMicroAmp.value = Number(pixMat.micro_deformation_amp) || 0.0;
-            fgMat.uniforms.uFlowMultiplier.value = Number(pixMat.flow_multiplier) || 0.0;
-            fgMat.uniforms.uBassMultiplier.value = Number(pixMat.bass_multiplier) || 0.0;
-
-            if (Array.isArray(pixMat.anchor_center)) {
-                fgMat.uniforms.uAnchorCenter.value.set(Number(pixMat.anchor_center[0]) || 0.5, Number(pixMat.anchor_center[1]) || 0.5);
-                fgMat.uniforms.uAnchorRadius.value = Number(pixMat.anchor_radius) || 0.0;
-                fgMat.uniforms.uAnchorFalloff.value = Number(pixMat.anchor_falloff) || 0.0;
-            }
-
-            if (Array.isArray(pixMat.shimmer_coords)) {
-                fgMat.uniforms.uShimmerCoords.value.set(Number(pixMat.shimmer_coords[0]) || 0.0, Number(pixMat.shimmer_coords[1]) || 0.0);
-            }
-            fgMat.uniforms.uShimmerSpeed.value = Number(pixMat.shimmer_speed) || 0.0;
-            fgMat.uniforms.uShimmerAmp.value = Number(optics.shimmer_amp) || 0.0;
-            fgMat.uniforms.uVocalThreshold.value = Number(continuumPlan.soundscape?.vocal_threshold_power) || 0.0;
-            fgMat.uniforms.uTrebleThreshold.value = Number(continuumPlan.soundscape?.treble_threshold_power) || 0.0;
-
-            const lPos = Array.isArray(optics.light_pos) ? optics.light_pos : (sceneGraph.environment?.lighting_setup?.[0]?.vector_or_position || [0.5, 1.2, 1.5]);
-            fgMat.uniforms.uLightPos.value.set(Number(lPos[0]) || 0.0, Number(lPos[1]) || 0.0, Number(lPos[2]) || 1.0);
-            fgMat.uniforms.uLightColor.value.set(Number(lCol[0]) || 1.0, Number(lCol[1]) || 1.0, Number(lCol[2]) || 1.0);
-            fgMat.uniforms.uAmbientStrength.value = Number(optics.ambient_strength) || 1.0;
-            fgMat.uniforms.uDiffuseStrength.value = Number(optics.diffuse_strength) || 0.0;
-            fgMat.uniforms.uSpecStrength.value = Number(optics.specular_strength) || 0.0;
-            fgMat.uniforms.uShininess.value = Math.max(1.0, Number(optics.surface_shininess) || 1.0);
-            fgMat.uniforms.uNormalStrength.value = Number(optics.normal_strength) || 0.0;
-            fgMat.uniforms.uMotionBlurMult.value = Number(optics.motion_blur_multiplier) || 0.0;
-
-            fgMat.uniforms.uHasFace.value = Boolean(bio.has_face);
-            if (bio.has_face) {
-                if (Array.isArray(bio.eye_left)) fgMat.uniforms.uEyeLeft.value.set(Number(bio.eye_left[0]) || 0.0, Number(bio.eye_left[1]) || 0.0);
-                if (Array.isArray(bio.eye_right)) fgMat.uniforms.uEyeRight.value.set(Number(bio.eye_right[0]) || 0.0, Number(bio.eye_right[1]) || 0.0);
+                // 2. Tự sửa lỗi và Biên dịch lại Shader
+                let glslCode = String(aiPlan.glsl_render_scene || '').replace(/```(?:glsl)?/gi, '').replace(/```/g, '').trim();
+                let check = compileAndVerifyShader(sharedRenderer.getContext(), `precision highp float; uniform vec2 uResolution; uniform float uTime; ${glslCode} void main() { gl_FragColor = render_scene(vec2(0.0), 0.0); }`);
                 
-                const rx = Math.max(0.0001, Number(bio.eye_radius_x) || 0.01);
-                const ry = Math.max(0.0001, Number(bio.eye_radius_y) || 0.01);
-                fgMat.uniforms.uEyeSigmaInv.value.set(1.0 / (rx * rx), 1.0 / (ry * ry));
-
-                fgMat.uniforms.uBlinkTightness.value = Number(bio.blink_tightness) || 0.0;
-
-                if (Array.isArray(bio.mouth_center)) fgMat.uniforms.uMouthCenter.value.set(Number(bio.mouth_center[0]) || 0.0, Number(bio.mouth_center[1]) || 0.0);
-                const mrx = Math.max(0.0001, Number(bio.mouth_radius_x) || 0.01);
-                const mry = Math.max(0.0001, Number(bio.mouth_radius_y) || 0.01);
-                fgMat.uniforms.uMouthSigmaInv.value.set(1.0 / (mrx * mrx), 1.0 / (mry * mry));
-
-                fgMat.uniforms.uMouthSensitivity.value = Number(bio.mouth_open_sensitivity) || 0.0;
-                fgMat.uniforms.uMouthUpperRatio.value = Number(bio.mouth_upper_ratio) || 1.0;
-                fgMat.uniforms.uMouthLowerRatio.value = Number(bio.mouth_lower_ratio) || 0.5;
-                fgMat.uniforms.uBlinkInterval.value = Math.max(0.001, Number(bio.blink_interval_sec) || 4.0);
-                fgMat.uniforms.uBlinkDuration.value = Number(bio.blink_duration_sec) || 0.0;
-                fgMat.uniforms.uSaccadeFreq.value = Number(bio.saccade_freq) || 1.0;
-                fgMat.uniforms.uSaccadeAmp.value = Number(bio.saccade_amp) || 0.0;
-            }
-
-            const totalInstances = Math.max(1, Math.min(120, parseInt(population.instance_count, 10) || 1));
-            const fgMesh = new THREE.InstancedMesh(fgGeo, fgMat, totalInstances);
-            const dummyMatrix = new THREE.Matrix4();
-            const spreadX = Number(population.distribution_spread_x) || 0.0;
-            const spreadY = Number(population.distribution_spread_y) || 0.0;
-            const spreadZ = Number(population.distribution_spread_z) || 0.0;
-
-            for (let i = 0; i < totalInstances; i++) {
-                if (i === 0) {
-                    dummyMatrix.setPosition(0, 0, fgDepthZ);
-                } else {
-                    const instX = (Math.random() - 0.5) * spreadX * visibleWidth;
-                    const instY = (Math.random() - 0.5) * spreadY * visibleHeight;
-                    const instZ = fgDepthZ - Math.random() * spreadZ;
-                    dummyMatrix.setPosition(instX, instY, instZ);
+                if (!check.success) {
+                    postStatus(`[Giây ${sec}] Lỗi cú pháp GPU, tự động sửa...`);
+                    try {
+                        const fixRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${validKeyPool[0]}`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: `Sửa lỗi GLSL: ${check.log}\n\nMã:\n${glslCode}\n\nTrả về DUY NHẤT mã GLSL hoàn chỉnh của hàm render_scene.` }] }] })
+                        });
+                        const hText = (await fixRes.json())?.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (hText) glslCode = hText.replace(/```(?:glsl)?/gi, '').replace(/```/g, '').trim();
+                    } catch (_) {}
                 }
-                fgMesh.setMatrixAt(i, dummyMatrix);
-            }
-            fgMesh.instanceMatrix.needsUpdate = true;
-            quadScene.add(fgMesh);
 
-            lensPostMat.uniforms.uFilmGrain.value = Number(optics.film_grain) || 0.024;
-            lensPostMat.uniforms.uChromaticAberration.value = Number(optics.chromatic_aberration) || 0.016;
-            lensPostMat.uniforms.uHalation.value = Number(optics.halation) || 0.38;
-            lensPostMat.uniforms.uVignette.value = Number(optics.vignette) || 0.28;
+                if (currentMesh) vmScene.remove(currentMesh);
+                if (currentJitMat) currentJitMat.dispose();
 
-            // =========================================================================
-            // STAGE 4: TỰ ĐỘNG HỘI TỤ THỊ GIÁC VỚI GEMINI VISION (ZERO SCENE REBUILD)
-            // =========================================================================
-            await executeStage4VisionFeedbackLoop(
-                sharedRenderer, 
-                quadScene, 
-                quadCamera, 
-                sceneRenderTarget, 
-                postScene, 
-                postCam, 
-                lensPostMat, 
-                fgMat, 
-                userOriginalPrompt || shotBlueprint.action_description, 
-                validKeyPool, 
-                postStatus
-            );
+                currentJitMat = buildJitVirtualMachineMaterial(glslCode, width, height, aiPlan);
+                currentMesh = new THREE.Mesh(vmQuadGeo, currentJitMat);
+                vmScene.add(currentMesh);
 
-            const subjectTrajectory = continuumPlan.subject_free_motion?.trajectory || [];
-            const subjectEasing = continuumPlan.subject_free_motion?.easing_type || "smoothstep";
+                // 3. Render 60 Frame cho giây này
+                for (let f = 0; f < fps; f++) {
+                    const currentGlobalSecond = sec + (f / fps);
+                    currentJitMat.uniforms.uTime.value = currentGlobalSecond;
 
-            const cameraTrajectory = cameraManifold.trajectory || [];
-            const cameraEasing = cameraManifold.easing_type || "smoothstep";
-            const jointTracks = skeletonData.joint_trajectories || [];
+                    sharedRenderer.render(vmScene, vmCamera);
 
-            let prevSubPos = new THREE.Vector2(0, 0);
-            let prevCamPos = new THREE.Vector2(0, 0);
-
-            // STAGE 3: TIẾN TRÌNH KẾT XUẤT 60 FPS
-            for (let f = 0; f < totalFrames; f++) {
-                const progress = f / Math.max(1, totalFrames - 1);
-                const currentSecond = f / fps;
-
-                fgMat.uniforms.uTime.value = currentSecond;
-                fgMat.uniforms.uProgress.value = progress;
-                bgMat.uniforms.uProgress.value = progress;
-                lensPostMat.uniforms.uTime.value = currentSecond;
-
-                const audioDynamics = extractInstantaneousAudioEnergies(leftChannel, currentSecond, shotSampleRate);
-                fgMat.uniforms.uAudioBass.value = audioDynamics.bass;
-                fgMat.uniforms.uAudioVocal.value = audioDynamics.vocal;
-                fgMat.uniforms.uAudioTreble.value = audioDynamics.treble;
-
-                // 1. Diễn hoạt Khớp xương
-                for (let j = 0; j < 8; j++) {
-                    if (Array.isArray(jointTracks[j])) {
-                        const jRot = interpolateSplineProperty(jointTracks[j], progress, 'rot', subjectEasing);
-                        fgMat.uniforms.uJointRotations.value[j].set(
-                            getArrVal(jRot, 0, 0.0),
-                            getArrVal(jRot, 1, 0.0),
-                            getArrVal(jRot, 2, 0.0)
-                        );
+                    // CHỤP ẢNH TẠI FRAME CUỐI CỦA GIÂY ĐỂ LÀM MỎ NEO TỰ HỒI QUY
+                    if (f === fps - 1) {
+                        const bmp = await createImageBitmap(webglCanvas);
+                        anchorBase64 = await bitmapToBase64(bmp, 512);
+                        bmp.close();
                     }
-                }
 
-                // 2. Diễn hoạt Bụi thể tích
-                const posAttr = particleGeo.attributes.position;
-                for (let pIdx = 0; pIdx < particleCount; pIdx++) {
-                    posAttr.array[pIdx * 3 + 0] += particleVelocities[pIdx * 3 + 0];
-                    posAttr.array[pIdx * 3 + 1] += particleVelocities[pIdx * 3 + 1];
-                    posAttr.array[pIdx * 3 + 2] += particleVelocities[pIdx * 3 + 2];
+                    while (activeEncoder.encodeQueueSize > 4) await new Promise(r => setTimeout(r, 6));
 
-                    if (posAttr.array[pIdx * 3 + 1] > visibleHeight * 0.7) {
-                        posAttr.array[pIdx * 3 + 1] = -visibleHeight * 0.7;
-                    }
-                }
-                posAttr.needsUpdate = true;
+                    const vFrame = new VideoFrame(webglCanvas, { timestamp: Math.round(cumulativeGlobalFrameCount * (1000000 / fps)) });
+                    activeEncoder.encode(vFrame, { keyFrame: (cumulativeGlobalFrameCount % (fps * 2) === 0) });
+                    vFrame.close();
+                    cumulativeGlobalFrameCount++;
 
-                // 3. Chuyển động 6-DOF
-                const subShift = interpolateSplineProperty(subjectTrajectory, progress, 'shift', subjectEasing);
-                const subScale = interpolateSplineProperty(subjectTrajectory, progress, 'scale', subjectEasing) || 1.0;
-                const subRot = interpolateSplineProperty(subjectTrajectory, progress, 'rot', subjectEasing);
-
-                const motionScale = Number(decomp.motion_scale_factor) || 0.0;
-                const maxAllowedSpanX = visibleWidth * fgScaleFactor * motionScale;
-                const maxAllowedSpanY = visibleHeight * fgScaleFactor * motionScale;
-
-                const curSubX = subShift[0] * maxAllowedSpanX;
-                const curSubY = -subShift[1] * maxAllowedSpanY;
-
-                fgMesh.position.x = curSubX;
-                fgMesh.position.y = curSubY;
-                fgMesh.position.z = fgDepthZ + (subShift[2] * (motionScale * 0.5));
-                fgMesh.scale.set(subScale, subScale, 1.0);
-                fgMesh.rotation.set(-subRot[0], subRot[1], subRot[2]);
-
-                // 4. Camera Lướt 360° & Handheld Sway
-                const camPan = interpolateSplineProperty(cameraTrajectory, progress, 'pan', cameraEasing);
-                const camZoom = interpolateSplineProperty(cameraTrajectory, progress, 'zoom', cameraEasing) || 1.0;
-                const camRotZ = interpolateSplineProperty(cameraTrajectory, progress, 'rot', cameraEasing) || 0.0;
-                const panScale = Number(cameraManifold.pan_scale) || 0.0;
-
-                const camSpanX = visibleWidth * panScale;
-                const camSpanY = visibleHeight * panScale;
-
-                const curCamX = camPan[0] * camSpanX;
-                const curCamY = -camPan[1] * camSpanY;
-                const curCamZ = camDist / Math.max(0.001, camZoom);
-
-                quadCamera.position.set(curCamX, curCamY, curCamZ);
-                quadCamera.lookAt(curCamX * panScale, curCamY * panScale, 0);
-                quadCamera.rotation.z = camRotZ;
-
-                // 5. Motion Blur & Contact Shadow
-                const motionDeltaX = (curSubX - prevSubPos.x) - (curCamX - prevCamPos.x) * panScale;
-                const motionDeltaY = (curSubY - prevSubPos.y) - (curCamY - prevCamPos.y) * panScale;
-                fgMat.uniforms.uMotionBlurVector.value.set(motionDeltaX, motionDeltaY);
-
-                prevSubPos.set(curSubX, curSubY);
-                prevCamPos.set(curCamX, curCamY);
-
-                const shadowOffX = Array.isArray(optics.shadow_offset) ? Number(optics.shadow_offset[0]) || 0.0 : 0.0;
-                const shadowOffY = Array.isArray(optics.shadow_offset) ? Number(optics.shadow_offset[1]) || 0.0 : 0.0;
-                const normSubX = (curSubX / visibleWidth) + 0.5 + shadowOffX;
-                const normSubY = (curSubY / visibleHeight) + 0.5 + shadowOffY;
-                bgMat.uniforms.uShadowCenter.value.set(normSubX, normSubY);
-
-                // Pass 1: Render 3D Scene
-                sharedRenderer.setRenderTarget(sceneRenderTarget);
-                sharedRenderer.render(quadScene, quadCamera);
-
-                // Pass 2: Anamorphic Film Post-Processing
-                sharedRenderer.setRenderTarget(null);
-                lensPostMat.uniforms.uSceneTexture.value = sceneRenderTarget.texture;
-                sharedRenderer.render(postScene, postCam);
-
-                compositeCtx.drawImage(webglCanvas, 0, 0, width, height);
-                renderCinemaSubtitlesOverlay(compositeCtx, width, height, currentSecond, sceneSpec.dialogue_cues);
-
-                while (activeEncoder && activeEncoder.encodeQueueSize > 4) {
-                    await new Promise(r => setTimeout(r, 6));
-                }
-
-                const isKeyframe = (f === 0) || (cumulativeGlobalFrameCount % (fps * 2) === 0);
-                const vFrame = new VideoFrame(compositeCanvas, {
-                    timestamp: Math.round(cumulativeGlobalFrameCount * frameMicros)
-                });
-                activeEncoder.encode(vFrame, { keyFrame: isKeyframe });
-                vFrame.close();
-                cumulativeGlobalFrameCount++;
-
-                if (f % 30 === 0) {
-                    const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`[Stage 3 Execution] Đang tổng hợp khung hình Veo 4D (${percent}%)...`, percent);
+                    if (f % 30 === 0) postStatus(`[Giây ${sec}] Đang kết xuất hình học tự tiến hóa (${Math.round((f/fps)*100)}%)...`);
                 }
             }
 
-            quadScene.remove(bgMesh);
-            quadScene.remove(fgMesh);
-            quadScene.remove(particleSystem);
-            bgGeo.dispose();
-            bgMat.dispose();
-            particleGeo.dispose();
-            particleMat.dispose();
-            fgGeo.dispose();
-            fgMat.dispose();
-            startLayers.bgTex.dispose();
-            startLayers.fgTex.dispose();
-            if (endLayers) {
-                endLayers.bgTex.dispose();
-                endLayers.fgTex.dispose();
-            }
-            try { masterTexStart.dispose(); } catch (_) {}
-            try { masterTexEnd.dispose(); } catch (_) {}
-
-            shotsLog.push({ shot_id: currentSceneNum, title: sceneSpec.title || `Cảnh quay ${currentSceneNum}`, duration: shotDuration });
+            if (currentMesh) vmScene.remove(currentMesh);
+            if (currentJitMat) currentJitMat.dispose();
+            shotsLog.push({ shot_id: sIdx + 1, title: sceneSpec.title, duration: shotDuration });
         }
 
-        postStatus("Đang hoàn tất và đóng gói tác phẩm điện ảnh...", 100);
+        postStatus("Đang đóng gói kiệt tác điện ảnh...", 100);
 
-        if (supportsAudio && audioEngine && audioEngine.state !== 'closed') {
-            try { await audioEngine.flush(); } catch (_) {}
-        }
-        if (activeEncoder && activeEncoder.state !== 'closed') {
-            await activeEncoder.flush();
-        }
+        if (activeEncoder) await activeEncoder.flush();
         rawMuxer.finalize();
 
-        let finalMp4Blob = null;
-        if (isUsingOpfs && opfsWritable) {
-            try {
-                await opfsWritable.close();
-                finalMp4Blob = await opfsFileHandle.getFile();
-            } catch (_) {}
-        }
-        if (!finalMp4Blob) {
-            finalMp4Blob = new Blob([rawMuxer.target.buffer], { type: 'video/mp4' });
-        }
+        const finalMp4Blob = new Blob([rawMuxer.target.buffer], { type: 'video/mp4' });
 
-        sceneRenderTarget.dispose();
-        postQuadGeo.dispose();
-        lensPostMat.dispose();
-
+        vmQuadGeo.dispose();
         clearInterval(heartbeatTimer);
-        self.postMessage({
-            type: 'SUCCESS',
-            videoBlob: finalMp4Blob,
-            narrativePlan: { total_duration: overallDuration, total_scenes: totalScenes },
-            shotsLog
-        });
+        self.postMessage({ type: 'SUCCESS', videoBlob: finalMp4Blob, narrativePlan: { total_duration: overallDuration, total_scenes: totalScenes }, shotsLog });
 
     } catch (err) {
         clearInterval(heartbeatTimer);
-        if (opfsWritable) { try { await opfsWritable.close(); } catch (_) {} }
         self.postMessage({ type: 'ERROR', message: err.message || String(err) });
-    } finally {
-        if (sharedRenderer) {
-            try { sharedRenderer.dispose(); sharedRenderer.forceContextLoss(); } catch (_) {}
-        }
     }
 };
 </script>
