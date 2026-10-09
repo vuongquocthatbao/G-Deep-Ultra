@@ -2500,9 +2500,18 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
 
-    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Chống kẹt 90 giây do createImageBitmap từ chối SVG trong Web Worker
-    // Làm sạch và chuẩn hóa thẻ SVG
-    let cleanSvg = String(svgString || '').replace(/^```(?:xml|svg)?/gi, '').replace(/```$/gi, '').trim();
+    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Tẩy trùng 100% ký tự escape gạch chéo ngược (\) từ JSON
+    let cleanSvg = String(svgString || '')
+        .replace(/^```(?:xml|svg)?/gi, '')
+        .replace(/```$/gi, '')
+        .replace(/\\"/g, '"')
+        .replace(/\\'/g, "'")
+        .replace(/\\n/g, ' ')
+        .replace(/\\r/g, ' ')
+        .replace(/\\t/g, ' ')
+        .replace(/\\\\/g, '')
+        .trim();
+
     const startIdx = cleanSvg.indexOf('<svg');
     const endIdx = cleanSvg.lastIndexOf('</svg>');
 
@@ -2523,7 +2532,7 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
         return `<svg${a}>`;
     });
 
-    // Thử giải mã trực tiếp bằng phần cứng một lần duy nhất nếu trình duyệt hỗ trợ SVG trong Worker
+    // Thử giải mã trực tiếp bằng phần cứng một lần duy nhất nếu trình duyệt hỗ trợ
     let decodedViaBitmap = false;
     try {
         const blob = new Blob([cleanSvg], { type: 'image/svg+xml;charset=utf-8' });
@@ -2536,10 +2545,10 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
         decodedViaBitmap = false;
     }
 
-    // Nếu trình duyệt chặn createImageBitmap trong Worker, kích hoạt ngay bộ phân giải Véc-tơ Canvas Path2D
+    // Nếu trình duyệt không hỗ trợ SVG trong Worker, kích hoạt Bộ phân giải Veo-Grade Vector Engine
     if (!decodedViaBitmap) {
         ctx.clearRect(0, 0, width, height);
-        ctx.fillStyle = "#060814";
+        ctx.fillStyle = "#04050a";
         ctx.fillRect(0, 0, width, height);
 
         const getAttr = (tag, name) => {
@@ -2553,22 +2562,50 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
             return parseFloat(val) || 0;
         };
 
-        // 1. Phân tích và nạp toàn bộ Gradient vào bộ nhớ
+        // 1. Phân tích cả LinearGradient và RadialGradient với đầy đủ dải màu và Opacity
         const gradMap = {};
-        const gradRegex = /<linearGradient([^>]*)>([\s\S]*?)<\/linearGradient>/gi;
-        let gMatch;
-        while ((gMatch = gradRegex.exec(cleanSvg)) !== null) {
-            const gid = getAttr(gMatch[1], 'id');
+
+        // A. Tuyến tính (Linear)
+        const linearRegex = /<linearGradient([^>]*)>([\s\S]*?)<\/linearGradient>/gi;
+        let lMatch;
+        while ((lMatch = linearRegex.exec(cleanSvg)) !== null) {
+            const gid = getAttr(lMatch[1], 'id');
             if (gid) {
-                const x1 = parseCoord(getAttr(gMatch[1], 'x1') || '0', width);
-                const y1 = parseCoord(getAttr(gMatch[1], 'y1') || '0', height);
-                const x2 = parseCoord(getAttr(gMatch[1], 'x2') || '100%', width);
-                const y2 = parseCoord(getAttr(gMatch[1], 'y2') || '100%', height);
+                const x1 = parseCoord(getAttr(lMatch[1], 'x1') || '0', width);
+                const y1 = parseCoord(getAttr(lMatch[1], 'y1') || '0', height);
+                const x2 = parseCoord(getAttr(lMatch[1], 'x2') || '100%', width);
+                const y2 = parseCoord(getAttr(lMatch[1], 'y2') || '100%', height);
                 try {
                     const grad = ctx.createLinearGradient(x1, y1, x2, y2);
                     const stopRegex = /<stop([^>]*)\/?>/gi;
                     let sMatch;
-                    while ((sMatch = stopRegex.exec(gMatch[2])) !== null) {
+                    while ((sMatch = stopRegex.exec(lMatch[2])) !== null) {
+                        const offsetStr = getAttr(sMatch[1], 'offset') || '0';
+                        const offset = offsetStr.endsWith('%') ? parseFloat(offsetStr) / 100 : parseFloat(offsetStr);
+                        const color = getAttr(sMatch[1], 'stop-color') || '#ffffff';
+                        grad.addColorStop(Math.min(1, Math.max(0, offset || 0)), color);
+                    }
+                    gradMap[gid] = grad;
+                } catch (_) {}
+            }
+        }
+
+        // B. Xuyên tâm (Radial - Ánh sáng ven và hào quang chuẩn Veo)
+        const radialRegex = /<radialGradient([^>]*)>([\s\S]*?)<\/radialGradient>/gi;
+        let rMatch;
+        while ((rMatch = radialRegex.exec(cleanSvg)) !== null) {
+            const gid = getAttr(rMatch[1], 'id');
+            if (gid) {
+                const cx = parseCoord(getAttr(rMatch[1], 'cx') || '50%', width);
+                const cy = parseCoord(getAttr(rMatch[1], 'cy') || '50%', height);
+                const r = parseCoord(getAttr(rMatch[1], 'r') || '50%', Math.max(width, height));
+                const fx = parseCoord(getAttr(rMatch[1], 'fx') || getAttr(rMatch[1], 'cx') || '50%', width);
+                const fy = parseCoord(getAttr(rMatch[1], 'fy') || getAttr(rMatch[1], 'cy') || '50%', height);
+                try {
+                    const grad = ctx.createRadialGradient(fx, fy, 0, cx, cy, r);
+                    const stopRegex = /<stop([^>]*)\/?>/gi;
+                    let sMatch;
+                    while ((sMatch = stopRegex.exec(rMatch[2])) !== null) {
                         const offsetStr = getAttr(sMatch[1], 'offset') || '0';
                         const offset = offsetStr.endsWith('%') ? parseFloat(offsetStr) / 100 : parseFloat(offsetStr);
                         const color = getAttr(sMatch[1], 'stop-color') || '#ffffff';
@@ -2586,7 +2623,7 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
             return val;
         };
 
-        // 2. Quét và vẽ tuần tự từng phần tử hình học thật sự của AI
+        // 2. Quét và kết xuất tuần tự từng mảng hình học điện ảnh
         const elemRegex = /<(path|rect|circle|ellipse|line|polygon|polyline)([^>]*?)\/?>/gi;
         let eMatch;
         while ((eMatch = elemRegex.exec(cleanSvg)) !== null) {
@@ -2595,8 +2632,11 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
             const fill = resolveStyle(getAttr(attrs, 'fill'));
             const stroke = resolveStyle(getAttr(attrs, 'stroke'));
             const strokeWidth = parseFloat(getAttr(attrs, 'stroke-width') || '1') || 1;
+            const opacity = parseFloat(getAttr(attrs, 'opacity') || '1');
 
             ctx.save();
+            ctx.globalAlpha = Math.min(1, Math.max(0, isNaN(opacity) ? 1 : opacity));
+
             if (stroke) {
                 ctx.strokeStyle = stroke;
                 ctx.lineWidth = strokeWidth;
@@ -2651,7 +2691,9 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
                 } else if (tag === 'path') {
                     const d = getAttr(attrs, 'd');
                     if (d && typeof Path2D !== 'undefined') {
-                        const pathObj = new Path2D(d);
+                        // Tẩy sạch ký tự gạch chéo ngược trong chuỗi tọa độ Bezier
+                        const cleanD = d.replace(/\\/g, ' ');
+                        const pathObj = new Path2D(cleanD);
                         if (fill) { ctx.fillStyle = fill; ctx.fill(pathObj); }
                         if (stroke) ctx.stroke(pathObj);
                     }
@@ -3372,15 +3414,27 @@ function createCinematicLensPostMaterial() {
 // XUẤT 2 MÃ NGUỒN KEYFRAME SVG ĐỘC LẬP & TRƯỜNG TENSOR QUANG - THANH NGUYÊN BẢN
 // =========================================================================
 async function requestHamiltonianContinuumTensor(shotBlueprint, sceneDuration, keyPool, postStatus) {
-    const directingPrompt = `[SUPREME 4D DUAL-KEYFRAME COMPILER]
+    const directingPrompt = `[SUPREME 4D DUAL-KEYFRAME COMPILER - VEO 3 ARCHITECTURE]
 Chủ đề phân cảnh: "${shotBlueprint.title || ''}". Thời lượng: ${sceneDuration}s (60 FPS).
-BẠN LÀ TỔNG ĐẠO DIỄN VẬT LÝ VÀ TOÁN HỌC KHÔNG GIAN.
-Nhiệm vụ: Phân tích bản chất của cảnh quay và kiến tạo 2 Vector Keyframes (start_svg, end_svg) cùng toàn bộ trường Tensor động lực học.
+Bối cảnh sản xuất: ${JSON.stringify(shotBlueprint.production_bible || {})}.
+Hành động phân cảnh: "${shotBlueprint.action_description || ''}".
+Nhiệm vụ: Bạn là Tổng Đạo Diễn Hình Ảnh & Kỹ Sư Toán Học Không Gian. Hãy kiến tạo 2 Vector Keyframes (start_svg, end_svg) đạt chuẩn chất lượng điện ảnh siêu thực và toàn bộ trường Tensor động lực học độc bản.
 
-YÊU CẦU JSON NGUYÊN BẢN (KHÔNG ĐỊNH KIẾN, KHÔNG GIẢ ĐỊNH MẪU):
+TIÊU CHUẨN ĐỒ HỌA VÉC-TƠ SIÊU THỰC (VEO 3 VECTOR PARITY):
+1. TUYỆT ĐỐI KHÔNG vẽ hình học phẳng đơn sắc (Flat/Cartoon Clip-art). Phải dùng kỹ thuật Matte Painting véc-tơ cao cấp:
+   - Sử dụng bắt buộc <defs> chứa ít nhất 4-8 dải màu <linearGradient> và <radialGradient> để khắc họa nguồn sáng (Key Light, Rim Light, Fill Light, Ambient Occlusion).
+   - Thể hiện chiều sâu trường ảnh và độ mờ đục khí quyển qua thuộc tính opacity (0.1 - 0.95) trên từng layer.
+   - Các đường cong nhân vật và phong cảnh phải dùng tọa độ Bezier vi mô (C, S, Q lệnh path) mềm mại, tỉ mỉ, hữu cơ.
+2. NGUYÊN TẮC BẢO TOÀN CÚ PHÁP (ZERO-ESCAPE RULE):
+   - TUYỆT ĐỐI CẤM sử dụng ký tự gạch chéo ngược (\\) bên trong SVG.
+   - Sử dụng dấu nháy đơn (') hoặc dấu nháy kép chuẩn cho thuộc tính XML. Không escape dấu ngoặc kép bằng \\".
+   - Luôn bao bọc SVG hoàn chỉnh từ <svg viewBox='0 0 1024 576' ...> đến </svg>.
+
+YÊU CẦU ĐỘC BẢN TOÀN DIỆN (KHÔNG ĐỊNH KIẾN, KHÔNG RẬP KHUÔN THAM SỐ):
+Mọi thông số động lực học, độ dày vật lý, quỹ đạo ống kính 6-DOF và tần số âm thanh PHẢI ĐƯỢC TÍNH TOÁN RIÊNG BIỆT theo đúng tính chất vật lý của cảnh quay này:
 1. "vector_keyframes":
-   - "start_svg": Chuỗi SVG hoàn chỉnh (<svg>...</svg>) diễn tả trạng thái ban đầu t=0.0.
-   - "end_svg": Chuỗi SVG hoàn chỉnh diễn tả trạng thái tiến hóa t=1.0.
+   - "start_svg": Chuỗi SVG hoàn chỉnh t=0.0 đạt chuẩn điện ảnh.
+   - "end_svg": Chuỗi SVG hoàn chỉnh t=1.0 diễn tả sự tiến hóa ánh sáng/vị trí.
 2. "population_instancing": "instance_count", "distribution_spread_x", "distribution_spread_y", "distribution_spread_z", "instance_phase_spread".
 3. "deterministic_physics": "isosurface_active", "isosurface_center", "isosurface_strength", "isosurface_softness", "isosurface_displace_scale", "fracture_active", "fracture_impact_time", "fracture_cell_scale", "fracture_threshold", "fracture_impulse", "contact_active", "contact_point", "contact_normal", "contact_radius", "contact_stiffness".
 4. "chromophore_glazing": "subsurface_color", "subsurface_wrap", "lipid_sheen_strength", "micro_grain_scale", "micro_grain_density".
@@ -3393,7 +3447,7 @@ YÊU CẦU JSON NGUYÊN BẢN (KHÔNG ĐỊNH KIẾN, KHÔNG GIẢ ĐỊNH MẪU
 11. "subject_free_motion": "easing_type", "trajectory".
 12. "camera_manifold": "fov_degrees", "camera_distance_z", "pan_scale", "easing_type", "trajectory".
 13. "soundscape": {
-      "master_gain": float (0.0 đến 1.0, 0.0 nếu là chân không/im lặng),
+      "master_gain": float,
       "harmonic_tensors": [
         { "freq_hz": float, "amplitude": float, "phase_rad": float, "detune_ratio": float, "lfo_rate_hz": float, "lfo_depth": float, "pan": float }
       ],
