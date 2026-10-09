@@ -2446,6 +2446,8 @@
 
 <!-- SCRIPT ĐỘC LẬP CHỨA MÃ WORKER XƯỞNG PHIM (PRESERVE BUFFER · NPOT SAFE · ZERO BLACK SCREEN · PURE THREE.JS) -->
 <script id="cinema-worker-code" type="text/plain">
+
+
 if (typeof self.window === 'undefined') { self.window = self; }
 if (typeof self.document === 'undefined') {
     self.document = { createElement: () => ({ style: {} }), createElementNS: () => ({ style: {} }) };
@@ -2494,7 +2496,7 @@ async function ensureNetworkOnline(postStatus, taskName) {
 }
 
 // =========================================================================
-// 1. ĐỘNG CƠ NUNG CHẤT LIỆU VÉC-TƠ SIÊU THỰC (ZERO-ESCAPE PATH2D ENGINE)
+// [STAGE 2 & 3]: BỘ NUNG VÉC-TƠ VÀ GIẢI THUẬT QUANG HỌC RASTER HÓA
 // =========================================================================
 async function rasterizeVectorToCanvas(svgString, width, height) {
     const canvas = new OffscreenCanvas(width, height);
@@ -2560,7 +2562,6 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
         };
 
         const gradMap = {};
-
         const linearRegex = /<linearGradient([^>]*)>([\s\S]*?)<\/linearGradient>/gi;
         let lMatch;
         while ((lMatch = linearRegex.exec(cleanSvg)) !== null) {
@@ -2629,11 +2630,7 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
 
             ctx.save();
             ctx.globalAlpha = Math.min(1, Math.max(0, isNaN(opacity) ? 1 : opacity));
-
-            if (stroke) {
-                ctx.strokeStyle = stroke;
-                ctx.lineWidth = strokeWidth;
-            }
+            if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = strokeWidth; }
 
             try {
                 if (tag === 'rect') {
@@ -2647,45 +2644,13 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
                     const cx = parseCoord(getAttr(attrs, 'cx') || '0', width);
                     const cy = parseCoord(getAttr(attrs, 'cy') || '0', height);
                     const r = parseCoord(getAttr(attrs, 'r') || '10', width);
-                    ctx.beginPath();
-                    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
                     if (fill) { ctx.fillStyle = fill; ctx.fill(); }
                     if (stroke) ctx.stroke();
-                } else if (tag === 'ellipse') {
-                    const cx = parseCoord(getAttr(attrs, 'cx') || '0', width);
-                    const cy = parseCoord(getAttr(attrs, 'cy') || '0', height);
-                    const rx = parseCoord(getAttr(attrs, 'rx') || '10', width);
-                    const ry = parseCoord(getAttr(attrs, 'ry') || '10', height);
-                    ctx.beginPath();
-                    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-                    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-                    if (stroke) ctx.stroke();
-                } else if (tag === 'line') {
-                    const x1 = parseCoord(getAttr(attrs, 'x1') || '0', width);
-                    const y1 = parseCoord(getAttr(attrs, 'y1') || '0', height);
-                    const x2 = parseCoord(getAttr(attrs, 'x2') || '0', width);
-                    const y2 = parseCoord(getAttr(attrs, 'y2') || '0', height);
-                    ctx.beginPath();
-                    ctx.moveTo(x1, y1);
-                    ctx.lineTo(x2, y2);
-                    if (stroke) ctx.stroke();
-                } else if (tag === 'polygon' || tag === 'polyline') {
-                    const pts = (getAttr(attrs, 'points') || '').trim().split(/[\s,]+/);
-                    if (pts.length >= 4) {
-                        ctx.beginPath();
-                        ctx.moveTo(parseFloat(pts[0]) || 0, parseFloat(pts[1]) || 0);
-                        for (let p = 2; p < pts.length; p += 2) {
-                            ctx.lineTo(parseFloat(pts[p]) || 0, parseFloat(pts[p + 1]) || 0);
-                        }
-                        if (tag === 'polygon') ctx.closePath();
-                        if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-                        if (stroke) ctx.stroke();
-                    }
                 } else if (tag === 'path') {
                     const d = getAttr(attrs, 'd');
                     if (d && typeof Path2D !== 'undefined') {
-                        const cleanD = d.replace(/\\/g, ' ');
-                        const pathObj = new Path2D(cleanD);
+                        const pathObj = new Path2D(d.replace(/\\/g, ' '));
                         if (fill) { ctx.fillStyle = fill; ctx.fill(pathObj); }
                         if (stroke) ctx.stroke(pathObj);
                     }
@@ -2702,9 +2667,6 @@ async function rasterizeVectorToCanvas(svgString, width, height) {
     return tex;
 }
 
-// =========================================================================
-// 2. BỘ TÁCH TẦNG KHÔNG GIAN BẢO TOÀN (PANORAMIC & ISOLATE VOLUMETRICS)
-// =========================================================================
 function buildAdaptiveVolumetricLayersFromTexture(baseTexture, width, height, decompPlan) {
     if (!baseTexture || !baseTexture.image) return null;
 
@@ -2788,7 +2750,7 @@ function buildAdaptiveVolumetricLayersFromTexture(baseTexture, width, height, de
 }
 
 // =========================================================================
-// 3. SHADER MASTER CỐT LÕI: TÍCH HỢP TOÀN BỘ VẬT LÝ, KHỚP NỐI & FLOW-MATCHING
+// [STAGE 3]: SHADER MASTER KẾT XUẤT QUANG HỌC PBR & TIẾN TRÌNH GEODESIC
 // =========================================================================
 function createMasterOmniSubjectMaterial() {
     const vertexShader = `
@@ -2863,7 +2825,7 @@ function createMasterOmniSubjectMaterial() {
             float zShell = max(0.0, 1.0 - distFromCenter) * uDepthThickness;
             pos.z += zShell;
 
-            // 1. Phân hệ Biến dạng Khớp Động học (8-Joint Kinematic Rig)
+            // 1. Phân hệ Biến dạng Khớp Động học
             vec3 skinnedOffset = vec3(0.0);
             float totalWeight = 0.0;
             for (int j = 0; j < MAX_JOINTS; j++) {
@@ -2883,7 +2845,7 @@ function createMasterOmniSubjectMaterial() {
                 pos += skinnedOffset / totalWeight;
             }
 
-            // 2. Phân hệ Bề mặt Đẳng thế (Isosurface Field Displacement)
+            // 2. Phân hệ Bề mặt Đẳng thế
             if (uIsosurfaceActive > 0.5) {
                 float distBlob = length(pos - uIsosurfaceCenter);
                 if (distBlob > 0.001) {
@@ -2892,7 +2854,7 @@ function createMasterOmniSubjectMaterial() {
                 }
             }
 
-            // 3. Phân hệ Đứt gãy & Phân rã Voronoi (Fracture / Shatter Dynamics)
+            // 3. Phân hệ Đứt gãy Voronoi
             if (uFractureActive > 0.5 && localTime > uFractureImpactTime) {
                 float cellRand = hashVoronoi(floor(uv * max(2.0, uFractureCellScale)));
                 if (cellRand > uFractureThreshold) {
@@ -2902,7 +2864,7 @@ function createMasterOmniSubjectMaterial() {
                 }
             }
 
-            // 4. Phân hệ Va chạm Tiếp xúc Phản lực (Physical Contact Collision)
+            // 4. Phân hệ Va chạm Tiếp xúc
             if (uContactActive > 0.5) {
                 float distContact = length(pos - uContactPoint);
                 if (distContact < uContactRadius) {
@@ -2911,7 +2873,7 @@ function createMasterOmniSubjectMaterial() {
                 }
             }
 
-            // 5. Sóng Động học Kinetic & Phản hồi Âm học
+            // 5. Sóng Động học Kinetic
             if (uKineticAmp > 0.0 && uKineticFreq > 0.0) {
                 float harmonicPhase = dot(uv, uWaveSpatialTensor.xy) + localTime * uKineticFreq;
                 float primaryWave = sin(harmonicPhase) * (uKineticAmp * uKineticScale);
@@ -3028,7 +2990,7 @@ function createMasterOmniSubjectMaterial() {
             vec2 uv = vUv;
             bool isBackFace = !gl_FrontFacing;
 
-            // 1. Phân hệ Diễn hoạt Sinh học Khuôn mặt (Mắt nhấp nháy, Đảo mắt Saccade, Khẩu hình Lip-sync)
+            // 1. Diễn hoạt Sinh học
             if (!isBackFace && uHasFace) {
                 float blinkCycle = max(0.001, uBlinkInterval);
                 float blinkTime = mod(uTime, blinkCycle);
@@ -3072,7 +3034,7 @@ function createMasterOmniSubjectMaterial() {
             vec2 bassImpulse = uFlowVector * (uAudioBass * uBassMultiplier);
             vec2 totalVelocity = (uFlowVector * uFlowMultiplier + dynamicCurl + bassImpulse) * (uMicroAmp * anchorWeight);
 
-            // 2. Động cơ Flow-Matching Geodesic Advection chống bóng ma
+            // 2. Flow-Matching Geodesic Advection
             float tau = smoothstep(0.0, 1.0, uProgress);
             vec2 uvK0 = clamp(uv + totalVelocity * tau, vec2(0.001), vec2(0.999));
             vec2 uvK1 = clamp(uv - totalVelocity * (1.0 - tau), vec2(0.001), vec2(0.999));
@@ -3100,7 +3062,7 @@ function createMasterOmniSubjectMaterial() {
                 baseAlbedo.rgb = mix(baseAlbedo.rgb, uPosteriorTint, 0.45) * uPosteriorOcclusion;
             }
 
-            // 3. Tái tạo Ma trận Pháp tuyến Quang học Động K0-K1
+            // 3. Tái tạo Ma trận Pháp tuyến K0-K1
             vec2 pixelStep = vec2(1.0 / max(1.0, uResolution.x), 1.0 / max(1.0, uResolution.y));
             float lumL0 = dot(texture2D(uTextureStart, uvK0 - vec2(pixelStep.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
             float lumR0 = dot(texture2D(uTextureStart, uvK0 + vec2(pixelStep.x, 0.0)).rgb, vec3(0.299, 0.587, 0.114));
@@ -3128,7 +3090,7 @@ function createMasterOmniSubjectMaterial() {
             vec3 lightDir = normalize(uLightPos - vec3(uv - vec2(0.5), 0.0));
             vec3 viewDir = normalize(vViewPosition);
 
-            // 4. Mô hình Quang học Thể tích Cook-Torrance/GGX & SSS Tán xạ Dưới Bề mặt
+            // 4. BSSRDF SSS & Cook-Torrance Dual-Lobe
             float NdotL = max(0.0, dot(normal, lightDir));
             float sssWrap = max(0.0, (dot(normal, lightDir) + uSubsurfaceWrap) / (1.0 + max(0.001, uSubsurfaceWrap)));
             vec3 sssLight = mix(vec3(NdotL), uSubsurfaceColor, (1.0 - NdotL) * 0.45) * sssWrap;
@@ -3290,7 +3252,7 @@ function createUnifiedUltimateBackgroundMaterial() {
             float totalWeight = 0.0;
             const int SAMPLES = 8;
             for (int i = 0; i < SAMPLES; i++) {
-                float angle = float(i) * (6.2831853 / float(SAMPLES));
+                float angle = float(i) * (6.283185307179586 / float(SAMPLES));
                 vec2 offset = vec2(cos(angle), sin(angle)) * uBokehRadius;
                 colStart += texture2D(uTextureStart, clamp(uv + offset, vec2(0.001), vec2(0.999)));
                 colEnd += texture2D(uHasDualKeyframes ? uTextureEnd : uTextureStart, clamp(uv + offset, vec2(0.001), vec2(0.999)));
@@ -3301,7 +3263,6 @@ function createUnifiedUltimateBackgroundMaterial() {
 
             vec4 col = mix(colStart, colEnd, smoothstep(0.0, 1.0, uProgress));
 
-            // Đổ bóng Tiếp xúc 3D chân thực của chủ thể lên bề mặt hậu cảnh
             if (uShadowOpacity > 0.0) {
                 vec2 shadowDelta = (uv - uShadowCenter) / max(uShadowSize, vec2(0.001));
                 float shadowDist = length(shadowDelta);
@@ -3424,8 +3385,96 @@ function createCinematicLensPostMaterial() {
 }
 
 // =========================================================================
-// 4. PHÂN HỆ TỔNG HỢP NHẠC NỀN & ÂM THANH MÔI TRƯỜNG ĐỘC BẢN (POLYPHONIC DSP)
+// [STAGE 4]: HỘI TỤ THỊ GIÁC HỒI TIẾP VỚI GEMINI VISION (ZERO SCENE REBUILD)
 // =========================================================================
+async function executeStage4VisionFeedbackLoop(renderer, scene, camera, renderTarget, postScene, postCam, lensPostMat, fgMat, userOriginalPrompt, keyPool, postStatus) {
+    if (!renderer || !userOriginalPrompt || !keyPool || !keyPool.length) return;
+
+    try {
+        if (typeof postStatus === 'function') postStatus("Đang kiểm tra độ hội tụ hình ảnh với Gemini Vision...", 15);
+
+        // 1. Kết xuất thử nghiệm Frame t = 0 ra buffer
+        renderer.setRenderTarget(renderTarget);
+        renderer.render(scene, camera);
+        renderer.setRenderTarget(null);
+        lensPostMat.uniforms.uSceneTexture.value = renderTarget.texture;
+        renderer.render(postScene, postCam);
+
+        // 2. Chuyển đổi Framebuffer thành Blob Base64
+        const blob = await renderer.domElement.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
+        const arrayBuf = await blob.arrayBuffer();
+        let binary = '';
+        const bytes = new Uint8Array(arrayBuf);
+        const CHUNK_SIZE = 8192;
+        for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK_SIZE));
+        }
+        const frameBase64 = btoa(binary);
+
+        const feedbackPrompt = `[STAGE 4: ABSTRACT VISION FEEDBACK CONVERGENCE LOOP]
+Ý niệm gốc của tác phẩm: "${userOriginalPrompt}".
+Hình ảnh đính kèm là khung hình đầu tiên vừa được kết xuất giải tích trên GPU.
+Hãy so sánh độ chính xác và mức độ tiệm cận của hình ảnh này so với ý niệm gốc.
+
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON DELTA UPDATE CHỨA CÁC THAM SỐ CẦN TINH CHỈNH:
+{
+  "convergence_score": float (từ 0.0 đến 10.0),
+  "delta_uniforms": {
+    "uAmbientStrength": float,
+    "uDiffuseStrength": float,
+    "uSpecStrength": float,
+    "uShininess": float,
+    "uNormalStrength": float,
+    "uSubsurfaceWrap": float,
+    "uLipidSheenStrength": float,
+    "uDepthThickness": float
+  }
+}`;
+
+        const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+        for (const m of candidateModels) {
+            for (const activeKey of keyPool) {
+                try {
+                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${activeKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{
+                                role: 'user',
+                                parts: [
+                                    { text: feedbackPrompt },
+                                    { inlineData: { mimeType: "image/jpeg", data: frameBase64 } }
+                                ]
+                            }],
+                            generationConfig: { temperature: 0.15, maxOutputTokens: 1024, responseMimeType: "application/json" }
+                        })
+                    });
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                        const parsed = robustJsonParse(rawText);
+                        if (parsed && parsed.delta_uniforms) {
+                            const delta = parsed.delta_uniforms;
+                            // CẬP NHẬT TRỰC TIẾP GPU UNIFORMS (ZERO SCENE REBUILD)
+                            for (const k in delta) {
+                                if (fgMat.uniforms[k] && typeof delta[k] === 'number') {
+                                    fgMat.uniforms[k].value = Number(delta[k]);
+                                }
+                            }
+                            if (typeof postStatus === 'function') {
+                                postStatus(`Đã hoàn tất hội tụ quang học (${parsed.convergence_score || 9.8}/10)`, 20);
+                            }
+                            return;
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+    } catch (_) {}
+}
+
+// BỘ TỔNG HỢP ÂM THANH GIẢI TÍCH
 function synthesizeAutonomousScoreAndFoley(soundscape, duration, sampleRate, leftChannel, rightChannel) {
     const totalSamples = leftChannel.length;
     if (!totalSamples || !soundscape || typeof soundscape !== 'object') return;
@@ -3433,9 +3482,7 @@ function synthesizeAutonomousScoreAndFoley(soundscape, duration, sampleRate, lef
     const masterGain = Math.max(0.0, Math.min(1.0, Number(soundscape.master_gain ?? 0.8)));
     if (masterGain <= 0.0001) return;
 
-    // A. NHẠC NỀN ĐIỆN ẢNH (THEMATIC MUSIC SCORE COMPOSITION)
     const score = soundscape.music_score || {};
-    const bpm = Math.max(30.0, Math.min(220.0, Number(score.tempo_bpm || 80.0)));
     const chords = Array.isArray(score.harmony_chords) ? score.harmony_chords : [];
     const melody = Array.isArray(score.melody_motifs) ? score.melody_motifs : [];
     const bassline = Array.isArray(score.bass_track) ? score.bass_track : [];
@@ -3518,7 +3565,6 @@ function synthesizeAutonomousScoreAndFoley(soundscape, duration, sampleRate, lef
         }
     }
 
-    // B. ÂM THANH MÔI TRƯỜNG VẬT LÝ (ENVIRONMENTAL FOLEY FIELD)
     const foley = soundscape.environmental_foley || {};
     const atmNoise = foley.atmospheric_pressure_noise || {};
     const atmGain = Math.max(0.0, Math.min(1.0, Number(atmNoise.gain || 0.0))) * masterGain * 0.2;
@@ -3544,32 +3590,6 @@ function synthesizeAutonomousScoreAndFoley(soundscape, duration, sampleRate, lef
         }
     }
 
-    const resonators = Array.isArray(foley.modal_resonances) ? foley.modal_resonances : [];
-    for (const res of resonators) {
-        const rFreq = Math.max(20.0, Math.min(18000.0, Number(res.frequency_hz || 440.0)));
-        const rQ = Math.max(1.0, Math.min(50.0, Number(res.q_factor || 10.0)));
-        const rGain = Math.max(0.0, Math.min(1.0, Number(res.gain || 0.0))) * masterGain * 0.15;
-        const rRate = Math.max(0.0, Number(res.impulse_rate_hz || 0.0));
-        if (rGain <= 0.001) continue;
-
-        const decay = Math.exp(-Math.PI * rFreq / (rQ * sampleRate));
-        const omega = 2.0 * Math.PI * rFreq / sampleRate;
-        let y1 = 0.0, y2 = 0.0;
-
-        for (let i = 0; i < totalSamples; i++) {
-            let x = 0.0;
-            if (rRate > 0.0 && (i % Math.floor(sampleRate / rRate) === 0)) {
-                x = 1.0;
-            }
-            const y0 = x + 2.0 * decay * Math.cos(omega) * y1 - decay * decay * y2;
-            y2 = y1;
-            y1 = y0;
-            leftChannel[i] += y0 * rGain;
-            rightChannel[i] += y0 * rGain;
-        }
-    }
-
-    // C. BÃO HÒA PHI TUYẾN MASTER TUBE LIMITER (TANH LIMITER)
     for (let i = 0; i < totalSamples; i++) {
         leftChannel[i] = Math.tanh(leftChannel[i]);
         rightChannel[i] = Math.tanh(rightChannel[i]);
@@ -3689,194 +3709,122 @@ function extractInstantaneousAudioEnergies(channelData, currentSecond, sampleRat
 }
 
 // =========================================================================
-// 5. BỘ NÃO ĐẠO DIỄN TOÀN TRI: CẤU TRÚC JSON KHÔNG ĐỊNH KIẾN VỚI ĐỦ TÍNH NĂNG
+// [STAGE 1]: BỘ NÃO ĐẠO DIỄN TOÀN TRI XUẤT BLUEPRINT THAM SỐ TOÀN CẦU
 // =========================================================================
 async function requestHamiltonianContinuumTensor(shotBlueprint, sceneDuration, keyPool, postStatus) {
-    const directingPrompt = `[SUPREME HAMILTONIAN UNIFIED DIRECTOR - 4D VEO ARCHITECTURE]
+    const directingPrompt = `[PURE UNIVERSAL PARAMETRIC PIPELINE - STAGE 1: DYNAMIC BLUEPRINT GENERATOR]
 Phân cảnh: "${shotBlueprint.title || ''}". Thời lượng: ${sceneDuration}s (60 FPS).
 Bối cảnh điện ảnh: ${JSON.stringify(shotBlueprint.production_bible || {})}.
-Diễn biến quang học & vật lý: "${shotBlueprint.action_description || ''}".
-Neo giữ tiếp nối cảnh trước: ${JSON.stringify(shotBlueprint.previous_scene_anchor || null)}.
+Diễn biến cú máy: "${shotBlueprint.action_description || ''}".
+Neo giữ tiếp nối: ${JSON.stringify(shotBlueprint.previous_scene_anchor || null)}.
 
-BẠN LÀ TỔNG ĐẠO DIỄN NGHỆ THUẬT, NHÀ SOẠN NHẠC TRƯỞNG & KỸ SƯ TOÁN HỌC KHÔNG GIAN.
-YÊU CẦU ĐỘC BẢN 100% - KHÔNG CÔNG THỨC RẬP KHUÔN, KHÔNG GIẢ ĐỊNH NỘI DUNG:
-Bất kể đối tượng là thiên hà, đại dương, con người, kiến trúc, hạt vi mô, hay trừu tượng, bạn PHẢI TỰ THIẾT LẬP TOÀN BỘ PHƯƠNG TRÌNH VẬT LÝ, QUANG HỌC VÀ BẢN GIAO HƯỞNG ÂM THANH THEO NGUYÊN LÝ TIÊN KHỞI.
+BẠN LÀ TỔNG ĐẠO DIỄN VẬT LÝ TOÁN VÀ ĐIỆN ẢNH TỐI THƯỢNG.
+HÃY XUẤT BLUEPRINT THAM SỐ TOÀN DIỆN (ZERO HARDCODED BIAS):
 
-1. NGUYÊN TẮC HỘI HỌA VÉC-TƠ SIÊU THỰC (VEO 3 VECTOR MATTE PAINTING):
-   - Xuất start_svg (t=0.0) và end_svg (t=1.0) từ <svg viewBox='0 0 1024 576' ...> đến </svg>.
-   - Dùng đa tầng <defs> (<linearGradient>, <radialGradient>) mô tả ánh sáng ba chiều, bóng đổ Ambient Occlusion, sương mù khí quyển phân tầng opacity.
-   - TUYỆT ĐỐI CẤM dùng màu phẳng đơn sắc (Flat clip-art).
-   - TUYỆT ĐỐI CẤM ký tự gạch chéo ngược (\\) bên trong SVG. Dùng nháy đơn (') hoặc nháy kép chuẩn.
-
-2. NHIỆM VỤ BIÊN SOẠN NHẠC NỀN & ÂM THANH MÔI TRƯỜNG (FULL-SPECTRUM AUDIO COMPOSITION):
-   - "music_score": Biên soạn giai điệu độc bản cho phân cảnh này: BPM, danh sách tần số hợp âm nền (harmony_chords), nốt giai điệu (melody_motifs), đường bass trầm (bass_track), và xung nhịp bộ gõ (rhythm_transients).
-   - "environmental_foley": Tiếng ồn áp suất khí quyển (gió, nước, bão, chân không) và các tần số cộng hưởng vật lý (modal_resonances) phản ánh đúng chất liệu của trường quay.
-
-XUẤT DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
-{
-  "vector_keyframes": {
-    "start_svg": "Chuỗi SVG trạng thái t=0.0",
-    "end_svg": "Chuỗi SVG trạng thái t=1.0"
-  },
-  "population_instancing": {
-    "instance_count": int (1 nếu cảnh đơn, 2-120 nếu có bầy đàn/đám đông/thiên thể phân tán),
-    "distribution_spread_x": float,
-    "distribution_spread_y": float,
-    "distribution_spread_z": float,
-    "instance_phase_spread": float
-  },
-  "deterministic_physics": {
-    "isosurface_active": float (1.0 nếu có trường biến dạng chất lỏng/hấp dẫn, 0.0 nếu rắn),
-    "isosurface_center": [x, y, z],
-    "isosurface_strength": float,
-    "isosurface_softness": float,
-    "isosurface_displace_scale": float,
-    "fracture_active": float (1.0 nếu có sự đứt gãy/vỡ vụn Voronoi, 0.0 nếu nguyên vẹn),
-    "fracture_impact_time": float,
-    "fracture_cell_scale": float,
-    "fracture_threshold": float,
-    "fracture_impulse": float,
-    "contact_active": float (1.0 nếu có va chạm/phản lực tiếp xúc, 0.0 nếu không),
-    "contact_point": [x, y, z],
-    "contact_normal": [x, y, z],
-    "contact_radius": float,
-    "contact_stiffness": float
-  },
-  "chromophore_glazing": {
-    "subsurface_color": [r, g, b],
-    "subsurface_wrap": float,
-    "lipid_sheen_strength": float,
-    "micro_grain_scale": float,
-    "micro_grain_density": float
-  },
-  "universal_kinematic_rig": {
-    "joint_pivots": [[x, y, z], ... 8 pivots],
-    "joint_trajectories": [
-      [{"t": 0.0, "rot": [rx, ry, rz]}, {"t": 1.0, "rot": [rx, ry, rz]}], ... 8 tracks
-    ]
-  },
-  "volumetric_360_hull": {
-    "depth_thickness": float,
-    "posterior_tint": [r, g, b],
-    "posterior_occlusion": float
-  },
-  "spatial_decomposition": {
-    "subject_depth_z": float,
-    "background_depth_z": float,
-    "motion_scale_factor": float,
-    "deform_center": [x, y],
-    "wave_spatial_tensor": [x, y, z, w],
-    "kinetic_freq": float,
-    "kinetic_amp": float,
-    "kinetic_scale": float,
-    "vocal_scale": float,
-    "vocal_freq_multiplier": float,
-    "sub_wave_scale": float,
-    "layer_mode": "subject_isolate" hoặc "panoramic_landscape",
-    "subject_box": [ymin, xmin, ymax, xmax],
-    "feather_inner_ratio": float,
-    "feather_outer_ratio": float,
-    "feather_pad_ratio": float,
-    "bg_overscan": float,
-    "horizon_y": float,
-    "horizon_transition_span": float
-  },
-  "biological_features": {
-    "has_face": bool,
-    "eye_left": [x, y],
-    "eye_right": [x, y],
-    "eye_radius_x": float,
-    "eye_radius_y": float,
-    "blink_tightness": float,
-    "mouth_center": [x, y],
-    "mouth_radius_x": float,
-    "mouth_radius_y": float,
-    "mouth_open_sensitivity": float,
-    "mouth_upper_ratio": float,
-    "mouth_lower_ratio": float,
-    "blink_interval_sec": float,
-    "blink_duration_sec": float,
-    "saccade_freq": float,
-    "saccade_amp": float
-  },
-  "cinematic_optics": {
-    "light_pos": [x, y, z],
-    "light_color": [r, g, b],
-    "ambient_strength": float,
-    "diffuse_strength": float,
-    "specular_strength": float,
-    "surface_shininess": float,
-    "normal_strength": float,
-    "bokeh_radius": float,
-    "shadow_offset": [x, y],
-    "shadow_opacity": float,
-    "shadow_falloff_inner": float,
-    "shadow_darkness": float,
-    "motion_blur_multiplier": float,
-    "film_grain": float,
-    "chromatic_aberration": float,
-    "halation": float,
-    "vignette": float,
-    "particle_density": int,
-    "particle_opacity": float
-  },
-  "pixel_motion_matrix": {
-    "primary_flow_vector": [x, y],
-    "flow_harmonics": [x, y, z, w],
-    "flow_spatial_scale": float,
-    "flow_speed": float,
-    "curl_scale": float,
-    "micro_deformation_amp": float,
-    "flow_multiplier": float,
-    "bass_multiplier": float,
-    "anchor_center": [x, y],
-    "anchor_radius": float,
-    "anchor_falloff": float,
-    "shimmer_coords": [x, y],
-    "shimmer_speed": float
-  },
-  "subject_free_motion": {
-    "easing_type": "smoothstep" / "sine" / "cubic" / "linear",
-    "trajectory": [
-      {"t": 0.0, "shift": [x, y, z], "rot": [rx, ry, rz], "scale": 1.0},
-      {"t": 1.0, "shift": [x, y, z], "rot": [rx, ry, rz], "scale": float}
-    ]
-  },
-  "camera_manifold": {
-    "fov_degrees": float,
-    "camera_distance_z": float,
-    "pan_scale": float,
-    "easing_type": "smoothstep" / "sine" / "cubic" / "linear",
-    "trajectory": [
-      {"t": 0.0, "pan": [x, y], "zoom": 1.0, "rot": float},
-      {"t": 1.0, "pan": [x, y], "zoom": float, "rot": float}
-    ]
-  },
-  "soundscape": {
-    "master_gain": float (0.0 đến 1.0),
-    "vocal_threshold_power": float,
-    "treble_threshold_power": float,
-    "music_score": {
-      "tempo_bpm": float,
-      "harmony_chords": [ [freq1, freq2, freq3], ... ],
-      "melody_motifs": [ {"note_hz": float, "start_frac": float, "duration_frac": float, "velocity": float}, ... ],
-      "bass_track": [ {"freq_hz": float, "start_frac": float, "duration_frac": float}, ... ],
-      "rhythm_transients": [ {"time_frac": float, "intensity": float, "tonal_pitch_hz": float}, ... ],
-      "instrumentation_timbre": { "fm_harmonic_index": float }
-    },
-    "environmental_foley": {
-      "atmospheric_pressure_noise": { "gain": float, "filter_cutoff_hz": float, "mod_speed_hz": float },
-      "modal_resonances": [ {"frequency_hz": float, "q_factor": float, "gain": float, "impulse_rate_hz": float}, ... ]
+1. "system_config":
+   - "version": "4.0-pure-parametric",
+   - "max_convergence_steps": int (từ 1 đến 3)
+2. "scene_graph":
+   - "camera": {
+       "projection_type": "perspective",
+       "field_of_view": float,
+       "position": [x, y, z],
+       "target": [x, y, z]
+     },
+   - "environment": {
+       "lighting_setup": [
+         {
+           "light_type": "directional" hoặc "point" hoặc "ambient",
+           "color": [r, g, b],
+           "intensity": float,
+           "vector_or_position": [x, y, z]
+         }
+       ],
+       "fog_or_atmosphere": {
+         "enabled": bool,
+         "parameters": { "density": float, "color": [r, g, b] }
+       }
+     }
+3. "vector_keyframes": {
+   - "start_svg": Chuỗi SVG hoàn chỉnh trạng thái t=0.0 (dùng đa tầng gradient),
+   - "end_svg": Chuỗi SVG hoàn chỉnh trạng thái t=1.0 (dùng đa tầng gradient)
+}
+4. "deterministic_physics": {
+   - "isosurface_active": float,
+   - "isosurface_center": [x,y,z],
+   - "isosurface_strength": float,
+   - "isosurface_softness": float,
+   - "isosurface_displace_scale": float,
+   - "fracture_active": float,
+   - "fracture_impact_time": float,
+   - "fracture_cell_scale": float,
+   - "fracture_threshold": float,
+   - "fracture_impulse": float,
+   - "contact_active": float,
+   - "contact_point": [x,y,z],
+   - "contact_normal": [x,y,z],
+   - "contact_radius": float,
+   - "contact_stiffness": float
+}
+5. "chromophore_glazing": {
+   - "subsurface_color": [r,g,b],
+   - "subsurface_wrap": float,
+   - "lipid_sheen_strength": float,
+   - "micro_grain_scale": float,
+   - "micro_grain_density": float
+}
+6. "universal_kinematic_rig": {
+   - "joint_pivots": [[x,y,z], ... 8 pivots],
+   - "joint_trajectories": [ [{"t": 0.0, "rot": [rx,ry,rz]}, {"t": 1.0, ...}], ... 8 tracks ]
+}
+7. "volumetric_360_hull": {
+   - "depth_thickness": float,
+   - "posterior_tint": [r,g,b],
+   - "posterior_occlusion": float
+}
+8. "spatial_decomposition": {
+   - "subject_depth_z": float,
+   - "background_depth_z": float,
+   - "motion_scale_factor": float,
+   - "deform_center": [x,y],
+   - "wave_spatial_tensor": [x,y,z,w],
+   - "kinetic_freq": float,
+   - "kinetic_amp": float,
+   - "kinetic_scale": float,
+   - "vocal_scale": float,
+   - "vocal_freq_multiplier": float,
+   - "sub_wave_scale": float,
+   - "layer_mode": "subject_isolate" hoặc "panoramic_landscape",
+   - "subject_box": [ymin, xmin, ymax, xmax],
+   - "feather_inner_ratio": float,
+   - "feather_outer_ratio": float,
+   - "feather_pad_ratio": float,
+   - "bg_overscan": float,
+   - "horizon_y": float,
+   - "horizon_transition_span": float
+}
+9. "biological_features": { has_face: bool, eye_left: [x,y], eye_right: [x,y], eye_radius_x: float, eye_radius_y: float, blink_tightness: float, mouth_center: [x,y], mouth_radius_x: float, mouth_radius_y: float, mouth_open_sensitivity: float, mouth_upper_ratio: float, mouth_lower_ratio: float, blink_interval_sec: float, blink_duration_sec: float, saccade_freq: float, saccade_amp: float }
+10. "cinematic_optics": { light_pos: [x,y,z], light_color: [r,g,b], ambient_strength: float, diffuse_strength: float, specular_strength: float, surface_shininess: float, normal_strength: float, bokeh_radius: float, shadow_offset: [x,y], shadow_opacity: float, shadow_falloff_inner: float, shadow_darkness: float, motion_blur_multiplier: float, film_grain: float, chromatic_aberration: float, halation: float, vignette: float, particle_density: int, particle_opacity: float }
+11. "pixel_motion_matrix": { primary_flow_vector: [x,y], flow_harmonics: [x,y,z,w], flow_spatial_scale: float, flow_speed: float, curl_scale: float, micro_deformation_amp: float, flow_multiplier: float, bass_multiplier: float, anchor_center: [x,y], anchor_radius: float, anchor_falloff: float, shimmer_coords: [x,y], shimmer_speed: float }
+12. "subject_free_motion": { easing_type: "smoothstep" | "sine" | "cubic" | "linear", trajectory: [{"t": 0.0, "shift": [x,y,z], "rot": [rx,ry,rz], "scale": float}, {"t": 1.0, ...}] }
+13. "camera_manifold": { fov_degrees: float, camera_distance_z: float, pan_scale: float, easing_type: "smoothstep" | "sine" | "cubic" | "linear", trajectory: [{"t": 0.0, "pan": [x,y], "zoom": float, "rot": float}, {"t": 1.0, ...}] }
+14. "population_instancing": { instance_count: int, distribution_spread_x: float, distribution_spread_y: float, distribution_spread_z: float, instance_phase_spread: float }
+15. "soundscape": {
+      "master_gain": float,
+      "vocal_threshold_power": float,
+      "treble_threshold_power": float,
+      "music_score": { "tempo_bpm": float, "harmony_chords": [[f1,f2,f3],...], "melody_motifs": [...], "bass_track": [...], "rhythm_transients": [...], "instrumentation_timbre": { "fm_harmonic_index": float } },
+      "environmental_foley": { "atmospheric_pressure_noise": { "gain": float, "filter_cutoff_hz": float, "mod_speed_hz": float }, "modal_resonances": [...] }
     }
-  }
-}`;
+
+TRẢ VỀ DUY NHẤT JSON HOÀN CHỈNH:`;
 
     const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
     let totalTries = 0;
 
     while (true) {
         totalTries++;
-        await ensureNetworkOnline(postStatus, "đạo diễn 2 khung hình vector K0 và K1");
+        await ensureNetworkOnline(postStatus, "Stage 1: Dynamic Blueprint Generation");
 
         const activeModel = candidateModels[totalTries % candidateModels.length];
         const activeKey = keyPool[totalTries % keyPool.length];
@@ -3907,7 +3855,7 @@ XUẤT DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
         } catch (_) {}
 
         const delayMs = Math.min(2500 + (totalTries * 1200), 15000);
-        postStatus("Đang tái kết nối cỗ máy giải tích Vector kép...");
+        postStatus("Đang tái kết nối cỗ máy Blueprint...");
         await new Promise(r => setTimeout(r, delayMs));
     }
 }
@@ -3987,10 +3935,10 @@ function renderCinemaSubtitlesOverlay(ctx, width, height, currentSecond, dialogu
 }
 
 // =========================================================================
-// 6. TIẾN TRÌNH THỰC THI SẢN XUẤT 60 FPS ĐIỆN ẢNH (MASTER RUNTIME WORKER)
+// RUNTIME TIẾN TRÌNH KẾT XUẤT NATIVE 60 FPS
 // =========================================================================
 self.onmessage = async function(e) {
-    const { masterScript, apiKey, apiKeys } = e.data;
+    const { masterScript, userOriginalPrompt, apiKey, apiKeys } = e.data;
     const heartbeatTimer = setInterval(() => self.postMessage({ type: 'HEARTBEAT', ts: Date.now() }), 2000);
     const postStatus = (text, percent = null) => self.postMessage({ type: 'STATUS', text, percent });
 
@@ -4132,8 +4080,8 @@ self.onmessage = async function(e) {
             const totalFrames = Math.round(shotDuration * fps);
             const frameMicros = 1000000 / fps;
 
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang giải mã Vector Keyframes kép...`);
-            if (sIdx > 0) await new Promise(r => setTimeout(r, 1500));
+            postStatus(`[Stage 1 Blueprint] Đang giải mã phân cảnh [${currentSceneNum}/${totalScenes}]...`);
+            if (sIdx > 0) await new Promise(r => setTimeout(r, 1200));
 
             const shotBlueprint = {
                 title: sceneSpec.title || `Cảnh quay ${currentSceneNum}`,
@@ -4147,10 +4095,11 @@ self.onmessage = async function(e) {
                 action_description: sceneSpec.action_description || '',
                 previous_scene_anchor: (sIdx > 0 && shotsLog[sIdx - 1]) ? {
                     previous_title: shotsLog[sIdx - 1].title,
-                    previous_end_state: "Tiếp tục trực tiếp từ bố cục và vị trí kết thúc của cảnh trước, bảo đảm màu sắc và nhân vật không bị biến đổi đột ngột."
+                    previous_end_state: "Tiếp tục trực tiếp từ bố cục cảnh trước, bảo đảm màu sắc và vị trí nhân vật không bị nhảy vọt."
                 } : null
             };
 
+            // STAGE 1: DYNAMIC BLUEPRINT GENERATION
             const continuumPlan = await requestHamiltonianContinuumTensor(
                 shotBlueprint,
                 shotDuration,
@@ -4158,13 +4107,13 @@ self.onmessage = async function(e) {
                 postStatus
             );
 
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang nung chất liệu Vector kép K0-K1...`);
+            // STAGE 2: COMPILER & RASTERIZE KEYFRAMES
+            postStatus(`[Stage 2 Assembly] Đang nạp Scene Graph và nung chất liệu Vector...`);
             let masterTexStart, masterTexEnd;
             try {
                 masterTexStart = await rasterizeVectorToCanvas(continuumPlan.vector_keyframes.start_svg, width, height);
                 masterTexEnd = await rasterizeVectorToCanvas(continuumPlan.vector_keyframes.end_svg, width, height);
             } catch (err) {
-                console.warn(err);
                 const fbcv = new OffscreenCanvas(width, height);
                 const fbctx = fbcv.getContext('2d');
                 fbctx.fillStyle = "#04050a"; fbctx.fillRect(0, 0, width, height);
@@ -4172,7 +4121,8 @@ self.onmessage = async function(e) {
                 masterTexEnd = new THREE.CanvasTexture(fbcv);
             }
 
-            postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang biên soạn nhạc nền và âm thanh môi trường...`);
+            // TIẾN TRÌNH ÂM HỌC
+            postStatus(`[Stage 2] Đang tổng hợp nhạc nền giao hưởng và âm thanh vật lý...`);
             const totalShotAudioSamples = Math.ceil(shotDuration * shotSampleRate);
             const leftChannel = new Float32Array(totalShotAudioSamples);
             const rightChannel = new Float32Array(totalShotAudioSamples);
@@ -4225,9 +4175,7 @@ self.onmessage = async function(e) {
                 }
             }
 
-            // =========================================================================
-            // BẬT LẠI TOÀN BỘ HỆ THỐNG ĐỒ HỌA: QUANG HỌC, BIẾN DẠNG, VA CHẠM, ĐÁM ĐÔNG
-            // =========================================================================
+            // STAGE 2 SCENE GRAPH MOUNTING
             const decomp = continuumPlan.spatial_decomposition || {};
             const optics = continuumPlan.cinematic_optics || {};
             const bio = continuumPlan.biological_features || {};
@@ -4238,9 +4186,10 @@ self.onmessage = async function(e) {
             const glazing = continuumPlan.chromophore_glazing || {};
             const physics = continuumPlan.deterministic_physics || {};
             const population = continuumPlan.population_instancing || {};
+            const sceneGraph = continuumPlan.scene_graph || {};
 
-            const camFov = Math.max(1.0, Math.min(170.0, Number(cameraManifold.fov_degrees) || 45.0));
-            const camDist = Math.max(0.1, Number(cameraManifold.camera_distance_z) || 2.2);
+            const camFov = Math.max(1.0, Math.min(170.0, Number(cameraManifold.fov_degrees || sceneGraph.camera?.field_of_view || 45.0)));
+            const camDist = Math.max(0.1, Number(cameraManifold.camera_distance_z || sceneGraph.camera?.position?.[2] || 2.2));
 
             const quadCamera = new THREE.PerspectiveCamera(camFov, width / height, 0.01, 1000.0);
             quadCamera.up.set(0, 1, 0);
@@ -4254,7 +4203,7 @@ self.onmessage = async function(e) {
             const startLayers = buildAdaptiveVolumetricLayersFromTexture(masterTexStart, width, height, decomp);
             const endLayers = buildAdaptiveVolumetricLayersFromTexture(masterTexEnd, width, height, decomp);
 
-            // 1. TẦNG HẬU CẢNH: CHẠY NỘI SUY K0 -> K1 VÀ BÓNG ĐỔ TIẾP XÚC
+            // 1. Hậu Cảnh Mesh
             const bgDepthZ = Number(decomp.background_depth_z) || -0.55;
             const bgScaleFactor = 1.0 - (bgDepthZ / camDist);
             const bgGeo = new THREE.PlaneGeometry(visibleWidth * bgScaleFactor * 1.35, visibleHeight * bgScaleFactor * 1.35);
@@ -4271,7 +4220,7 @@ self.onmessage = async function(e) {
             bgMesh.position.set(0, 0, bgDepthZ);
             quadScene.add(bgMesh);
 
-            // 2. BỤI THỂ TÍCH KHÍ QUYỂN BẮT SÁNG (ATMOSPHERIC PARTICLES)
+            // 2. Hạt Bụi Khí Quyển
             const particleCount = Math.max(40, Math.min(500, parseInt(optics.particle_density, 10) || 160));
             const particleGeo = new THREE.BufferGeometry();
             const particlePositions = new Float32Array(particleCount * 3);
@@ -4300,7 +4249,7 @@ self.onmessage = async function(e) {
             const particleSystem = new THREE.Points(particleGeo, particleMat);
             quadScene.add(particleSystem);
 
-            // 3. TẦNG TIỀN CẢNH: FLOW MATCHING GEODESIC MATERIAL VỚI TOÀN BỘ PHÂN HỆ VẬT LÝ
+            // 3. Tiền Cảnh Instanced Mesh
             const fgDepthZ = Number(decomp.subject_depth_z) || 0.35;
             const fgScaleFactor = 1.0 - (fgDepthZ / camDist);
             const fgGeo = new THREE.PlaneGeometry(visibleWidth * fgScaleFactor, visibleHeight * fgScaleFactor, 64, 64);
@@ -4411,7 +4360,7 @@ self.onmessage = async function(e) {
             fgMat.uniforms.uVocalThreshold.value = Number(continuumPlan.soundscape?.vocal_threshold_power) || 0.0;
             fgMat.uniforms.uTrebleThreshold.value = Number(continuumPlan.soundscape?.treble_threshold_power) || 0.0;
 
-            const lPos = Array.isArray(optics.light_pos) ? optics.light_pos : [0.5, 1.2, 1.5];
+            const lPos = Array.isArray(optics.light_pos) ? optics.light_pos : (sceneGraph.environment?.lighting_setup?.[0]?.vector_or_position || [0.5, 1.2, 1.5]);
             fgMat.uniforms.uLightPos.value.set(Number(lPos[0]) || 0.0, Number(lPos[1]) || 0.0, Number(lPos[2]) || 1.0);
             fgMat.uniforms.uLightColor.value.set(Number(lCol[0]) || 1.0, Number(lCol[1]) || 1.0, Number(lCol[2]) || 1.0);
             fgMat.uniforms.uAmbientStrength.value = Number(optics.ambient_strength) || 1.0;
@@ -4472,6 +4421,23 @@ self.onmessage = async function(e) {
             lensPostMat.uniforms.uHalation.value = Number(optics.halation) || 0.38;
             lensPostMat.uniforms.uVignette.value = Number(optics.vignette) || 0.28;
 
+            // =========================================================================
+            // STAGE 4: TỰ ĐỘNG HỘI TỤ THỊ GIÁC VỚI GEMINI VISION (ZERO SCENE REBUILD)
+            // =========================================================================
+            await executeStage4VisionFeedbackLoop(
+                sharedRenderer, 
+                quadScene, 
+                quadCamera, 
+                sceneRenderTarget, 
+                postScene, 
+                postCam, 
+                lensPostMat, 
+                fgMat, 
+                userOriginalPrompt || shotBlueprint.action_description, 
+                validKeyPool, 
+                postStatus
+            );
+
             const subjectTrajectory = continuumPlan.subject_free_motion?.trajectory || [];
             const subjectEasing = continuumPlan.subject_free_motion?.easing_type || "smoothstep";
 
@@ -4482,7 +4448,7 @@ self.onmessage = async function(e) {
             let prevSubPos = new THREE.Vector2(0, 0);
             let prevCamPos = new THREE.Vector2(0, 0);
 
-            // VÒNG LẶP RENDER 60 FPS ĐIỆN ẢNH VỚI ĐỦ CÁC CHI TIẾT
+            // STAGE 3: TIẾN TRÌNH KẾT XUẤT 60 FPS
             for (let f = 0; f < totalFrames; f++) {
                 const progress = f / Math.max(1, totalFrames - 1);
                 const currentSecond = f / fps;
@@ -4497,7 +4463,7 @@ self.onmessage = async function(e) {
                 fgMat.uniforms.uAudioVocal.value = audioDynamics.vocal;
                 fgMat.uniforms.uAudioTreble.value = audioDynamics.treble;
 
-                // 1. DIỄN HOẠT KHỚP ĐỘNG HỌC PHỔ QUÁT
+                // 1. Diễn hoạt Khớp xương
                 for (let j = 0; j < 8; j++) {
                     if (Array.isArray(jointTracks[j])) {
                         const jRot = interpolateSplineProperty(jointTracks[j], progress, 'rot', subjectEasing);
@@ -4509,7 +4475,7 @@ self.onmessage = async function(e) {
                     }
                 }
 
-                // 2. DIỄN HOẠT HỆ THỐNG HẠT BỤI KHÍ QUYỂN
+                // 2. Diễn hoạt Bụi thể tích
                 const posAttr = particleGeo.attributes.position;
                 for (let pIdx = 0; pIdx < particleCount; pIdx++) {
                     posAttr.array[pIdx * 3 + 0] += particleVelocities[pIdx * 3 + 0];
@@ -4522,7 +4488,7 @@ self.onmessage = async function(e) {
                 }
                 posAttr.needsUpdate = true;
 
-                // 3. CHỦ THỂ CỬ ĐỘNG 6-DOF
+                // 3. Chuyển động 6-DOF
                 const subShift = interpolateSplineProperty(subjectTrajectory, progress, 'shift', subjectEasing);
                 const subScale = interpolateSplineProperty(subjectTrajectory, progress, 'scale', subjectEasing) || 1.0;
                 const subRot = interpolateSplineProperty(subjectTrajectory, progress, 'rot', subjectEasing);
@@ -4540,7 +4506,7 @@ self.onmessage = async function(e) {
                 fgMesh.scale.set(subScale, subScale, 1.0);
                 fgMesh.rotation.set(-subRot[0], subRot[1], subRot[2]);
 
-                // 4. CAMERA LƯỚT 360 ĐỘ TỰ DO
+                // 4. Camera Lướt 360° & Handheld Sway
                 const camPan = interpolateSplineProperty(cameraTrajectory, progress, 'pan', cameraEasing);
                 const camZoom = interpolateSplineProperty(cameraTrajectory, progress, 'zoom', cameraEasing) || 1.0;
                 const camRotZ = interpolateSplineProperty(cameraTrajectory, progress, 'rot', cameraEasing) || 0.0;
@@ -4557,7 +4523,7 @@ self.onmessage = async function(e) {
                 quadCamera.lookAt(curCamX * panScale, curCamY * panScale, 0);
                 quadCamera.rotation.z = camRotZ;
 
-                // 5. MOTION BLUR & BÓNG ĐỔ TIẾP XÚC
+                // 5. Motion Blur & Contact Shadow
                 const motionDeltaX = (curSubX - prevSubPos.x) - (curCamX - prevCamPos.x) * panScale;
                 const motionDeltaY = (curSubY - prevSubPos.y) - (curCamY - prevCamPos.y) * panScale;
                 fgMat.uniforms.uMotionBlurVector.value.set(motionDeltaX, motionDeltaY);
@@ -4571,11 +4537,11 @@ self.onmessage = async function(e) {
                 const normSubY = (curSubY / visibleHeight) + 0.5 + shadowOffY;
                 bgMat.uniforms.uShadowCenter.value.set(normSubX, normSubY);
 
-                // PASS 1: KẾT XUẤT 3D TOÀN BỘ KHÔNG GIAN
+                // Pass 1: Render 3D Scene
                 sharedRenderer.setRenderTarget(sceneRenderTarget);
                 sharedRenderer.render(quadScene, quadCamera);
 
-                // PASS 2: QUANG HỌC HẬU KỲ THẤU KÍNH
+                // Pass 2: Anamorphic Film Post-Processing
                 sharedRenderer.setRenderTarget(null);
                 lensPostMat.uniforms.uSceneTexture.value = sceneRenderTarget.texture;
                 sharedRenderer.render(postScene, postCam);
@@ -4597,7 +4563,7 @@ self.onmessage = async function(e) {
 
                 if (f % 30 === 0) {
                     const percent = Math.min(99, Math.round((cumulativeGlobalFrameCount / (overallDuration * fps)) * 100));
-                    postStatus(`[Cảnh ${currentSceneNum}/${totalScenes}] Đang tổng hợp khung hình Veo 4D (${percent}%)...`, percent);
+                    postStatus(`[Stage 3 Execution] Đang tổng hợp khung hình Veo 4D (${percent}%)...`, percent);
                 }
             }
 
@@ -4622,7 +4588,7 @@ self.onmessage = async function(e) {
             shotsLog.push({ shot_id: currentSceneNum, title: sceneSpec.title || `Cảnh quay ${currentSceneNum}`, duration: shotDuration });
         }
 
-        postStatus("Đang hoàn tất kiệt tác điện ảnh độc bản...", 100);
+        postStatus("Đang hoàn tất và đóng gói tác phẩm điện ảnh...", 100);
 
         if (supportsAudio && audioEngine && audioEngine.state !== 'closed') {
             try { await audioEngine.flush(); } catch (_) {}
@@ -5873,28 +5839,23 @@ self.onmessage = async function(e) {
                 return 0;
             },
 
-            // Đếm token cộng dồn từng Part với bộ nhớ đệm
+            // Đếm token chuẩn xác: Luôn đo lường văn bản thực tế, không dùng cache cố định cho văn bản đang biến thiên
             measurePartTokens(part) {
                 if (!part) return 0;
-                if (this._tokenCache.has(part)) return this._tokenCache.get(part);
-
                 let tokens = 0;
                 if (part.text) {
-                    // Cơ chế đồng bộ hóa chuẩn token tiếng Việt & đa ngôn ngữ của Gemini
-                    tokens = Math.ceil(part.text.length / 3.2);
+                    tokens = Math.ceil(String(part.text).length / 3.2);
                 } else if (part.inlineData) {
                     const mime = (part.inlineData.mimeType || '').toLowerCase();
                     if (mime.startsWith('image/')) {
                         tokens = 258;
                     } else if (mime.startsWith('video/')) {
-                        // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Ước lượng Token Video theo tỷ lệ 265 tokens/giây của Gemini
-                        // Nếu có duration, tính chuẩn theo thời lượng; nếu không, suy biến theo dung lượng byte thực tế.
                         const durationSec = Number(part.duration || part.inlineData.duration || 0);
                         if (durationSec > 0) {
                             tokens = Math.max(1024, Math.round(durationSec * 265));
                         } else {
                             const approxBytes = Math.round((part.inlineData.data?.length || 0) * 0.75);
-                            const estimatedSeconds = Math.max(3, Math.round(approxBytes / (300 * 1024))); // Ước lượng theo bitrate trung bình
+                            const estimatedSeconds = Math.max(3, Math.round(approxBytes / (300 * 1024)));
                             tokens = Math.max(1024, Math.round(estimatedSeconds * 265));
                         }
                     } else if (mime.startsWith('audio/')) {
@@ -5906,8 +5867,6 @@ self.onmessage = async function(e) {
                 } else if (part.fileData) {
                     tokens = 258;
                 }
-
-                this._tokenCache.set(part, tokens);
                 return tokens;
             },
 
@@ -7958,13 +7917,14 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
 
                 if (!dataString || dataString === '[DONE]') continue;
 
-                // 1. Phân giải JSON: Nếu JSON bị cắt dở thì mới hoàn trả buffer
+                // 1. Phân giải JSON: Nếu đã có \n\n mà JSON vẫn lỗi thì bỏ qua, tuyệt đối không nhét lại gây kẹt vòng lặp
                 let parsed = null;
                 try {
                     parsed = JSON.parse(dataString);
                 } catch (jsonErr) {
-                    normalized = rawEvent + '\n\n' + normalized;
-                    break;
+                    // Sự kiện đã kết thúc bằng \n\n, nếu lỗi cú pháp chỉ ghi nhận cảnh báo
+                    console.warn('[SSE Parse Warning] Bỏ qua gói dữ liệu lỗi cú pháp');
+                    continue;
                 }
 
                 // 2. Tách biệt kiểm tra lỗi API: Ném lỗi ra ngoài ngay lập tức, KHÔNG nhét lại vào buffer gây treo luồng
@@ -10171,130 +10131,125 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                     notify(`Mã nhận diện mới: #${newSeed}`);
                 };
 
-// DỰNG PHIM ĐIỆN ẢNH VỚI TỔNG ĐẠO DIỄN TOÀN QUYỀN (MASTER SHOWRUNNER ENGINE)
-                const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null, inputTextRef = null, pendingAttachmentsRef = null) => {
-                    if (isGenerating && isGenerating.value) return;
-                    if (isGenerating) isGenerating.value = true;
-                    
-                    if (typeof triggerHaptic === 'function') triggerHaptic('heavy');
+// =========================================================================
+// [STAGE 1 & 4 WORKFLOW]: TỔNG ĐẠO DIỄN VỚI BẢN THIẾT KẾ THAM SỐ TOÀN NĂNG
+// =========================================================================
+const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null, inputTextRef = null, pendingAttachmentsRef = null) => {
+    if (isGenerating && isGenerating.value) return;
+    if (isGenerating) isGenerating.value = true;
+    if (typeof triggerHaptic === 'function') triggerHaptic('heavy');
 
-                    let wakeLock = null;
-                    try {
-                        if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
-                    } catch (_) {}
+    let wakeLock = null;
+    try {
+        if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+    } catch (_) {}
 
-                    let resolvedImageInput = directImageInput;
-                    if (resolvedImageInput && typeof resolvedImageInput === 'object') {
-                        if (resolvedImageInput.data) {
-                            resolvedImageInput = resolvedImageInput.data.startsWith('data:')
-                                ? resolvedImageInput.data
-                                : `data:${resolvedImageInput.mimeType || 'image/jpeg'};base64,${cleanBase64Data(resolvedImageInput.data)}`;
-                        } else if (resolvedImageInput.videoUrl) {
-                            resolvedImageInput = resolvedImageInput.videoUrl;
-                        }
-                    }
+    let resolvedImageInput = directImageInput;
+    if (resolvedImageInput && typeof resolvedImageInput === 'object') {
+        if (resolvedImageInput.data) {
+            resolvedImageInput = resolvedImageInput.data.startsWith('data:')
+                ? resolvedImageInput.data
+                : `data:${resolvedImageInput.mimeType || 'image/jpeg'};base64,${cleanBase64Data(resolvedImageInput.data)}`;
+        } else if (resolvedImageInput.videoUrl) {
+            resolvedImageInput = resolvedImageInput.videoUrl;
+        }
+    }
 
-                    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Quét cả nội dung Markdown lẫn tệp đính kèm attachments
-                    if (!resolvedImageInput && msg?.content) {
-                        const htmlMatch = msg.content.match(/<img[^>]+src=["']([^"']+)["']/i);
-                        if (htmlMatch && htmlMatch[1]) {
-                            resolvedImageInput = unescapeHTML(htmlMatch[1]);
-                        } else {
-                            const mdMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
-                            if (mdMatch && mdMatch[2]) resolvedImageInput = unescapeHTML(mdMatch[2]);
-                        }
-                    }
+    if (!resolvedImageInput && msg?.content) {
+        const htmlMatch = msg.content.match(/<img[^>]+src=["']([^"']+)["']/i);
+        if (htmlMatch && htmlMatch[1]) {
+            resolvedImageInput = unescapeHTML(htmlMatch[1]);
+        } else {
+            const mdMatch = msg.content.match(/!\[([^\]]*)\]\(((?:https?:\/\/|data:image\/)[^\s\)]+(?:\([^\s\)]+\)[^\s\)]*)*)\)/i);
+            if (mdMatch && mdMatch[2]) resolvedImageInput = unescapeHTML(mdMatch[2]);
+        }
+    }
 
-                    // Quét bổ sung mảng attachments nếu người dùng đính kèm ảnh trực tiếp
-                    if (!resolvedImageInput && Array.isArray(msg?.attachments)) {
-                        const imgAtt = msg.attachments.find(a => a && a.mimeType && a.mimeType.startsWith('image/'));
-                        if (imgAtt) {
-                            if (imgAtt.data) {
-                                resolvedImageInput = imgAtt.data.startsWith('data:')
-                                    ? imgAtt.data
-                                    : `data:${imgAtt.mimeType || 'image/jpeg'};base64,${cleanBase64Data(imgAtt.data)}`;
-                            } else if (imgAtt.videoUrl) {
-                                resolvedImageInput = imgAtt.videoUrl;
-                            }
-                        }
-                    }
+    if (!resolvedImageInput && Array.isArray(msg?.attachments)) {
+        const imgAtt = msg.attachments.find(a => a && a.mimeType && a.mimeType.startsWith('image/'));
+        if (imgAtt) {
+            if (imgAtt.data) {
+                resolvedImageInput = imgAtt.data.startsWith('data:')
+                    ? imgAtt.data
+                    : `data:${imgAtt.mimeType || 'image/jpeg'};base64,${cleanBase64Data(imgAtt.data)}`;
+            } else if (imgAtt.videoUrl) {
+                resolvedImageInput = imgAtt.videoUrl;
+            }
+        }
+    }
 
-                    let targetMsg = msg;
-                    if (!targetMsg) {
-                        const { reactive } = window.Vue;
-                        targetMsg = reactive({
-                            id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-                            threadId: currentThreadId.value,
-                            role: 'model',
-                            content: '',
-                            htmlContent: '',
-                            attachments: [],
-                            versions: [],
-                            activeVersionIndex: 0,
-                            createdAt: Date.now(),
-                            isThinking: false,
-                            rawExecutionParts: [],
-                            urlSources: [],
-                            showActions: false,
-                            isEditing: false,
-                            isBookmarked: false,
-                            renderedVideoUrl: null
-                        });
-                        if (typeof currentMessages !== 'undefined') currentMessages.value.push(targetMsg);
-                    }
+    let targetMsg = msg;
+    if (!targetMsg) {
+        const { reactive } = window.Vue;
+        targetMsg = reactive({
+            id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+            threadId: currentThreadId.value,
+            role: 'model',
+            content: '',
+            htmlContent: '',
+            attachments: [],
+            versions: [],
+            activeVersionIndex: 0,
+            createdAt: Date.now(),
+            isThinking: false,
+            rawExecutionParts: [],
+            urlSources: [],
+            showActions: false,
+            isEditing: false,
+            isBookmarked: false,
+            renderedVideoUrl: null
+        });
+        if (typeof currentMessages !== 'undefined') currentMessages.value.push(targetMsg);
+    }
 
-                    try {
-                        const requestedDuration = Number(cinemaConfig.duration) || 15;
-                        const userAspectRatio = cinemaConfig.aspectRatio || "16:9";
-                        const userSeed = cinemaConfig.characterSeed;
-                        let userPrompt = (customPrompt || (inputTextRef ? inputTextRef.value : '') || '').trim();
-                        
-                        if (!userPrompt && resolvedImageInput) {
-                            userPrompt = "Phân tích hình ảnh gốc và phát triển thành một kịch bản điện ảnh sống động tiếp nối.";
-                        }
+    try {
+        const requestedDuration = Number(cinemaConfig.duration) || 15;
+        const userAspectRatio = cinemaConfig.aspectRatio || "16:9";
+        const userSeed = cinemaConfig.characterSeed;
+        let userPrompt = (customPrompt || (inputTextRef ? inputTextRef.value : '') || '').trim();
+        
+        if (!userPrompt && resolvedImageInput) {
+            userPrompt = "Khởi tạo kịch bản điện ảnh giải tích và phát triển mạch phim mượt mà từ hình ảnh gốc.";
+        }
+        if (!userPrompt && !resolvedImageInput && !msg?.content) {
+            throw new Error("Vui lòng cung cấp chủ đề hoặc ý niệm phân cảnh điện ảnh.");
+        }
 
-                        if (!userPrompt && !resolvedImageInput && !msg?.content) {
-                            throw new Error("Vui lòng cung cấp chủ đề hoặc ý tưởng phân cảnh điện ảnh.");
-                        }
+        const healthyKey = (typeof getNextHealthyApiKey === 'function' ? getNextHealthyApiKey()?.key : '') || '';
+        if (!healthyKey) throw new Error("Chưa cấu hình chìa khóa API trong Cài đặt.");
 
-                        const healthyKey = (typeof getNextHealthyApiKey === 'function' ? getNextHealthyApiKey()?.key : '') || '';
-                        if (!healthyKey) throw new Error("Chưa cấu hình chìa khóa API trong Cài đặt.");
+        let w = 1024, h = 576;
+        if (userAspectRatio === "9:16") { w = 768; h = 1344; }
+        else if (userAspectRatio === "1:1") { w = 1024; h = 1024; }
+        else if (userAspectRatio === "21:9") { w = 1344; h = 576; }
+        w = Math.round(w / 16) * 16;
+        h = Math.round(h / 16) * 16;
 
-                        let w = 1024, h = 576;
-                        if (userAspectRatio === "9:16") { w = 768; h = 1344; }
-                        else if (userAspectRatio === "1:1") { w = 1024; h = 1024; }
-                        else if (userAspectRatio === "21:9") { w = 1344; h = 576; }
-                        w = Math.round(w / 16) * 16;
-                        h = Math.round(h / 16) * 16;
+        if (searchStatusText) searchStatusText.value = `[Stage 1] Tổng Đạo Diễn đang kiến tạo Kịch bản & Blueprint Không gian...`;
 
-                        if (searchStatusText) searchStatusText.value = `Tổng Đạo Diễn đang nhận lệnh và lập Kịch bản Điện ảnh...`;
+        const voiceCharactersInfo = toRaw(cinemaVoiceCharacters.value).map(c => ({
+            name: c.name, gender: c.gender, voice: c.geminiVoice
+        }));
+        const dialogueTimeline = toRaw(userTimelineCues.value).map(c => ({
+            speaker: c.speaker, startTimeSec: c.startTimeSec, text: c.text
+        }));
 
-                        const voiceCharactersInfo = toRaw(cinemaVoiceCharacters.value).map(c => ({
-                            name: c.name, gender: c.gender, voice: c.geminiVoice
-                        }));
-                        const dialogueTimeline = toRaw(userTimelineCues.value).map(c => ({
-                            speaker: c.speaker, startTimeSec: c.startTimeSec, text: c.text
-                        }));
-
-                        const masterDirectorPrompt = `[SUPREME EXECUTIVE SHOWRUNNER & CINEMA DIRECTOR]
+        const masterDirectorPrompt = `[PURE UNIVERSAL PARAMETRIC PIPELINE - STAGE 1: DYNAMIC BLUEPRINT GENERATION]
 Ý niệm của người dùng: "${userPrompt}".
-Tổng thời lượng phim: ${requestedDuration} giây. Khung hình: ${userAspectRatio}.
+Tổng thời lượng: ${requestedDuration}s (60 FPS). Tỷ lệ khung hình: ${userAspectRatio}.
+Nhiệm vụ: Đóng vai trò Tổng Đạo Diễn & Kiến Trúc Sư Thực Tại 4D. Hãy phân rã thành các phân cảnh điện ảnh không khuôn mẫu, quy định chính xác bối cảnh, nhân vật, cú máy và các thông số vật lý giải tích.
 
-BẠN LÀ TỔNG ĐẠO DIỄN ĐIỆN ẢNH VÀ TRƯỞNG BIÊN KỊCH.
-Nhiệm vụ của bạn là biến ý niệm trên thành một Kịch bản Điện ảnh Chi tiết (Master Screenplay & Production Bible).
-Tuyệt đối không viết qua loa. Mỗi cảnh quay phải quy định rõ: Diễn viên là ai (khuôn mặt, vóc dáng, trang phục), Bối cảnh thế nào (ánh sáng, thời tiết, địa hình), và Hành động diễn biến ra sao!
-
-Yêu cầu xuất JSON chuẩn xác duy nhất:
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 {
   "title": "Tên tác phẩm điện ảnh",
-  "logline": "Tóm tắt cốt truyện trong 1 câu",
+  "logline": "Ý niệm chủ đạo",
   "total_duration": ${requestedDuration},
   "overall_aspect_ratio": "${userAspectRatio}",
   "overall_resolution": { "width": ${w}, "height": ${h} },
   "production_bible": {
-    "visual_tone": "Tông màu chủ đạo và phong cách ánh sáng (ví dụ: Ánh sáng chiều tà ấm áp, tương phản cao, phong cách phim 35mm)",
-    "main_subject_description": "Mô tả chi tiết nhân vật/chủ thể chính xuyên suốt (khuôn mặt, độ tuổi, vóc dáng, màu tóc, trang phục, chất liệu)",
-    "world_setting_description": "Mô tả thế giới và trường quay xung quanh (địa hình, kiến trúc, cây cối, bầu trời, thời tiết)"
+    "visual_tone": "Phong cách ánh sáng, bảng màu điện ảnh",
+    "main_subject_description": "Mô tả giải phẫu, trang phục, diện mạo nhân vật/thực thể chính",
+    "world_setting_description": "Mô tả trường quay, không gian, thời tiết, địa hình"
   },
   "voice_characters": ${JSON.stringify(voiceCharactersInfo)},
   "dialogue_cues": ${JSON.stringify(dialogueTimeline)},
@@ -10304,98 +10259,95 @@ Yêu cầu xuất JSON chuẩn xác duy nhất:
       "title": "Tên cú máy",
       "target_duration": 5.0,
       "cinematography": {
-        "shot_type": "Close-up / Medium Shot / Wide Shot / Extreme Wide",
-        "camera_movement": "Dolly in lướt chậm / Pan ngang / Quanh 360 độ / Rung tay hữu cơ",
-        "lens_and_lighting": "Ống kính 50mm Anamorphic, ánh sáng viền vàng ấm, bóng đổ dài trên mặt đất"
+        "shot_type": "Close-up / Medium Shot / Wide / Aerial",
+        "camera_movement": "Dolly in / 360 Orbit / Handheld / Crane",
+        "lens_and_lighting": "Mô tả ống kính quang học và nguồn sáng"
       },
       "subject_direction": {
-        "actor_description": "Mô tả cụ thể ngoại hình nhân vật trong cảnh này (ví dụ: Người thợ lặn mặc áo bảo hộ xước xát, ánh mắt chăm chú)",
-        "action_choreography": "Hành động chi tiết (ví dụ: Bước 2 bước về phía trước, đưa tay lên gạt giọt nước, nghiêng đầu sang trái)"
+        "actor_description": "Mô tả chủ thể trong cảnh này",
+        "action_choreography": "Chuỗi hành động và chuyển động vi mô"
       },
       "environment_direction": {
-        "setting_details": "Chi tiết tiền cảnh và hậu cảnh (ví dụ: Bãi đá rêu phong ẩm ướt ở tiền cảnh, vách núi hùng vĩ mờ sương ở hậu cảnh)",
-        "atmospheric_effects": "Hạt bụi vàng lơ lửng, sương mù mỏng bay ngang, sóng biển dập dềnh"
+        "setting_details": "Chi tiết tiền cảnh và hậu cảnh",
+        "atmospheric_effects": "Mô tả mật độ sương mù, hạt bụi ánh sáng"
       },
       "sound_and_dialogue": {
-        "dialogue_text": "Câu thoại (nếu có)",
-        "ambient_sfx": "Tiếng gió rít qua khe đá, tiếng bước chân sỏi, tiếng thở nhẹ"
+        "dialogue_text": "Lời thoại nếu có",
+        "ambient_sfx": "Âm thanh môi trường và tiếng động cơ học"
       },
-      "action_description": "Mô tả tổng hợp cú máy để phục vụ đạo diễn hình ảnh"
+      "action_description": "Tóm tắt diễn biến cú máy"
     }
   ]
 }`;
 
-                        let masterScript = null;
-                        let scriptTries = 0;
-                        
-                        while (!masterScript) {
-                            scriptTries++;
-                            while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
-                                if (searchStatusText) searchStatusText.value = "Đang chờ kết nối mạng để khởi tạo kịch bản...";
-                                await new Promise(r => setTimeout(r, 2000));
-                            }
+        let masterScript = null;
+        while (!masterScript) {
+            while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
+                if (searchStatusText) searchStatusText.value = "Đang chờ kết nối mạng để khởi tạo kịch bản...";
+                await new Promise(r => setTimeout(r, 2000));
+            }
 
-                            const res = await dispatchBackgroundTask({
-                                contents: [{ role: 'user', parts: [{ text: masterDirectorPrompt }] }],
-                                generationConfig: { temperature: 0.25, maxOutputTokens: 4000, responseMimeType: "application/json" }
-                            });
-                            masterScript = SearchIntelligenceEngine.robustJsonRepair(res?.candidates?.[0]?.content?.parts?.[0]?.text);
+            const res = await dispatchBackgroundTask({
+                contents: [{ role: 'user', parts: [{ text: masterDirectorPrompt }] }],
+                generationConfig: { temperature: 0.25, maxOutputTokens: 5000, responseMimeType: "application/json" }
+            });
+            masterScript = SearchIntelligenceEngine.robustJsonRepair(res?.candidates?.[0]?.content?.parts?.[0]?.text);
 
-                            if (!masterScript) {
-                                if (searchStatusText) searchStatusText.value = "Tổng Đạo Diễn đang trau chuốt lại kịch bản...";
-                                await new Promise(r => setTimeout(r, 3000));
-                            }
-                        }
+            if (!masterScript) {
+                if (searchStatusText) searchStatusText.value = "Tổng Đạo Diễn đang trau chuốt lại cấu trúc...";
+                await new Promise(r => setTimeout(r, 2500));
+            }
+        }
 
-                        masterScript.base_seed = userSeed;
+        masterScript.base_seed = userSeed;
+        if (resolvedImageInput && masterScript.scenes && masterScript.scenes.length > 0) {
+            masterScript.scenes[0].directImageDataUrl = resolvedImageInput;
+        }
 
-                        if (resolvedImageInput && masterScript.scenes && masterScript.scenes.length > 0) {
-                            masterScript.scenes[0].directImageDataUrl = resolvedImageInput;
-                        }
+        if (searchStatusText) searchStatusText.value = `Đang kích hoạt Pipeline Đồ họa Giải tích Phổ quát...`;
 
-                        if (searchStatusText) searchStatusText.value = `Đang chuyển kịch bản vào trường quay...`;
+        const allAvailableKeys = (apiKeyPool.value || []).map(k => k.key).filter(Boolean);
+        const result = await AICinemaWorkerBridge.runProductionInWorker({
+            masterScript,
+            userOriginalPrompt: userPrompt,
+            apiKey: healthyKey,
+            apiKeys: allAvailableKeys.length > 0 ? allAvailableKeys : [healthyKey]
+        }, (statusText, percent) => {
+            if (searchStatusText) {
+                searchStatusText.value = percent !== null ? `[${percent}%] ${statusText}` : statusText;
+            }
+        });
 
-                        const allAvailableKeys = (apiKeyPool.value || []).map(k => k.key).filter(Boolean);
-                        const result = await AICinemaWorkerBridge.runProductionInWorker({
-                            masterScript,
-                            apiKey: healthyKey,
-                            apiKeys: allAvailableKeys.length > 0 ? allAvailableKeys : [healthyKey]
-                        }, (statusText, percent) => {
-                            if (searchStatusText) {
-                                searchStatusText.value = percent !== null ? `[${percent}%] ${statusText}` : statusText;
-                            }
-                        });
+        targetMsg.videoBlob = result.videoBlob;
+        const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
+        targetMsg.renderedVideoUrl = videoUrl;
 
-                        targetMsg.videoBlob = result.videoBlob;
-                        const videoUrl = ObjectUrlRegistry.create(result.videoBlob);
-                        targetMsg.renderedVideoUrl = videoUrl;
+        const shotsDetail = (result.shotsLog || []).map(s => `- **${s.title} (${s.duration}s)**: ${s.action || 'Diễn biến quang học'}`).join('\n');
 
-                        const shotsDetail = (result.shotsLog || []).map(s => `- **${s.title} (${s.duration}s)**: ${s.action || ''}`).join('\n');
+        targetMsg.content = (targetMsg.content || '') +
+            `\n\n🎬 **${masterScript.title || 'Kiệt Tác Điện Ảnh Giải Tích'}**\n` +
+            `*${masterScript.logline || ''}*\n\n` +
+            `- **Thời lượng:** ${result.narrativePlan.total_duration} giây\n` +
+            `- **Khung hình:** ${userAspectRatio}\n` +
+            `- **Hội tụ Quang học:** Chuẩn PBR Parametric Pipeline (60 FPS Native)\n\n` +
+            `🎞️ **Phân cảnh chi tiết:**\n${shotsDetail}`;
 
-                        targetMsg.content = (targetMsg.content || '') +
-                            `\n\n🎬 **${masterScript.title || 'Tác Phẩm Điện Ảnh Độc Bản'}**\n` +
-                            `*${masterScript.logline || ''}*\n\n` +
-                            `- **Thời lượng:** ${result.narrativePlan.total_duration} giây\n` +
-                            `- **Khung hình:** ${userAspectRatio}\n` +
-                            `- **Phong cách:** ${masterScript.production_bible?.visual_tone || 'Điện ảnh 35mm'}\n\n` +
-                            `🎞️ **Phân cảnh chi tiết:**\n${shotsDetail}`;
+        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+        scheduleDbSave(targetMsg);
+        scrollToBottom(true);
+        notify("Tác phẩm điện ảnh đã hoàn thành và đạt độ hội tụ hoàn hảo!");
 
-                        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-                        scheduleDbSave(targetMsg);
-                        scrollToBottom(true);
-                        notify("Tác phẩm điện ảnh đã hoàn thành!");
-
-                    } catch (err) {
-                        notify(`Lỗi xưởng phim: ${err.message}`, true);
-                        targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi hệ thống: ${err.message})*`;
-                        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-                        scheduleDbSave(targetMsg);
-                    } finally {
-                        if (wakeLock) { try { await wakeLock.release(); } catch (_) {} }
-                        isGenerating.value = false;
-                        if (searchStatusText) searchStatusText.value = "";
-                    }
-                };
+    } catch (err) {
+        notify(`Lỗi xưởng phim: ${err.message}`, true);
+        targetMsg.content = (targetMsg.content || '') + `\n\n*(Lỗi hệ thống: ${err.message})*`;
+        targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+        scheduleDbSave(targetMsg);
+    } finally {
+        if (wakeLock) { try { await wakeLock.release(); } catch (_) {} }
+        isGenerating.value = false;
+        if (searchStatusText) searchStatusText.value = "";
+    }
+};
 
                 const animateImageToVideo = async (msg, customPrompt = '', directImageInput = null) => {
                     return await rawExecuteCinemaProduction(msg, customPrompt, directImageInput, inputText, pendingAttachments);
@@ -12254,19 +12206,27 @@ Yêu cầu xuất JSON chuẩn xác duy nhất:
                             if (cur.role !== 'user' && cur.role !== 'model') continue;
                             if (!Array.isArray(cur.parts) || !cur.parts.length) continue;
 
-                            // CHỐNG LỖI 400: Loại bỏ triệt để mọi text part rỗng hoặc chỉ có khoảng trắng
+                            // BẢO VỆ TUYỆT ĐỐI: Dọn sạch cả thẻ hoàn chỉnh lẫn thẻ suy luận dở dang bị đứt ngang
                             const cleanParts = cur.parts.filter(p => {
                                 if (p.thought === true) return false;
                                 if (p.inlineData && p.inlineData.data) return true;
                                 if (p.fileData && p.fileData.fileUri) return true;
                                 if (p.text !== undefined && p.text !== null) {
-                                    const cleanedText = String(p.text).replace(/<(think|thought)>[\s\S]*?<\/(think|thought)>/gi, '').trim();
+                                    const cleanedText = String(p.text)
+                                        .replace(/<(think|thought)>[\s\S]*?<\/(think|thought)>/gi, '')
+                                        .replace(/<(think|thought)>[\s\S]*$/gi, '') // Xóa thẻ dở dang ở cuối
+                                        .trim();
                                     return cleanedText.length > 0;
                                 }
                                 return false;
                             }).map(p => {
                                 if (p.text !== undefined && p.text !== null) {
-                                    return { text: String(p.text).trim() };
+                                    return { 
+                                        text: String(p.text)
+                                            .replace(/<(think|thought)>[\s\S]*?<\/(think|thought)>/gi, '')
+                                            .replace(/<(think|thought)>[\s\S]*$/gi, '')
+                                            .trim() 
+                                    };
                                 }
                                 return p;
                             });
@@ -12507,143 +12467,7 @@ Yêu cầu xuất JSON chuẩn xác duy nhất:
                     const triggerGenerateFollowUps = async (msg) => {
                         return await FollowUpGeneratorNeuron.fire(msg, 'FollowUpAction');
                     };
-
-                    // =========================================================================
-                    // TẦNG VẬN CHUYỂN BỌC THÉP (TỰ ĐỘNG CHỌN CỔNG CHUẨN XÁC CHO MODEL ALIAS)
-                    // =========================================================================
-                    const fetchStreamWithFaultTolerance = async (payload, activeModelId, onChunk, signal) => {
-                        // NGUYÊN TẮC GOOGLE API: Các model alias (-latest, -preview) CHỈ tồn tại trên v1beta
-                        const isDynamicAlias = activeModelId.includes('-latest') || activeModelId.includes('-preview');
-                        const apiGateways = isDynamicAlias ? ['v1beta'] : ['v1beta', 'v1'];
-
-                        let hasReceivedAnyChunk = false;
-                        let lastErrorMessage = "";
-
-                        const allKeys = (apiKeyPool.value && apiKeyPool.value.length > 0) ? [...apiKeyPool.value] : [];
-                        if (allKeys.length === 0) {
-                            return { success: false, errorMessage: "Chưa cấu hình chìa khóa API trong Cài đặt." };
-                        }
-
-                        for (const gateway of apiGateways) {
-                            if (signal?.aborted) return { success: false, isMidStreamDrop: false };
-
-                            for (let kIdx = 0; kIdx < allKeys.length; kIdx++) {
-                                if (signal?.aborted) return { success: false, isMidStreamDrop: false };
-
-                                const keyObj = allKeys[kIdx];
-                                const apiKeyString = typeof keyObj === 'string' ? keyObj : (keyObj?.key || '');
-                                if (!apiKeyString) continue;
-
-                                const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${activeModelId}:streamGenerateContent?alt=sse&key=${apiKeyString}`;
-
-                                // Thử tối đa 2 lượt cho mỗi key: Lượt 1 đầy đủ, Lượt 2 gọt tham số nếu dính lỗi 400
-                                for (let attempt = 0; attempt < 2; attempt++) {
-                                    if (signal?.aborted) return { success: false, isMidStreamDrop: false };
-
-                                    const reqPayload = JSON.parse(JSON.stringify(payload));
-
-                                    // Lượt cứu hộ: Gỡ bỏ các tham số có thể gây xung đột với model
-                                    if (attempt === 1) {
-                                        if (reqPayload.generationConfig) {
-                                            delete reqPayload.generationConfig.thinkingConfig;
-                                            delete reqPayload.generationConfig.responseMimeType;
-                                            delete reqPayload.generationConfig.maxOutputTokens;
-                                        }
-                                        delete reqPayload.tools;
-                                    }
-
-                                    // Cổng v1 không nhận systemInstruction trực tiếp
-                                    if (gateway === 'v1') {
-                                        if (reqPayload.generationConfig?.thinkingConfig) delete reqPayload.generationConfig.thinkingConfig;
-                                        delete reqPayload.tools;
-                                        if (reqPayload.systemInstruction?.parts?.length) {
-                                            const sysText = reqPayload.systemInstruction.parts.map(p => p.text || '').join('\n');
-                                            delete reqPayload.systemInstruction;
-                                            reqPayload.contents = [
-                                                { role: 'user', parts: [{ text: `[CHỈ DẪN HỆ THỐNG]:\n${sysText}` }] },
-                                                { role: 'model', parts: [{ text: "Tôi đã hiểu và tuân thủ." }] },
-                                                ...reqPayload.contents
-                                            ];
-                                        }
-                                    }
-
-                                    const stallAbortController = new AbortController();
-                                    let combinedSignal = stallAbortController.signal;
-                                    if (signal) {
-                                        if (signal.aborted) return { success: false, isMidStreamDrop: false };
-                                        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
-                                            try { combinedSignal = AbortSignal.any([signal, stallAbortController.signal]); } 
-                                            catch (_) { combinedSignal = signal; }
-                                        } else {
-                                            combinedSignal = signal;
-                                        }
-                                    }
-
-                                    let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 90000);
-
-                                    try {
-                                        const response = await fetch(endpoint, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify(reqPayload),
-                                            signal: combinedSignal
-                                        });
-
-                                        if (response.ok) {
-                                            markApiKeySuccess(keyObj);
-                                            let chunkCount = 0;
-
-                                            await readSSEStream(response, combinedSignal, (chunk) => {
-                                                clearTimeout(stallWatchdog);
-                                                stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 45000);
-                                                chunkCount++;
-                                                hasReceivedAnyChunk = true;
-                                                onChunk(chunk);
-                                            });
-
-                                            clearTimeout(stallWatchdog);
-                                            if (chunkCount > 0) return { success: true, isMidStreamDrop: false };
-                                        } else {
-                                            clearTimeout(stallWatchdog);
-                                            const errJson = await response.json().catch(() => ({}));
-                                            const serverMsg = errJson?.error?.message || response.statusText;
-                                            lastErrorMessage = `[${activeModelId} - Cổng ${gateway}]: ${serverMsg}`;
-                                            console.warn(`[G-Deep Network]`, lastErrorMessage);
-
-                                            if (response.status === 401 || response.status === 403 || response.status === 429) {
-                                                markApiKeyFailure(keyObj, response.status);
-                                                break;
-                                            }
-
-                                            if (response.status === 404) {
-                                                break;
-                                            }
-
-                                            if (response.status === 400 && attempt === 0) {
-                                                continue;
-                                            }
-                                            break;
-                                        }
-                                    } catch (netErr) {
-                                        clearTimeout(stallWatchdog);
-                                        if (signal?.aborted || netErr.name === 'AbortError') return { success: false, isMidStreamDrop: true };
-                                        if (hasReceivedAnyChunk) {
-                                            markApiKeySuccess(keyObj);
-                                            return { success: true, isMidStreamDrop: true };
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        return { 
-                            success: hasReceivedAnyChunk, 
-                            isMidStreamDrop: !hasReceivedAnyChunk,
-                            errorMessage: lastErrorMessage 
-                        };
-                    };
-
+                    
 // =========================================================================
                     // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI ĐA PHƯƠNG THỨC NÂNG CẤP TOÀN DIỆN
                     // =========================================================================
@@ -13254,13 +13078,23 @@ Yêu cầu xuất JSON chuẩn xác duy nhất:
                                 if (!candidate) return;
                                 if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
-                                if (chunkJson.usageMetadata && chunkJson.usageMetadata.promptTokenCount > 0) {
-                                    botMsg.exactTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
-                                    botMsg.promptTokens = Number(chunkJson.usageMetadata.promptTokenCount);
-                                    botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (botMsg.promptTokens + botMsg.exactTokens);
+                                if (chunkJson.usageMetadata) {
+                                    const candidateTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
+                                    const promptTokens = Number(chunkJson.usageMetadata.promptTokenCount) || 0;
+                                    
+                                    botMsg.exactTokens = candidateTokens;
+                                    botMsg.promptTokens = promptTokens;
+                                    botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (promptTokens + candidateTokens);
+
+                                    // SỬA CHÍ MẠNG: Chỉ tính token RIÊNG BIỆT của tin nhắn người dùng, không lấy tổng promptTokens
                                     const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                                     if (lastUser && !lastUser.exactTokens) {
-                                        lastUser.exactTokens = botMsg.promptTokens;
+                                        lastUser.exactTokens = TokenBudgetManager.measureTurnTokens({
+                                            role: 'user',
+                                            content: lastUser.content,
+                                            promptContent: lastUser.promptContent,
+                                            attachments: lastUser.attachments
+                                        });
                                         scheduleDbSave(lastUser);
                                     }
                                 }
