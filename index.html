@@ -6560,21 +6560,24 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                         throw new Error("Không thể tải Pyodide từ mọi mạng lưới CDN phân phối.");
                     }
 
-                    // Tải sẵn các thư viện lõi phổ biến
+                    // [VÁ LỖI CỐT LÕI]: Ép buộc nạp tường minh numpy và matplotlib trước khi chạy
                     try {
-                        await pyodide.loadPackage(['numpy']);
-                    } catch (_) {}
+                        await pyodide.loadPackage(['numpy', 'matplotlib', 'scipy']);
+                    } catch (pkgErr) {
+                        console.warn("Cảnh báo nạp gói phần mềm:", pkgErr);
+                    }
 
-                    // Thiết lập môi trường Python chuẩn: bắt stdout, stderr, chặn input treo, bẫy đồ họa matplotlib
                     await pyodide.runPythonAsync(\`
 import sys
 import io
-import js
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 class AsyncStdout(io.StringIO):
     pass
 
-# Mock hàm input() tránh đóng băng worker
 def _mock_input(prompt=""):
     return ""
 __builtins__.input = _mock_input
@@ -6590,58 +6593,38 @@ __builtins__.input = _mock_input
                 try {
                     const py = await initPyodideEngine();
 
-                    // Tự động kiểm tra và nạp các packages được import trong mã nguồn
-                    const autoPackages = ['matplotlib', 'pandas', 'scipy', 'sympy', 'regex', 'sqlite3'];
-                    const toLoad = [];
-                    for (const pkg of autoPackages) {
-                        if (new RegExp('\\\\bimport\\\\s+' + pkg + '|\\\\bfrom\\\\s+' + pkg + '\\\\b').test(code)) {
-                            toLoad.push(pkg);
-                        }
-                    }
-                    if (toLoad.length > 0) {
-                        try {
-                            await py.loadPackage(toLoad);
-                        } catch (_) {}
-                    }
+                    // Chuẩn hóa kịch bản Python do Gemini sinh ra
+                    const normalizedLines = String(code || '')
+                        .split(/\\r?\\n/)
+                        .map(l => '    ' + l)
+                        .join('\\n');
 
-                    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Sửa triệt để escape double-backslash trong chuỗi Template
-                // Dùng RegExp /\\r?\\n/ và '\\n' để Worker nhận diện chính xác ký tự xuống dòng mà không vỡ cú pháp JS
-                const normalizedLines = String(code || '')
-                    .split(/\\r?\\n/)
-                    .map(l => '    ' + l)
-                    .join('\\n');
-
-                const wrappedCode = [
-                    'import sys, io',
-                    'sys.stdout = io.StringIO()',
-                    'sys.stderr = io.StringIO()',
-                    '_gdeep_has_plot = False',
-                    '_gdeep_plot_base64 = ""',
-                    'try:',
-                    '    import matplotlib',
-                    '    matplotlib.use("Agg")',
-                    '    import matplotlib.pyplot as plt',
-                    '    _gdeep_has_plot = True',
-                    'except BaseException:',
-                    '    pass',
-                    'try:',
-                    normalizedLines,
-                    '    if _gdeep_has_plot:',
-                    '        import matplotlib.pyplot as plt',
-                    '        if plt.get_fignums():',
-                    '            _buf = io.BytesIO()',
-                    '            plt.savefig(_buf, format="png", bbox_inches="tight", dpi=130, facecolor="#10121a", edgecolor="none")',
-                    '            plt.close("all")',
-                    '            _buf.seek(0)',
-                    '            import base64',
-                    '            _gdeep_plot_base64 = base64.b64encode(_buf.read()).decode("ascii")',
-                    '            _buf.close()',
-                    'except BaseException as e:',
-                    '    import traceback',
-                    '    traceback.print_exc()',
-                    '_gdeep_stdout_val = sys.stdout.getvalue()',
-                    '_gdeep_stderr_val = sys.stderr.getvalue()'
-                ].join('\\n');
+                    const wrappedCode = [
+                        'import sys, io',
+                        'import numpy as np',
+                        'import matplotlib',
+                        'matplotlib.use("Agg")',
+                        'import matplotlib.pyplot as plt',
+                        'sys.stdout = io.StringIO()',
+                        'sys.stderr = io.StringIO()',
+                        '_gdeep_has_plot = True',
+                        '_gdeep_plot_base64 = ""',
+                        'try:',
+                        normalizedLines,
+                        '    if plt.get_fignums():',
+                        '        _buf = io.BytesIO()',
+                        '        plt.savefig(_buf, format="png", bbox_inches="tight", dpi=140, facecolor="#08090d", edgecolor="none")',
+                        '        plt.close("all")',
+                        '        _buf.seek(0)',
+                        '        import base64',
+                        '        _gdeep_plot_base64 = base64.b64encode(_buf.read()).decode("ascii")',
+                        '        _buf.close()',
+                        'except BaseException as e:',
+                        '    import traceback',
+                        '    traceback.print_exc()',
+                        '_gdeep_stdout_val = sys.stdout.getvalue()',
+                        '_gdeep_stderr_val = sys.stderr.getvalue()'
+                    ].join('\\n');
 
                     await py.runPythonAsync(wrappedCode);
 
@@ -6652,17 +6635,17 @@ __builtins__.input = _mock_input
                     let outputStr = stdout;
                     let isSuccess = true;
 
-                    if (stderr && !stdout) {
+                    if (stderr && !plotBase64) {
                         outputStr = stderr;
                         isSuccess = false;
                     } else if (stderr) {
-                        outputStr = stdout + "\\n[Cảnh báo / Lỗi]:\\n" + stderr;
+                        outputStr = stdout + "\\n[Log]:\\n" + stderr;
                     }
 
                     self.postMessage({
                         id,
                         status: isSuccess ? 'success' : 'error',
-                        output: outputStr || (plotBase64 ? "" : "Chương trình thực thi thành công (Không có đầu ra văn bản)."),
+                        output: outputStr || (plotBase64 ? "" : "Thực thi tính toán ma trận thành công."),
                         plotBase64: plotBase64 || null
                     });
 
@@ -6670,7 +6653,7 @@ __builtins__.input = _mock_input
                     self.postMessage({
                         id,
                         status: 'error',
-                        output: "Lỗi khởi động môi trường điện toán: " + (err.message || String(err)),
+                        output: "Lỗi thực thi WebAssembly: " + (err.message || String(err)),
                         plotBase64: null
                     });
                 }
@@ -10684,7 +10667,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     const sendMessage = async (isRegenerate = false, existingBotMsgTarget = null) => {
                         if (isGenerating.value && !isRegenerate) return;
 
-// === KHỐI ĐIỀU PHỐI ĐA PHƯƠNG TIỆN (G-DEEP ULTRA NATIVE COMPUTE IMAGE ENGINE) ===
+// === KHỐI ĐIỀU PHỐI ĐA PHƯƠNG TIỆN (TMGE SAFE PARAMETRIC MATRIX SYNTHESIS) ===
                         if ((enableCinemaStudio.value || enableImageGen.value) && !isRegenerate && (inputText.value.trim() || pendingAttachments.value.length > 0)) {
                             const promptText = inputText.value.trim();
                             const currentAtts = [...pendingAttachments.value];
@@ -10694,7 +10677,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             resizeTextarea();
 
                             const attachedImg = currentAtts.find(a => a.mimeType && a.mimeType.startsWith('image/'));
-                            const prefix = enableCinemaStudio.value ? "🎬 Cảnh quay điện ảnh:" : "🎨 Điện toán Hình thái học (WASM-Base64):";
+                            const prefix = enableCinemaStudio.value ? "🎬 Cảnh quay điện ảnh:" : "🎨 Sổ sách Tham số (Parametric Matrix):";
                             const userMsg = createMessageRecord({
                                 threadId: currentThreadId.value,
                                 role: 'user',
@@ -10716,7 +10699,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 });
                                 currentMessages.value.push(targetMsg);
 
-                                // 1. TÍNH TOÁN THÔNG SỐ KHUNG HÌNH THEO CẤU HÌNH G-DEEP ULTRA
                                 const parseAspectRatioValue = (ratioStr) => {
                                     if (!ratioStr || typeof ratioStr !== 'string') return 1.0;
                                     const parts = ratioStr.split(':').map(Number);
@@ -10727,11 +10709,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 const currentStyleDesc = getImageStylePromptModifier(imageConfig.style);
                                 const currentSeed = imageConfig.keepCharacter ? imageConfig.characterSeed : Math.floor(Math.random() * 899999) + 100000;
 
-                                // 2. KHO KÝ ỨC HỌC TĂNG CƯỜNG THUẬT TOÁN (RL PYTHON VAULT)
-                                const RL_PYTHON_VAULT = 'gdeep_tmge_python_vault';
-                                const getRelevantPythonExp = (query) => {
+                                const RL_PARAM_VAULT = 'gdeep_tmge_param_vault';
+                                const getRelevantParamExp = (query) => {
                                     try {
-                                        const vault = JSON.parse(localStorage.getItem(RL_PYTHON_VAULT) || '[]');
+                                        const vault = JSON.parse(localStorage.getItem(RL_PARAM_VAULT) || '[]');
                                         const tokens = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
                                         return vault.filter(item => tokens.some(t => item.prompt.toLowerCase().includes(t)))
                                                     .sort((a, b) => b.reward - a.reward)
@@ -10739,16 +10720,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     } catch (_) { return []; }
                                 };
 
-                                const commitPythonExp = (prompt, script, reward, loops) => {
+                                const commitParamExp = (prompt, blueprint, reward, loops) => {
                                     try {
-                                        let vault = JSON.parse(localStorage.getItem(RL_PYTHON_VAULT) || '[]');
-                                        vault.unshift({ prompt, script, reward, loops, timestamp: Date.now() });
+                                        let vault = JSON.parse(localStorage.getItem(RL_PARAM_VAULT) || '[]');
+                                        vault.unshift({ prompt, blueprint, reward, loops, timestamp: Date.now() });
                                         if (vault.length > 30) vault = vault.slice(0, 30);
-                                        localStorage.setItem(RL_PYTHON_VAULT, JSON.stringify(vault));
+                                        localStorage.setItem(RL_PARAM_VAULT, JSON.stringify(vault));
                                     } catch (_) {}
                                 };
 
-                                // 3. BỘ ĐIỀU PHỐI API KHÔNG FALLBACK, TỰ ĐỘNG THỬ LẠI VÔ HẠN
                                 const infiniteResilientDispatch = async (payload, statusHint) => {
                                     let attemptCount = 0;
                                     while (true) {
@@ -10756,13 +10736,13 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                         attemptCount++;
 
                                         while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
-                                            searchStatusText.value = `[Đang đợi mạng] Chờ kết nối Internet phục hồi... (Lần ${attemptCount})`;
+                                            searchStatusText.value = `[Đang đợi mạng] Chờ kết nối Internet... (Lần ${attemptCount})`;
                                             await new Promise(r => setTimeout(r, 2000));
                                         }
 
                                         const keyObj = getNextHealthyApiKey();
                                         if (!keyObj?.key) {
-                                            searchStatusText.value = `[Đang đợi API Key] Luân chuyển danh sách khóa...`;
+                                            searchStatusText.value = `[Đang đợi API Key] Luân chuyển khóa...`;
                                             await new Promise(r => setTimeout(r, 2500));
                                             continue;
                                         }
@@ -10785,85 +10765,142 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 try {
                                     if (!promptText) throw new Error("Vui lòng nhập nội dung muốn tạo ảnh.");
 
-                                    const learnedAxioms = getRelevantPythonExp(promptText);
+                                    const learnedAxioms = getRelevantParamExp(promptText);
                                     let learnedGuidance = "";
                                     if (learnedAxioms.length > 0) {
-                                        learnedGuidance = "\n[TRI THỨC THUẬT TOÁN ĐÃ THÀNH CÔNG TỪ CÁC PHIÊN TRƯỚC]:\n" +
-                                            learnedAxioms.map((ax, idx) => `Mẫu #${idx + 1} (Prompt: "${ax.prompt}"):\n${ax.script}`).join('\n---\n');
+                                        learnedGuidance = "\n[SỔ SÁCH THAM SỐ THÀNH CÔNG TỪ CÁC PHIÊN TRƯỚC]:\n" +
+                                            learnedAxioms.map((ax, idx) => `Mẫu #${idx + 1} (Prompt: "${ax.prompt}"):\n${JSON.stringify(ax.blueprint?.parametric_blueprint, null, 2)}`).join('\n---\n');
                                     }
 
+// =========================================================================
+                                    // [HỆ THỐNG HIẾN PHÁP TỐI THƯỢNG]: BẮT CẶP TRI THỨC THỰC THỂ TRƯỚC KHI THỔI HỒN
                                     // =========================================================================
-                                    // [MẮT XÍCH N+1: GEMINI LẬP TRÌNH MA TRẬN ĐIỂM ẢNH PYTHON BẢN ĐỊA]
-                                    // =========================================================================
-                                    const pythonDirectorInstruction = `[CONSTITUTION: COMPUTATIONAL IMAGING & MATRIX SYNTHESIS SCIENTIST]
-Bạn là Đại Kiến Trúc Sư Xử Lý Ảnh Số & Toán Học Ma Trận.
-Nhiệm vụ: Chuyển hóa tuyệt đối ý niệm người dùng thành một kịch bản mã nguồn Python tính toán ma trận điểm ảnh độc lập để chạy trên nhân Pyodide WASM của trình duyệt.
+                                    const matrixSystemInstruction = 
+                                        "[CONSTITUTION: KNOWLEDGE-GROUNDED PROCEDURAL SYNTHESIS ENGINE]\n" +
+                                        "Bạn là Đại Họa Sĩ, Bách Khoa Toàn Thư & Kỹ Sư Đồ Họa Toán Học Cấp Cao.\n\n" +
+                                        "QUY TRÌNH 3 BƯỚC KHỚP NỐI TRI THỨC 100% (ENTITY-MAPPED PROTOCOL):\n" +
+                                        "BƯỚC 1 (TRÍCH XUẤT THỰC THỂ & BẮT CẶP TRI THỨC): Đọc prompt của người dùng. Trước khi tưởng tượng, bạn BẮT BUỘC phải lục tìm trong kho tri thức của bạn xem thực thể được nhắc đến (ví dụ: một nhân vật truyện tranh, một kỳ quan thế giới, một loài động vật) có hình dáng vật lý thực tế như thế nào. Trích xuất chính xác các đặc điểm nhận dạng cốt lõi (màu sắc đặc trưng, cấu trúc hình thể, trang phục, tỷ lệ) tại trường 'known_entity_extraction'. Sau đó, lấy các đặc điểm đã được xác thực này làm mỏ neo để hình dung ra bức tranh tại trường 'grounded_mental_imagery'.\n" +
+                                        "BƯỚC 2 (LẬP SỔ SÁCH THAM SỐ VÀ BIẾN SỐ TOÀN DIỆN): Chuyển hóa kiệt tác đã được thổi hồn đó thành hệ thống biến số, tham số phụ thuộc, ma trận tọa độ vi mô tại trường 'visual_intent_breakdown' và 'parametric_blueprint'.\n" +
+                                        "BƯỚC 3 (LẬP TRÌNH THỰC THI VÀ GÁN BIẾN BẮT BUỘC `plt.imshow()`): Viết kịch bản Python NumPy sử dụng các thuật toán toán học tiên tiến (SDF kết hợp, fBm noise, domain warping). CẤM DÙNG VÉC-TƠ PHẲNG. ĐOẠN MÃ PYTHON BẮT BUỘC PHẢI DÙNG `plt.imshow(rgb_tensor)` TRÊN MẢNG ĐIỂM ẢNH DÀY ĐẶC (DENSE PIXEL TENSOR) VÀ KẾT THÚC BẰNG VIỆC GÁN BASE64 VÀO BIẾN `_gdeep_plot_base64`.\n\n" +
+                                        "RÀNG BUỘC CẤU TRÚC VẬT LÝ TUYỆT ĐỐI:\n" +
+                                        "- Mọi cấu trúc hình học PHẢI mô phỏng đúng đặc điểm nhận dạng đã trích xuất từ kho tri thức ở Bước 1. (Ví dụ: Nếu trích xuất được nhân vật có tóc nhọn, mã toán học phải dựng cấu trúc hình chóp nhọn tương ứng).";
 
-QUY TẮC BẮT BUỘC (FIRST-PRINCIPLES MATRIX SYNTHESIS):
-1. THƯ VIỆN ĐƯỢC PHÉP DÙNG: numpy, matplotlib.pyplot, scipy, io, base64 (chạy offline trên WebAssembly).
-2. TẠO HÌNH BẰNG TOÁN HỌC MA TRẬN & GIẢI TÍCH QUANG HỌC:
-   - Dùng np.meshgrid() để khởi tạo tọa độ không gian chuẩn hóa.
-   - Tính toán trường khoảng cách có dấu (SDF), biến dạng sóng, hàm nhiễu hữu cơ (fractal noise), bóng đổ quang học và phổ màu sắc PBR.
-   - Ghép nối cấu trúc giải phẫu học, chủ thể và hậu cảnh thành mảng RGB float [0.0, 1.0] hoặc uint8 [0, 255].
-3. ĐÓNG GÓI VĂN BẢN BASE64 BẮT BUỘC:
-   - Kịch bản Python PHẢI kết thúc bằng việc nén mảng ảnh vào bộ đệm và gán chuỗi Base64 vào biến:
-     fig, ax = plt.subplots(figsize=(6.0 * aspect_ratio, 6.0), dpi=140)
-     ax.imshow(rgb_array)
-     ax.axis('off')
-     plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
-     plt.margins(0, 0)
-     buf = io.BytesIO()
-     plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0, dpi=140)
-     plt.close(fig)
-     _gdeep_plot_base64 = base64.b64encode(buf.getvalue()).decode('ascii')
-4. KHÔNG SỬ DỤNG MÔ HÌNH NGOÀI, KHÔNG IMPORT REQUESTS/NETWORK.`;
-
-                                    const genesisResponseSchema = {
+                                    const matrixResponseSchema = {
                                         type: "OBJECT",
                                         properties: {
-                                            computational_design: {
+                                            known_entity_extraction: {
                                                 type: "OBJECT",
                                                 properties: {
-                                                    matrix_composition: { type: "STRING" },
-                                                    color_spectral_theory: { type: "STRING" }
+                                                    recognized_entities: { type: "ARRAY", items: { type: "STRING" }, description: "Danh sách các nhân vật, sự vật, địa danh cụ thể nhận diện được từ prompt" },
+                                                    absolute_visual_features: { type: "STRING", description: "Mô tả TRÍCH XUẤT TỪ KHO TRI THỨC về hình dáng, màu sắc, đặc điểm nhận dạng vật lý bắt buộc phải có của thực thể này (vd: tóc gai nhọn màu đen/vàng, áo võ phục màu cam, đai xanh)" }
                                                 },
-                                                required: ["matrix_composition", "color_spectral_theory"]
+                                                required: ["recognized_entities", "absolute_visual_features"]
                                             },
-                                            python_code: { type: "STRING" }
+                                            grounded_mental_imagery: {
+                                                type: "STRING",
+                                                description: "Bức tranh hình dung trong đầu được kết hợp giữa đặc điểm vật lý cứng ở 'absolute_visual_features' và sự 'thổi hồn' nghệ thuật siêu thực, giàu cảm xúc."
+                                            },
+                                            visual_intent_breakdown: {
+                                                type: "OBJECT",
+                                                properties: {
+                                                    subject_parameters: {
+                                                        type: "OBJECT",
+                                                        properties: {
+                                                            subject_count: { type: "INTEGER", description: "Số lượng chủ thể chính xác" },
+                                                            physical_morphology_spec: { type: "STRING", description: "Quy định chi tiết về cấu trúc, hình dáng vật lý BÁM SÁT ĐẶC TRƯNG TRI THỨC ĐÃ TRÍCH XUẤT" },
+                                                            complexity_level: { type: "STRING" },
+                                                            procedural_math_method: { type: "STRING", description: "Thuật toán toán học (vd: SDF kết hợp nhiều khối, fBm noise, raymarching)" },
+                                                            scale_ratio: { type: "NUMBER" }
+                                                        },
+                                                        required: ["subject_count", "physical_morphology_spec", "complexity_level", "procedural_math_method", "scale_ratio"]
+                                                    },
+                                                    environment_parameters: {
+                                                        type: "OBJECT",
+                                                        properties: {
+                                                            depth_layers_count: { type: "INTEGER" },
+                                                            atmosphere_type: { type: "STRING" },
+                                                            horizon_line_ratio: { type: "NUMBER" }
+                                                        },
+                                                        required: ["depth_layers_count", "atmosphere_type", "horizon_line_ratio"]
+                                                    },
+                                                    lighting_parameters: {
+                                                        type: "OBJECT",
+                                                        properties: {
+                                                            light_azimuth_deg: { type: "NUMBER" },
+                                                            light_elevation_deg: { type: "NUMBER" },
+                                                            kelvin_temperature: { type: "NUMBER" },
+                                                            shadow_softness: { type: "NUMBER" }
+                                                        },
+                                                        required: ["light_azimuth_deg", "light_elevation_deg", "kelvin_temperature", "shadow_softness"]
+                                                    },
+                                                    material_parameters: {
+                                                        type: "OBJECT",
+                                                        properties: {
+                                                            base_roughness: { type: "NUMBER" },
+                                                            metallic_factor: { type: "NUMBER" },
+                                                            subsurface_scattering: { type: "NUMBER" },
+                                                            noise_frequency: { type: "NUMBER" }
+                                                        },
+                                                        required: ["base_roughness", "metallic_factor", "subsurface_scattering", "noise_frequency"]
+                                                    }
+                                                },
+                                                required: ["subject_parameters", "environment_parameters", "lighting_parameters", "material_parameters"]
+                                            },
+                                            parametric_blueprint: {
+                                                type: "OBJECT",
+                                                properties: {
+                                                    canvas_grid: { type: "STRING" },
+                                                    spatial_layers: {
+                                                        type: "ARRAY",
+                                                        items: {
+                                                            type: "OBJECT",
+                                                            properties: {
+                                                                layer_name: { type: "STRING" },
+                                                                geometry_type: { type: "STRING" },
+                                                                coordinate_bounds: { type: "STRING" },
+                                                                color_tensor_rgb: { type: "STRING" }
+                                                            },
+                                                            required: ["layer_name", "geometry_type", "coordinate_bounds", "color_tensor_rgb"]
+                                                        }
+                                                    }
+                                                },
+                                                required: ["canvas_grid", "spatial_layers"]
+                                            },
+                                            python_code: { 
+                                                type: "STRING", 
+                                                description: "Mã nguồn Python NumPy thuần túy. BẮT BUỘC tuân thủ nghiêm ngặt hình dáng đã trích xuất từ tri thức, tạo mảng tensor điểm ảnh và plt.imshow(rgb_tensor)." 
+                                            }
                                         },
-                                        required: ["computational_design", "python_code"]
+                                        required: ["known_entity_extraction", "grounded_mental_imagery", "visual_intent_breakdown", "parametric_blueprint", "python_code"]
                                     };
 
                                     let masterBlueprint = null;
                                     let initialPayload = {
-                                        systemInstruction: { parts: [{ text: pythonDirectorInstruction }] },
+                                        systemInstruction: { parts: [{ text: matrixSystemInstruction }] },
                                         contents: [{
                                             role: 'user',
                                             parts: [{
-                                                text: `YÊU CẦU: "${promptText}".
-Phong cách: ${imageConfig.style} (${currentStyleDesc}).
-Tỷ lệ khung hình: ${imageConfig.aspectRatio} (AR=${targetAR}).
-Seed ngẫu nhiên: ${currentSeed}.
-${learnedGuidance}
-Hãy thiết kế thuật toán ma trận và xuất mã nguồn Python hoàn chỉnh gán vào biến _gdeep_plot_base64.`
+                                                text: "YÊU CẦU: \"" + promptText + "\".\n" +
+                                                      "Phong cách: " + imageConfig.style + " (" + currentStyleDesc + ").\n" +
+                                                      "Tỷ lệ khung hình: " + imageConfig.aspectRatio + " (AR=" + targetAR + ").\n" +
+                                                      "Seed: " + currentSeed + ".\n" +
+                                                      learnedGuidance + "\n" +
+                                                      "Hãy thiết lập Sổ sách Tham số và viết mã Python thực thi tương ứng."
                                             }]
                                         }],
                                         generationConfig: {
-                                            temperature: 0.3,
+                                            temperature: 0.25,
                                             maxOutputTokens: 8192,
                                             responseMimeType: "application/json",
-                                            responseSchema: genesisResponseSchema
+                                            responseSchema: matrixResponseSchema
                                         }
                                     };
 
-                                    while (!masterBlueprint || !masterBlueprint.python_code) {
-                                        const rawResp = await infiniteResilientDispatch(initialPayload, "Đang kiến tạo thuật toán ma trận hình thái...");
+                                    while (!masterBlueprint || !masterBlueprint.python_code || !masterBlueprint.parametric_blueprint) {
+                                        const rawResp = await infiniteResilientDispatch(initialPayload, "Đang thiết lập Sổ sách Tham số & Ma trận...");
                                         masterBlueprint = SearchIntelligenceEngine.robustJsonRepair(rawResp);
                                     }
 
-                                    // =========================================================================
-                                    // [MẮT XÍCH N+2: NHÂN PYODIDE WASM CỦA G-DEEP THỰC THI & XUẤT BASE64]
-                                    // =========================================================================
                                     let loopIteration = 0;
                                     let isConverged = false;
                                     let finalBase64 = "";
@@ -10872,36 +10909,32 @@ Hãy thiết kế thuật toán ma trận và xuất mã nguồn Python hoàn ch
                                     while (!isConverged) {
                                         loopIteration++;
 
-                                        searchStatusText.value = `[WASM Kernel #${loopIteration}] Đang giải ma trận điểm ảnh trên máy cục bộ...`;
+                                        searchStatusText.value = `[WASM Kernel #${loopIteration}] Đang chạy ma trận Python theo Sổ sách...`;
                                         let currentScript = masterBlueprint.python_code.replace(/```(?:python)?/gi, '').replace(/```/g, '').trim();
 
                                         let runResult = await PythonEngine.run(currentScript);
 
-                                        // Nếu mã Python lỗi (Syntax/Runtime): Gemini tự sửa lỗi vô hạn
                                         while (runResult.outcome !== 'COMPLETED' || !runResult.plotBase64) {
-                                            searchStatusText.value = `[Tự sửa mã Python #${loopIteration}] Đang hiệu chỉnh thuật toán ma trận...`;
+                                            searchStatusText.value = `[Tự sửa mã Python #${loopIteration}] Vá lỗi kịch bản ma trận...`;
                                             const fixPayload = {
-                                                systemInstruction: { parts: [{ text: pythonDirectorInstruction }] },
+                                                systemInstruction: { parts: [{ text: matrixSystemInstruction }] },
                                                 contents: [{
                                                     role: 'user',
                                                     parts: [{
-                                                        text: `LỖI THỰC THI PYTHON WASM:
-${runResult.output}
-
-MÃ PYTHON GỐC:
-${currentScript}
-
-Hãy sửa lại mã nguồn hoàn chỉnh đảm bảo chạy thành công và gán chuỗi kết quả vào _gdeep_plot_base64.`
+                                                        text: "LỖI THỰC THI PYTHON:\n" + runResult.output + "\n\n" +
+                                                              "SỔ SÁCH THAM SỐ GỐC:\n" + JSON.stringify(masterBlueprint.parametric_blueprint, null, 2) + "\n\n" +
+                                                              "MÃ GỐC:\n" + currentScript + "\n" +
+                                                              "Hãy sửa lại mã Python để bám sát 100% Sổ sách Tham số."
                                                     }]
                                                 }],
                                                 generationConfig: {
                                                     temperature: 0.1,
                                                     maxOutputTokens: 8192,
                                                     responseMimeType: "application/json",
-                                                    responseSchema: genesisResponseSchema
+                                                    responseSchema: matrixResponseSchema
                                                 }
                                             };
-                                            const healedRaw = await infiniteResilientDispatch(fixPayload, "Đang vá lỗi kịch bản Python WASM...");
+                                            const healedRaw = await infiniteResilientDispatch(fixPayload, "Đang vá lỗi biên dịch ma trận...");
                                             const healedBP = SearchIntelligenceEngine.robustJsonRepair(healedRaw);
                                             if (healedBP && healedBP.python_code) {
                                                 masterBlueprint = healedBP;
@@ -10912,76 +10945,72 @@ Hãy sửa lại mã nguồn hoàn chỉnh đảm bảo chạy thành công và 
 
                                         finalBase64 = runResult.plotBase64;
 
+// =====================================================================
+                                        // [THẨM ĐỊNH KHẮT KHE TUYỆT ĐỐI: CHUẨN 100/100 HOẶC LÀM LẠI TỪ ĐẦU]
                                         // =====================================================================
-                                        // [THẨM ĐỊNH THỊ GIÁC NGẦM: GEMINI MULTIMODAL VISION ĐỐI SOÁT ẢNH BASE64]
-                                        // =====================================================================
-                                        searchStatusText.value = `[Thẩm định ngầm #${loopIteration}] Gemini Multimodal Vision đang đối soát...`;
+                                        searchStatusText.value = `[Thẩm định Sổ sách #${loopIteration}] Kiểm định tiêu chuẩn siêu thực 100/100...`;
 
-                                        const critiqueInstruction = `[CONSTITUTION: VISUAL AUDITOR & CODE CRITIC]
-Bạn là Trưởng ban Giám định Thị giác Siêu khắt khe.
-Nhiệm vụ: Đối chiếu bức ảnh thực tế vừa được nhân Python WASM giải ra với prompt ban đầu của người dùng.
-Tiêu chuẩn chấm điểm:
-- semantic_fidelity (0-100): Đúng chủ thể và phong cách yêu cầu không?
-- visual_coherence (0-100): Độ sắc nét, bố cục, độ mịn màng của ma trận pixel.
-- weighted_score: Điểm tổng hợp trung bình.
-- converged: true khi weighted_score >= 90 VÀ semantic_fidelity >= 90.`;
+                                        const auditInstruction = 
+                                            "[CONSTITUTION: ZERO-TOLERANCE PHOTOREALISM AUDITOR]\n" +
+                                            "Bạn là Trưởng ban Kiểm toán Sổ sách & Chất lượng Đồ họa Khắt khe Tuyệt đối.\n" +
+                                            "NHIỆM VỤ: Kiểm tra xem mã Python thực tế có dùng các kỹ thuật đồ họa tiên tiến (fBm noise, domain warping, multi-layer procedural texturing) hay chỉ là vẽ hình khối thô sơ (hình thang, hình vuông phẳng).\n" +
+                                            "TIÊU CHUẨN ĐIỂM SỐ 100/100 (HOÀN HẢO TUYỆT ĐỐI):\n" +
+                                            "- Nếu mã Python chỉ vẽ các hình khối phẳng, đơn điệu, thiếu chi tiết phức tạp -> Chấm dưới 80 điểm và bắt viết lại từ đầu.\n" +
+                                            "- Chỉ khi mã Python tạo ra ma trận phức tạp, có chiều sâu quang học, kết cấu chi tiết đạt chuẩn siêu thực mới được chấm tuyệt đối 100/100.";
 
-                                        const critiqueSchema = {
+                                        const auditSchema = {
                                             type: "OBJECT",
                                             properties: {
-                                                semantic_fidelity: { type: "NUMBER" },
-                                                visual_coherence: { type: "NUMBER" },
-                                                weighted_score: { type: "NUMBER" },
-                                                converged: { type: "BOOLEAN" },
-                                                critique_analysis: { type: "STRING" },
+                                                mathematical_fidelity: { type: "NUMBER", description: "Điểm tuyệt đối từ 0 đến 100. Phải đạt đúng 100 nếu không có hình khối thô sơ." },
+                                                converged: { type: "BOOLEAN", description: "Chỉ được true khi điểm số đạt đúng 100/100 và không dùng hình khối thô sơ." },
+                                                audit_log: { type: "STRING" },
                                                 revised_python_code: { type: "STRING" }
                                             },
-                                            required: ["semantic_fidelity", "visual_coherence", "weighted_score", "converged", "critique_analysis"]
+                                            required: ["mathematical_fidelity", "converged", "audit_log"]
                                         };
 
-                                        const critiquePayload = {
-                                            systemInstruction: { parts: [{ text: critiqueInstruction }] },
+                                        const auditPayload = {
+                                            systemInstruction: { parts: [{ text: auditInstruction }] },
                                             contents: [{
                                                 role: 'user',
-                                                parts: [
-                                                    { text: `YÊU CẦU BAN ĐẦU: "${promptText}". Phong cách: ${imageConfig.style}. Tỷ lệ: ${imageConfig.aspectRatio}. Hãy thẩm định ảnh Base64 thực tế này.` },
-                                                    { inlineData: { mimeType: "image/png", data: finalBase64 } }
-                                                ]
+                                                parts: [{
+                                                    text: "YÊU CẦU GỐC: \"" + promptText + "\".\n" +
+                                                          "SỔ SÁCH BAN ĐẦU:\n" + JSON.stringify(masterBlueprint.parametric_blueprint, null, 2) + "\n\n" +
+                                                          "MÃ PYTHON THỰC THI:\n" + currentScript + "\n" +
+                                                          "Hãy kiểm toán xem mã nguồn có khớp hoàn hảo với Sổ sách hay không."
+                                                }]
                                             }],
                                             generationConfig: {
-                                                temperature: 0.2,
+                                                temperature: 0.15,
                                                 maxOutputTokens: 8192,
                                                 responseMimeType: "application/json",
-                                                responseSchema: critiqueSchema
+                                                responseSchema: auditSchema
                                             }
                                         };
 
-                                        const critiqueRaw = await infiniteResilientDispatch(critiquePayload, "Gemini đang thẩm định hình thái học thị giác...");
-                                        const critiqueResult = SearchIntelligenceEngine.robustJsonRepair(critiqueRaw);
+                                        const auditRaw = await infiniteResilientDispatch(auditPayload, "Đang đối soát sổ sách tham số...");
+                                        const auditResult = SearchIntelligenceEngine.robustJsonRepair(auditRaw);
 
-                                        convergenceScore = Number(critiqueResult?.weighted_score) || 0;
-                                        const semanticScore = Number(critiqueResult?.semantic_fidelity) || 0;
+                                        convergenceScore = Number(auditResult?.mathematical_fidelity) || 0;
 
-                                        if ((critiqueResult?.converged === true || convergenceScore >= 90) && semanticScore >= 90) {
+                                        // [BẮT BUỘC ĐẠT TUYỆT ĐỐI 100/100 ĐIỂM]
+                                        if (auditResult?.converged === true && convergenceScore >= 100) {
                                             isConverged = true;
-                                            commitPythonExp(promptText, masterBlueprint.python_code, convergenceScore, loopIteration);
+                                            commitParamExp(promptText, masterBlueprint, convergenceScore, loopIteration);
                                         } else {
-                                            if (critiqueResult?.revised_python_code) {
-                                                masterBlueprint.python_code = critiqueResult.revised_python_code;
+                                            if (auditResult?.revised_python_code) {
+                                                masterBlueprint.python_code = auditResult.revised_python_code;
                                             }
                                             triggerHaptic('light');
                                         }
                                     }
 
-                                    // =========================================================================
-                                    // [MẮT XÍCH N+3: XUẤT BẢN CHUỖI VĂN BẢN BASE64 THUẦN TÚY RA GIAO DIỆN]
-                                    // =========================================================================
                                     const imgSrc = `data:image/png;base64,${finalBase64}`;
-                                    targetMsg.content = `🌌 **Kiệt tác Điện toán Ma trận (G-Deep WASM Engine)**\n*Ý niệm:* ${promptText}\n*Phong cách:* ${imageConfig.style} · *Tỷ lệ:* ${imageConfig.aspectRatio} · *Mã nhận diện:* #${currentSeed}\n\n<img src="${imgSrc}" alt="Autonomous WASM Art" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/20 hover:brightness-110 transition-all cursor-zoom-in" />\n\n🎯 *Tác phẩm được kiến tạo trực tiếp từ chuỗi **Điện toán Tự thân Ma trận (NumPy/Pyodide WASM)** với chuỗi văn bản Base64 thuần túy (Đạt **${convergenceScore}/100đ** qua **${loopIteration} vòng thẩm định ngầm**).*`;
+                                    targetMsg.content = `🌌 **Kiệt tác Ma trận Tham số (TMGE Parametric)**\n*Ý niệm:* ${promptText}\n*Phong cách:* ${imageConfig.style} · *Tỷ lệ:* ${imageConfig.aspectRatio} · *Mã nhận diện:* #${currentSeed}\n\n<img src="${imgSrc}" alt="Parametric Matrix Art" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/20 hover:brightness-110 transition-all cursor-zoom-in" />\n\n🎯 *Tác phẩm được kiến tạo và thẩm định hoàn toàn bằng **Sổ sách Tham số (Parametric Ledger Audit)**, đạt **${convergenceScore}/100đ** qua **${loopIteration} vòng đối soát mã nguồn**.*`;
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
                                     scrollToBottom(true);
-                                    notify(`Đã kết xuất hoàn tất từ Nhân Điện toán Pyodide (${convergenceScore}/100đ)!`);
+                                    notify(`Đã kết xuất hoàn tất từ Sổ sách Tham số (${convergenceScore}/100đ)!`);
 
                                 } catch (err) {
                                     targetMsg.content = (targetMsg.content || '') + `\n\n*(Tiến trình dừng: ${err.message})*`;
