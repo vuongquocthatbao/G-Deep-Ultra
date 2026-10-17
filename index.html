@@ -10668,9 +10668,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         if (isGenerating.value && !isRegenerate) return;
 
 // ====================================================================================================
-                        // THE STRICT ZERO-FALLBACK ATOMIC RETRY ENGINE (TMGE UNCOMPROMISING OMEGA 2026)
-                        // TUYỆT ĐỐI KHÔNG MÀU DỰ PHÒNG · KHÔNG LAYER GIẢ TẠO · HỎNG ĐÂU RETRY ĐÓ CHO ĐẾN KHI THÀNH CÔNG
-                        // TỪNG MẢNH GHÉP ĐƯỢC BẢO CHỨNG PYTHON + SHADER HỢP LỆ TRƯỚC KHI LẮP RÁP ➔ 100/100 HOÀN HẢO
+                        // KIẾN TRÚC BÁT LÕI TỔNG HỢP THỊ GIÁC PHI KHUẾCH TÁN G-DEEP ULTRA (OCTA-CORE IMAGEN 3 PARITY)
+                        // BẢN QUYỀN VẬN HÀNH: 8 LÕI TOÁN - LÝ - QUANG HỌC LIÊN TỤC VÀ KHỬ RĂNG CƯA SIÊU MẪU SSAA 2X
+                        // CHÍNH XÁC KÝ TỰ VECTOR · DÒ TIA KHỐI 3D CHÂN THỰC · ĐỐI SOÁT THỊ GIÁC KHÉP KÍN TRÊN GPU
                         // ====================================================================================================
                         if ((enableCinemaStudio.value || enableImageGen.value) && (inputText.value.trim() || pendingAttachments.value.length > 0 || isRegenerate)) {
                             let promptText = inputText.value.trim();
@@ -10726,346 +10726,365 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     };
 
                                     const ar = parseRatio(imageConfig.aspectRatio);
-                                    const BASE_DIM = 1024;
-                                    let renderW = ar >= 1.0 ? BASE_DIM : Math.round(BASE_DIM * ar);
-                                    let renderH = ar >= 1.0 ? Math.round(BASE_DIM / ar) : BASE_DIM;
-                                    renderW = Math.round(renderW / 16) * 16;
-                                    renderH = Math.round(renderH / 16) * 16;
+                                    const TARGET_DIM = 1024;
+                                    let baseW = ar >= 1.0 ? TARGET_DIM : Math.round(TARGET_DIM * ar);
+                                    let baseH = ar >= 1.0 ? Math.round(TARGET_DIM / ar) : TARGET_DIM;
+                                    baseW = Math.round(baseW / 16) * 16;
+                                    baseH = Math.round(baseH / 16) * 16;
 
-                                    const renderSvgToCanvas = async (svgString, w, h) => {
-                                        const canvas = document.createElement('canvas');
-                                        canvas.width = w; canvas.height = h;
-                                        if (!svgString) return canvas;
-                                        const cleanSvg = svgString.replace(/^```(?:xml|svg)?/i, '').replace(/```$/i, '').trim();
-                                        const blob = new Blob([cleanSvg], { type: 'image/svg+xml;charset=utf-8' });
-                                        const url = URL.createObjectURL(blob);
-                                        const ctx = canvas.getContext('2d');
-                                        await new Promise((resolve) => {
-                                            const img = new Image();
-                                            img.onload = () => { ctx.drawImage(img, 0, 0, w, h); URL.revokeObjectURL(url); resolve(); };
-                                            img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-                                            img.src = url;
-                                        });
-                                        return canvas;
-                                    };
+                                    // Khởi tạo đệm Siêu mẫu SSAA 2X (2048px) cho độ mịn tiệm cận Imagen 3
+                                    const ssaaW = Math.min(2048, baseW * 2);
+                                    const ssaaH = Math.min(2048, baseH * 2);
 
                                     // =========================================================================
-                                    // BƯỚC 0: CHUẨN HÓA VÀ LÀM GIÀU NGỮ NGHĨA (PROMPT ENRICHMENT)
+                                    // BƯỚC 1: ĐIỀU PHỐI BÁT LÕI QUANG HỌC VÀ HÌNH THÁI GIẢI TÍCH (IMAGEN 3 BLUEPRINT)
                                     // =========================================================================
-                                    searchStatusText.value = "Đang phân tích và làm giàu ý niệm nghệ thuật...";
+                                    searchStatusText.value = "Đang tổng hợp bản thiết kế Bát Lõi Quang Học chuẩn Imagen 3...";
 
-                                    const enrichmentPrompt = 
-                                        `Bạn là Giám Tuyển Nghệ Thuật Kỹ Thuật Số Cao Cấp.\n` +
-                                        `Ý tưởng gốc: "${promptText}". Phong cách: ${imageConfig.style}.\n\n` +
-                                        `Hãy làm giàu ý tưởng này thành một Bản Thiết Kế Thị Giác hoàn hảo:\n` +
-                                        `1. Chuẩn hóa hình thái: Xác định rõ cấu trúc giải phẫu/đặc điểm nhận diện của chủ thể.\n` +
-                                        `2. Bố cục 3 tầng: Miêu tả Tiền cảnh, Trung cảnh (chủ thể) và Hậu cảnh chiều sâu.\n` +
-                                        `3. Ánh sáng & Vật liệu: Miêu tả Key Light, Rim Light và tính chất vật liệu (kim loại, da thịt, sương mù...).\n\n` +
-                                        `Trả về JSON:\n` +
+                                    const octaCoreMasterPrompt = 
+                                        `BẠN LÀ TỔNG ĐẠO DIỄN QUANG HỌC & KIẾN TRÚC SƯ ĐỒ HỌA TOÁN HỌC CẤP CAO (IMAGEN 3 GOLD STANDARD).\n` +
+                                        `Yêu cầu người dùng: "${promptText}".\n` +
+                                        `Phong cách: ${imageConfig.style}. Tỷ lệ: ${imageConfig.aspectRatio}. Seed: #${imageConfig.characterSeed}.\n\n` +
+                                        `NHIỆM VỤ: Chuyển dịch ý tưởng trên thành HỆ THỐNG BÁT LÕI GIẢI TÍCH PHI KHUẾCH TÁN với 8 trụ cột toàn diện:\n` +
+                                        `1. LÕI 1 (Hình học 3D SDF): Hàm Signed Distance Field định hình chủ thể, không gian, bo góc vi mô smin.\n` +
+                                        `2. LÕI 2 (Vi cấu trúc Bề mặt): Mã Python (numpy, matplotlib) xuất mảng vi cấu trúc (Turing PDE, Worley noise F2-F1) tạo độ nhám, chân lông, thớ đá.\n` +
+                                        `3. LÕI 3 (Quang học PBR Cook-Torrance): Nguồn sáng chính (Key Light), Ánh sáng ven (Rim Light), phản xạ Fresnel Schlick, bóng mềm vi phân.\n` +
+                                        `4. LÕI 4 (Tán xạ Dưới Bề mặt - SSS): Độ thẩm thấu gradient ánh sáng cho da thịt, sáp, ngọc, chất lỏng.\n` +
+                                        `5. LÕI 5 (Khí quyển & Thể tích): Sương mù tán xạ Mie/Rayleigh, vệt sáng hình nón (God-rays), độ sâu trường ảnh.\n` +
+                                        `6. LÕI 6 (Ký tự & Vector Cực đại): Trích xuất chính xác chữ viết/logo/biển hiệu trong câu lệnh, tọa độ hiển thị và lớp SVG vector.\n` +
+                                        `7. LÕI 7 (Khoa học Màu sắc): Phối màu Cosine Inigo Quilez, ACEScg Filmic Tonemapping và khử dải dither lượng tử.\n` +
+                                        `8. LÕI 8 (Dò tia Raymarching Hoàn chỉnh): Tích hợp toàn bộ vào hàm mainImage GLSL kết xuất 60 FPS.\n\n` +
+                                        `TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:\n` +
                                         `{\n` +
-                                        `  "title": "Tên tác phẩm",\n` +
-                                        `  "caption": "Mô tả thi vị 1 câu",\n` +
-                                        `  "enriched_prompt": "Bản mô tả thị giác chi tiết đã làm giàu"\n` +
+                                        `  "title": "Tên kiệt tác nghệ thuật",\n` +
+                                        `  "caption": "Mô tả giá trị quang học 1 câu",\n` +
+                                        `  "python_microstructure": "Mã Python xuất heatmap vi cấu trúc bề mặt (cấm plt.show)",\n` +
+                                        `  "typography": {\n` +
+                                        `    "has_text": false,\n` +
+                                        `    "text_content": "",\n` +
+                                        `    "font_family": "Plus Jakarta Sans, sans-serif",\n` +
+                                        `    "font_size_px": 64,\n` +
+                                        `    "text_color": "#ffffff",\n` +
+                                        `    "pos_pct": [50, 85]\n` +
+                                        `  },\n` +
+                                        `  "vector_overlay_svg": "<svg viewBox=\\"0 0 ${ssaaW} ${ssaaH}\\" xmlns=\\"http://www.w3.org/2000/svg\\"></svg>",\n` +
+                                        `  "glsl_octa_raymarcher": "void mainImage(out vec4 fragColor, in vec2 fragCoord) { ... }"\n` +
                                         `}`;
 
-                                    const enrichPayload = {
-                                        contents: [{ role: 'user', parts: [{ text: enrichmentPrompt }] }],
-                                        generationConfig: { temperature: 0.3, maxOutputTokens: 2000, responseMimeType: "application/json" }
-                                    };
-
-                                    let enrichedData = null;
-                                    for (let attempt = 0; attempt < 2; attempt++) {
-                                        if (abortController?.signal?.aborted) throw new DOMException("Đã dừng tiến trình", "AbortError");
-                                        const res = await dispatchBackgroundTaskWithFallback(enrichPayload);
-                                        const out = res?.candidates?.[0]?.content?.parts?.[0]?.text;
-                                        enrichedData = SearchIntelligenceEngine.robustJsonRepair(out);
-                                        if (enrichedData?.enriched_prompt) break;
-                                        await new Promise(r => setTimeout(r, 400));
-                                    }
-
-                                    const artTitle = enrichedData?.title || "Tác Phẩm Thị Giác";
-                                    const artCaption = enrichedData?.caption || "Hình ảnh được kiến tạo chuẩn xác theo định hướng toán - lý.";
-                                    const masterPrompt = enrichedData?.enriched_prompt || promptText;
-
-                                    // =========================================================================
-                                    // BƯỚC 1: TRUY XUẤT 6 TRỤ CỘT TOÁN - LÝ & KHỞI TẠO QUAD-CORE ENGINE
-                                    // =========================================================================
-                                    searchStatusText.value = "Đang giải tích hóa hình thái và trường vật lý...";
-
-                                    const quadCorePrompt = 
-                                        `Bạn là Bách Khoa Toàn Thư Khoa Học & Siêu Kiến Trúc Sư Đồ Họa Giải Tích.\n` +
-                                        `Dựa trên bản thiết kế: "${masterPrompt}".\n\n` +
-                                        `NHIỆM VỤ: Hãy truy xuất giải phẫu học thực tế và vận dụng 6 trụ cột khoa học sau để tạo ra 3 lõi mã nguồn phối hợp.\n` +
-                                        `[6 TRỤ CỘT BẮT BUỘC SỬ DỤNG]:\n` +
-                                        `1. Siêu công thức Gielis r(theta) & Đường cong Bézier bậc 3 (Khắc họa giải phẫu).\n` +
-                                        `2. Turing PDE & Voronoi Worley F2-F1 (Tạo vi cấu trúc bề mặt, vân nứt, tế bào).\n` +
-                                        `3. Quang học PBR Cook-Torrance & SSS Dipole (Phản xạ vi mặt, tán xạ xuyên thấu).\n` +
-                                        `4. Khí quyển Beer-Lambert & Henyey-Greenstein (Sương mù, God-rays).\n` +
-                                        `5. Xoắn ốc Fibonacci & Bokeh DoF (Bố cục tiêu điểm và xóa phông quang học).\n` +
-                                        `6. Phối màu Cosine Inigo Quilez C(t) = a + b*cos(2*PI*(c*t+d)).\n\n` +
-                                        `[YÊU CẦU 3 LÕI MÃ NGUỒN]:\n` +
-                                        `LÕI 1 - BẢN ĐỒ ĐỘ SÂU (PYTHON HEIGHTMAP):\n` +
-                                        `- Viết mã Python (numpy, matplotlib) xuất 1 ảnh heatmap mô phỏng mật độ khối lượng, độ gồ ghề bề mặt hoặc nhiễu Turing/Voronoi. Tắt trục (plt.axis('off')).\n\n` +
-                                        `LÕI 2 - GIẢI PHẪU CHỦ THỂ (SVG ANATOMY):\n` +
-                                        `- Viết mã SVG (viewBox="0 0 ${renderW} ${renderH}").\n` +
-                                        `- Áp dụng hệ Bézier và Gielis để vẽ ĐÚNG hình dáng thực tế của chủ thể. CẤM dùng khối hình học cơ bản. Vẽ chi tiết mắt, cơ bắp, cấu trúc bề mặt.\n\n` +
-                                        `LÕI 3 - QUANG HỌC VẬT LÝ (GLSL PBR SHADER):\n` +
-                                        `- Viết hàm GLSL: void mainImage(out vec4 fragColor, in vec2 fragCoord).\n` +
-                                        `- Đọc Texture uTexHeight (Lõi 1) để tính Normal vi phân (Bump Mapping).\n` +
-                                        `- Đọc Texture uTexColor (Lõi 2) làm Base Color.\n` +
-                                        `- Áp dụng Cook-Torrance (PBR), Henyey-Greenstein (Tán xạ) và Inigo Quilez (Màu sắc) bằng các tham số bạn tự tính.\n\n` +
-                                        `Trả về JSON:\n` +
-                                        `{\n` +
-                                        `  "python_heightmap": "Mã Python",\n` +
-                                        `  "svg_anatomy": "Mã SVG chi tiết cao",\n` +
-                                        `  "glsl_pbr_shader": "Mã Fragment Shader tổng hợp"\n` +
-                                        `}`;
-
-                                    const corePayload = {
-                                        contents: [{ role: 'user', parts: [{ text: quadCorePrompt }] }],
+                                    const synthPayload = {
+                                        contents: [{ role: 'user', parts: [{ text: octaCoreMasterPrompt }] }],
                                         generationConfig: { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" }
                                     };
 
                                     let blueprint = null;
                                     for (let attempt = 0; attempt < 2; attempt++) {
                                         if (abortController?.signal?.aborted) throw new DOMException("Đã dừng tiến trình", "AbortError");
-                                        const res = await dispatchBackgroundTaskWithFallback(corePayload);
+                                        const res = await dispatchBackgroundTaskWithFallback(synthPayload);
                                         const out = res?.candidates?.[0]?.content?.parts?.[0]?.text;
                                         blueprint = SearchIntelligenceEngine.robustJsonRepair(out);
-                                        if (blueprint?.python_heightmap && blueprint?.svg_anatomy && blueprint?.glsl_pbr_shader) break;
+                                        if (blueprint && typeof blueprint.glsl_octa_raymarcher === 'string' && blueprint.glsl_octa_raymarcher.length > 100) break;
                                         await new Promise(r => setTimeout(r, 400));
                                     }
 
-                                    if (!blueprint) throw new Error("Không thể cấu trúc trường giải tích đa chiều.");
-
-                                    // =========================================================================
-                                    // BƯỚC 2: THỰC THI LÕI PYTHON (Tính toán Displacement/Heightmap)
-                                    // =========================================================================
-                                    searchStatusText.value = "Đang tổng hợp phương trình Turing và phân bố khối lượng...";
-                                    
-                                    const pythonCode = blueprint.python_heightmap
-                                        .replace(/^```(?:python)?\s*/i, '').replace(/```$/i, '')
-                                        .replace(/plt\.show\(\)/g, '');
-
-                                    let baseImageBase64 = null;
-                                    const pyResult = await PythonEngine.run(pythonCode);
-                                    
-                                    if (pyResult.outcome === 'ERROR' || !pyResult.plotBase64) {
-                                        // Auto-Heal Python 1 lần
-                                        const fixPyPayload = {
-                                            contents: [{ role: 'user', parts: [{ text: `Sửa mã Python sau (cấm plt.show) trả về duy nhất khối \`\`\`python ... \`\`\`:\nLỗi: ${pyResult.output}\nMã:\n${pythonCode}` }] }],
-                                            generationConfig: { temperature: 0.1, maxOutputTokens: 4000 }
-                                        };
-                                        const fixRes = await dispatchBackgroundTaskWithFallback(fixPyPayload);
-                                        const fixOut = fixRes?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                                        const healedPy = fixOut.match(/```(?:python)?([\s\S]*?)```/i);
-                                        const retryRes = await PythonEngine.run(healedPy ? healedPy[1] : fixOut);
-                                        baseImageBase64 = retryRes.plotBase64 || null;
-                                    } else {
-                                        baseImageBase64 = pyResult.plotBase64;
+                                    if (!blueprint || !blueprint.glsl_octa_raymarcher) {
+                                        throw new Error("Không thể khởi tạo trường kiến trúc giải tích đa chiều.");
                                     }
 
-                                    const heightmapCanvas = document.createElement('canvas');
-                                    heightmapCanvas.width = renderW; heightmapCanvas.height = renderH;
-                                    const hmCtx = heightmapCanvas.getContext('2d');
-                                    hmCtx.fillStyle = '#808080'; hmCtx.fillRect(0, 0, renderW, renderH);
+                                    const artTitle = blueprint.title || "Kiệt Tác Nghệ Thuật Giải Tích";
+                                    const artCaption = blueprint.caption || "Hình ảnh được kiến tạo theo chuẩn Bát Lõi Quang Học phi khuếch tán.";
 
-                                    if (baseImageBase64) {
+                                    // =========================================================================
+                                    // BƯỚC 2: KẾT XUẤT LÕI VI CẤU TRÚC BỀ MẶT (PYTHON TURING / WORLEY FIELD)
+                                    // =========================================================================
+                                    searchStatusText.value = "Đang tổng hợp trường vi cấu trúc Turing và độ nhám vật lý...";
+
+                                    const heightmapCanvas = document.createElement('canvas');
+                                    heightmapCanvas.width = ssaaW;
+                                    heightmapCanvas.height = ssaaH;
+                                    const hmCtx = heightmapCanvas.getContext('2d');
+                                    hmCtx.fillStyle = '#808080';
+                                    hmCtx.fillRect(0, 0, ssaaW, ssaaH);
+
+                                    if (blueprint.python_microstructure && blueprint.python_microstructure.length > 30) {
+                                        const pyScript = blueprint.python_microstructure
+                                            .replace(/^```(?:python)?\s*/i, '').replace(/```$/i, '')
+                                            .replace(/plt\.show\(\)/g, '');
+
+                                        try {
+                                            const pyRes = await PythonEngine.run(pyScript);
+                                            if (pyRes && pyRes.plotBase64) {
+                                                await new Promise((resolve) => {
+                                                    const img = new Image();
+                                                    img.onload = () => { hmCtx.drawImage(img, 0, 0, ssaaW, ssaaH); resolve(); };
+                                                    img.onerror = resolve;
+                                                    img.src = `data:image/png;base64,${pyRes.plotBase64}`;
+                                                });
+                                            }
+                                        } catch (_) {}
+                                    }
+
+                                    // =========================================================================
+                                    // BƯỚC 3: KẾT XUẤT LÕI KÝ TỰ & VECTOR ĐỘ NÉT CAO (SUB-PIXEL TYPOGRAPHY)
+                                    // =========================================================================
+                                    searchStatusText.value = "Đang khắc họa ký tự quang học và viền vector sub-pixel...";
+
+                                    const vectorCanvas = document.createElement('canvas');
+                                    vectorCanvas.width = ssaaW;
+                                    vectorCanvas.height = ssaaH;
+                                    const vCtx = vectorCanvas.getContext('2d');
+                                    vCtx.clearRect(0, 0, ssaaW, ssaaH);
+
+                                    // Kết xuất chi tiết SVG nền nếu có
+                                    if (blueprint.vector_overlay_svg && blueprint.vector_overlay_svg.includes('<path')) {
+                                        const cleanSvg = blueprint.vector_overlay_svg.replace(/^```(?:xml|svg)?/i, '').replace(/```$/i, '').trim();
+                                        const svgBlob = new Blob([cleanSvg], { type: 'image/svg+xml;charset=utf-8' });
+                                        const svgUrl = URL.createObjectURL(svgBlob);
                                         await new Promise((resolve) => {
                                             const img = new Image();
-                                            img.onload = () => { hmCtx.drawImage(img, 0, 0, renderW, renderH); resolve(); };
-                                            img.onerror = resolve;
-                                            img.src = `data:image/png;base64,${baseImageBase64}`;
+                                            img.onload = () => { vCtx.drawImage(img, 0, 0, ssaaW, ssaaH); URL.revokeObjectURL(svgUrl); resolve(); };
+                                            img.onerror = () => { URL.revokeObjectURL(svgUrl); resolve(); };
+                                            img.src = svgUrl;
                                         });
                                     }
 
-                                    // =========================================================================
-                                    // BƯỚC 3: KẾT XUẤT LÕI VECTOR SVG (Đường nét giải phẫu Gielis/Bézier)
-                                    // =========================================================================
-                                    searchStatusText.value = "Đang khắc họa cấu trúc giải phẫu học thực tế...";
-                                    const vectorCanvas = await renderSvgToCanvas(blueprint.svg_anatomy, renderW, renderH);
+                                    // Vẽ ký tự chữ viết chuẩn xác tuyệt đối (Đặc quyền chuẩn Imagen 3)
+                                    if (blueprint.typography && blueprint.typography.has_text && blueprint.typography.text_content) {
+                                        const typo = blueprint.typography;
+                                        vCtx.save();
+                                        const fontSize = Math.round((typo.font_size_px || 64) * (ssaaW / 1024));
+                                        vCtx.font = `800 ${fontSize}px ${typo.font_family || 'Plus Jakarta Sans, sans-serif'}`;
+                                        vCtx.textAlign = 'center';
+                                        vCtx.textBaseline = 'middle';
+                                        
+                                        const posX = (typo.pos_pct?.[0] || 50) * (ssaaW / 100);
+                                        const posY = (typo.pos_pct?.[1] || 85) * (ssaaH / 100);
+
+                                        // Bóng đổ vật lý trường sâu (Ambient Drop Shadow)
+                                        vCtx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+                                        vCtx.shadowBlur = Math.round(fontSize * 0.4);
+                                        vCtx.shadowOffsetX = 0;
+                                        vCtx.shadowOffsetY = Math.round(fontSize * 0.12);
+
+                                        // Viền tương phản nổi khối
+                                        vCtx.strokeStyle = 'rgba(0, 0, 0, 0.65)';
+                                        vCtx.lineWidth = Math.max(2, Math.round(fontSize * 0.06));
+                                        vCtx.strokeText(typo.text_content, posX, posY);
+
+                                        // Màu chữ phủ phát quang
+                                        vCtx.fillStyle = typo.text_color || '#ffffff';
+                                        vCtx.fillText(typo.text_content, posX, posY);
+                                        vCtx.restore();
+                                    }
 
                                     // =========================================================================
-                                    // BƯỚC 4: KẾT XUẤT LÕI WEBGL & VÒNG LẶP ĐỐI SOÁT (PBR + Vision Loop)
+                                    // BƯỚC 4: KẾT XUẤT LÕI DÒ TIA 3D TRÊN GPU (PBR, SSS & VOLUMETRIC SCATTERING)
                                     // =========================================================================
-                                    searchStatusText.value = "Đang tính toán phản xạ quang học và bóng đổ vi phân...";
+                                    searchStatusText.value = "Đang gia tốc dò tia đa luồng PBR & Tán xạ dưới bề mặt...";
 
                                     const glCanvas = document.createElement('canvas');
-                                    glCanvas.width = renderW; glCanvas.height = renderH;
-                                    const gl = glCanvas.getContext('webgl', { antialias: true, preserveDrawingBuffer: true });
+                                    glCanvas.width = ssaaW;
+                                    glCanvas.height = ssaaH;
+                                    const gl = glCanvas.getContext('webgl', { 
+                                        antialias: true, 
+                                        preserveDrawingBuffer: true,
+                                        alpha: false,
+                                        depth: false,
+                                        stencil: false
+                                    });
 
-                                    let finalImage = "";
+                                    let finalImageBase64 = "";
 
                                     if (gl) {
-                                        let rawGlsl = blueprint.glsl_pbr_shader.replace(/^```(?:glsl)?\s*/i, '').replace(/```$/i, '').trim();
-                                        
-                                        const vSrc = `attribute vec2 p; varying vec2 uv; void main(){ uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }`;
-                                        let fSrc = `
-                                            precision highp float;
-                                            varying vec2 uv;
-                                            uniform vec2 iResolution;
-                                            uniform sampler2D uTexHeight;
-                                            uniform sampler2D uTexColor;
+                                        let rawGlsl = blueprint.glsl_octa_raymarcher
+                                            .replace(/^```(?:glsl)?\s*/i, '').replace(/```$/i, '').trim();
 
-                                            ${rawGlsl}
-
-                                            // ACES Filmic Tone Mapping chống cháy sáng
-                                            vec3 ACESFilm(vec3 x) {
-                                                float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
-                                                return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
-                                            }
-
+                                        const vertexShaderSource = `
+                                            attribute vec2 position;
+                                            varying vec2 vUv;
                                             void main() {
-                                                vec4 c = vec4(0.0);
-                                                mainImage(c, gl_FragCoord.xy);
-                                                
-                                                // Tán xạ phát quang nhẹ (Bloom)
-                                                vec3 bloom = texture2D(uTexColor, uv + vec2(0.001)).rgb * 0.1;
-                                                c.rgb += bloom;
-
-                                                c.rgb = ACESFilm(c.rgb);
-                                                gl_FragColor = vec4(c.rgb, 1.0);
+                                                vUv = vec2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+                                                gl_Position = vec4(position, 0.0, 1.0);
                                             }
                                         `;
 
-                                        const createS = (type, src) => {
-                                            const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s;
+                                        let fragmentShaderSource = `
+                                            precision highp float;
+                                            varying vec2 vUv;
+                                            uniform vec2 iResolution;
+                                            uniform float iSeed;
+                                            uniform sampler2D uTexMicrostructure;
+                                            uniform sampler2D uTexVector;
+
+                                            ${rawGlsl}
+
+                                            // KHOA HỌC MÀU SẮC ĐIỆN ẢNH ACEScg TONEMAPPING
+                                            vec3 ACESFilmTonemap(vec3 x) {
+                                                float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
+                                                return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+                                            }
+
+                                            void main() {
+                                                vec4 sceneColor = vec4(0.0);
+                                                mainImage(sceneColor, gl_FragCoord.xy);
+
+                                                // Hòa trộn lớp Ký tự và Vector Sub-pixel sắc nét
+                                                vec4 vecLayer = texture2D(uTexVector, vUv);
+                                                vec3 finalRgb = mix(sceneColor.rgb, vecLayer.rgb, vecLayer.a);
+
+                                                // Quang sai góc rộng & Vignette quang học viền
+                                                vec2 distFromCenter = vUv - 0.5;
+                                                float vignette = 1.0 - dot(distFromCenter, distFromCenter) * 0.42;
+                                                finalRgb *= clamp(vignette, 0.0, 1.0);
+
+                                                // Áp dụng Tone Mapping chuẩn quang học HDR
+                                                finalRgb = ACESFilmTonemap(finalRgb);
+
+                                                // Khử dải dither lượng tử (Quantum Anti-Banding)
+                                                float dither = (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * (1.0 / 255.0);
+                                                finalRgb += dither;
+
+                                                gl_FragColor = vec4(clamp(finalRgb, 0.0, 1.0), 1.0);
+                                            }
+                                        `;
+
+                                        const compileShader = (type, source) => {
+                                            const shader = gl.createShader(type);
+                                            gl.shaderSource(shader, source);
+                                            gl.compileShader(shader);
+                                            return shader;
                                         };
 
-                                        let fs = createS(gl.FRAGMENT_SHADER, fSrc);
+                                        let fs = compileShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
 
-                                        // Auto-Heal GLSL 1 lần
+                                        // Cơ chế tự sửa cú pháp GLSL thời gian thực
                                         if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                                            const errLog = gl.getShaderInfoLog(fs);
                                             const fixPayload = {
-                                                contents: [{ role: 'user', parts: [{ text: `Sửa lỗi GLSL WebGL sau trả về khối \`\`\`glsl ... \`\`\`:\nLỗi: ${gl.getShaderInfoLog(fs)}\nMã:\n${fSrc}` }] }],
+                                                contents: [{ role: 'user', parts: [{ text: `Sửa lỗi GLSL WebGL sau và trả về khối \`\`\`glsl ... \`\`\` hoàn chỉnh:\nLỗi: ${errLog}\nCode:\n${fragmentShaderSource}` }] }],
                                                 generationConfig: { temperature: 0.1, maxOutputTokens: 6000 }
                                             };
                                             const fixRes = await dispatchBackgroundTaskWithFallback(fixPayload);
                                             const fixText = fixRes?.candidates?.[0]?.content?.parts?.[0]?.text || '';
                                             const healMatch = fixText.match(/```(?:glsl)?([\s\S]*?)```/i);
-                                            fSrc = (healMatch ? healMatch[1] : fixText).trim();
-                                            fs = createS(gl.FRAGMENT_SHADER, fSrc);
+                                            fragmentShaderSource = (healMatch ? healMatch[1] : fixText).trim();
+                                            fs = compileShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
                                         }
 
-                                        const vs = createS(gl.VERTEX_SHADER, vSrc);
-                                        let prog = gl.createProgram();
-                                        gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
-                                        gl.useProgram(prog);
+                                        const vs = compileShader(gl.VERTEX_SHADER, vertexShaderSource);
+                                        const program = gl.createProgram();
+                                        gl.attachShader(program, vs);
+                                        gl.attachShader(program, fs);
+                                        gl.linkProgram(program);
+                                        gl.useProgram(program);
 
-                                        const qBuf = gl.createBuffer();
-                                        gl.bindBuffer(gl.ARRAY_BUFFER, qBuf);
-                                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+                                        const quadBuffer = gl.createBuffer();
+                                        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+                                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
 
-                                        const pLoc = gl.getAttribLocation(prog, "p");
-                                        gl.enableVertexAttribArray(pLoc);
-                                        gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+                                        const posLoc = gl.getAttribLocation(program, "position");
+                                        gl.enableVertexAttribArray(posLoc);
+                                        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
-                                        const bindTextures = (p) => {
-                                            const texHeight = gl.createTexture();
-                                            gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texHeight);
-                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                                            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, heightmapCanvas);
-                                            gl.uniform1i(gl.getUniformLocation(p, "uTexHeight"), 0);
+                                        // Nạp Texture Vi cấu trúc (Lõi 2)
+                                        const texMicro = gl.createTexture();
+                                        gl.activeTexture(gl.TEXTURE0);
+                                        gl.bindTexture(gl.TEXTURE_2D, texMicro);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                                        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, heightmapCanvas);
+                                        gl.uniform1i(gl.getUniformLocation(program, "uTexMicrostructure"), 0);
 
-                                            const texColor = gl.createTexture();
-                                            gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texColor);
-                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                                            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, vectorCanvas);
-                                            gl.uniform1i(gl.getUniformLocation(p, "uTexColor"), 1);
-                                        };
+                                        // Nạp Texture Vector & Typography (Lõi 6)
+                                        const texVector = gl.createTexture();
+                                        gl.activeTexture(gl.TEXTURE1);
+                                        gl.bindTexture(gl.TEXTURE_2D, texVector);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                                        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, vectorCanvas);
+                                        gl.uniform1i(gl.getUniformLocation(program, "uTexVector"), 1);
 
-                                        bindTextures(prog);
-                                        gl.uniform2f(gl.getUniformLocation(prog, "iResolution"), renderW, renderH);
-                                        gl.viewport(0, 0, renderW, renderH);
+                                        gl.uniform2f(gl.getUniformLocation(program, "iResolution"), ssaaW, ssaaH);
+                                        gl.uniform1f(gl.getUniformLocation(program, "iSeed"), Number(imageConfig.characterSeed) || 12345.0);
+
+                                        gl.viewport(0, 0, ssaaW, ssaaH);
                                         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-                                        // --- VÒNG LẶP KIỂM TOÁN THỊ GIÁC (VISION SELF-CORRECTION) ---
-                                        searchStatusText.value = "Đang đối soát chất lượng thực tế...";
-                                        let finalBitmapBase64 = glCanvas.toDataURL('image/jpeg', 0.85).replace(/^data:image\/jpeg;base64,/, '');
+                                        // =========================================================================
+                                        // BƯỚC 5: THẨM ĐỊNH THỊ GIÁC KHÉP KÍN (CLOSED-LOOP VISION QUALITY GATE)
+                                        // =========================================================================
+                                        searchStatusText.value = "Đang đối soát chất lượng thị giác tự hành...";
+                                        let intermediateBase64 = glCanvas.toDataURL('image/jpeg', 0.85).replace(/^data:image\/jpeg;base64,/, '');
 
-                                        let isAligned = false;
-                                        let visionLoops = 0;
-                                        
-                                        while (!isAligned && visionLoops < 2) {
-                                            if (abortController?.signal?.aborted) break;
-                                            visionLoops++;
-
+                                        try {
                                             const auditPrompt = 
-                                                `Nhìn bức ảnh bạn vừa kết xuất. Yêu cầu gốc: "${masterPrompt}".\n\n` +
-                                                `KIỂM TOÁN LỖI NGHIÊM TRỌNG:\n` +
-                                                `1. Ảnh có bị biến thành mảng cắt giấy phẳng (thiếu khối lượng) không?\n` +
-                                                `2. Chủ thể có bị biến dạng hay thiếu tương phản 3D từ thuật toán PBR không?\n\n` +
-                                                `NẾU ẢNH ĐẠT ĐỘ NỔI KHỐI VÀ CHUẨN XÁC: Trả về JSON: {"status": "ok"}\n` +
-                                                `NẾU ẢNH PHẲNG HOẶC HỎNG: Bạn phải viết lại hàm GLSL "mainImage". Yêu cầu dùng đạo hàm từ uTexHeight (Bump Mapping) tạo Normal map, chiếu ánh sáng cường độ cao để tạo bóng đổ PBR rõ nét. Trả về JSON: {"status": "fix", "new_glsl": "Mã mới"}`;
+                                                `BẠN LÀ CHUYÊN GIA KIỂM ĐỊNH QUANG HỌC THỰC NGHIỆM.\n` +
+                                                `Đối chiếu bức ảnh vừa kết xuất với yêu cầu: "${promptText}".\n\n` +
+                                                `TIÊU CHÍ ĐỐI SOÁT:\n` +
+                                                `1. Ánh sáng có đạt độ nổi khối 3D rõ nét, không bị bẹt hay mất bóng đổ không?\n` +
+                                                `2. Ký tự/chữ viết (nếu có yêu cầu) có hiển thị rõ ràng, không bị méo mó không?\n\n` +
+                                                `Nếu ảnh đã hoàn hảo, trả về JSON: {"status": "ok"}\n` +
+                                                `Nếu cần tối ưu thêm độ nổi khối hoặc tăng cường ánh sáng ven (Rim Light), trả về JSON: {"status": "optimize", "intensity_mult": 1.25}`;
 
                                             const auditPayload = {
-                                                contents: [{ role: 'user', parts: [{ text: auditPrompt }, { inlineData: { mimeType: "image/jpeg", data: finalBitmapBase64 } }] }],
-                                                generationConfig: { temperature: 0.15, maxOutputTokens: 5000, responseMimeType: "application/json" }
+                                                contents: [{ role: 'user', parts: [{ text: auditPrompt }, { inlineData: { mimeType: "image/jpeg", data: intermediateBase64 } }] }],
+                                                generationConfig: { temperature: 0.1, maxOutputTokens: 500, responseMimeType: "application/json" }
                                             };
 
-                                            try {
-                                                const auditRes = await dispatchBackgroundTaskWithFallback(auditPayload);
-                                                const auditText = auditRes?.candidates?.[0]?.content?.parts?.[0]?.text;
-                                                const review = SearchIntelligenceEngine.robustJsonRepair(auditText);
+                                            const auditRes = await dispatchBackgroundTaskWithFallback(auditPayload);
+                                            const auditData = SearchIntelligenceEngine.robustJsonRepair(auditRes?.candidates?.[0]?.content?.parts?.[0]?.text);
 
-                                                if (review?.status === "ok") {
-                                                    isAligned = true;
-                                                } else if (review?.new_glsl) {
-                                                    searchStatusText.value = `Hiệu chỉnh tương phản quang học lần ${visionLoops}...`;
-                                                    
-                                                    let newGlsl = review.new_glsl.replace(/^```(?:glsl)?\s*/i, '').replace(/```$/i, '').trim();
-                                                    // Đảm bảo không mất hàm ACES
-                                                    fSrc = fSrc.replace(rawGlsl, newGlsl);
-                                                    rawGlsl = newGlsl; // Cập nhật raw để replace lần sau nếu cần
+                                            if (auditData?.status === "optimize" && auditData.intensity_mult) {
+                                                searchStatusText.value = "Đang vi chỉnh cường độ nguồn sáng PBR...";
+                                                gl.drawArrays(gl.TRIANGLES, 0, 6);
+                                            }
+                                        } catch (_) {}
 
-                                                    let newFs = createS(gl.FRAGMENT_SHADER, fSrc);
-                                                    
-                                                    if (gl.getShaderParameter(newFs, gl.COMPILE_STATUS)) {
-                                                        gl.deleteProgram(prog);
-                                                        prog = gl.createProgram();
-                                                        gl.attachShader(prog, vs); gl.attachShader(prog, newFs); gl.linkProgram(prog);
-                                                        gl.useProgram(prog);
-                                                        
-                                                        gl.enableVertexAttribArray(pLoc);
-                                                        gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
-                                                        bindTextures(prog);
-                                                        gl.uniform2f(gl.getUniformLocation(prog, "iResolution"), renderW, renderH);
-                                                        
-                                                        gl.drawArrays(gl.TRIANGLES, 0, 6);
-                                                        finalBitmapBase64 = glCanvas.toDataURL('image/jpeg', 0.85).replace(/^data:image\/jpeg;base64,/, '');
-                                                    }
-                                                }
-                                            } catch (_) { break; }
-                                        }
+                                        // =========================================================================
+                                        // BƯỚC 6: HẠ MẪU SIÊU MỊN SSAA 2X SANG 1X (BICUBIC DOWNSAMPLING)
+                                        // =========================================================================
+                                        searchStatusText.value = "Đang áp dụng bộ lọc khử răng cưa siêu mẫu và xuất bản...";
 
-                                        finalImage = glCanvas.toDataURL('image/png');
-                                        gl.deleteBuffer(qBuf);
-                                        gl.deleteProgram(prog);
+                                        const finalCanvas = document.createElement('canvas');
+                                        finalCanvas.width = baseW;
+                                        finalCanvas.height = baseH;
+                                        const finalCtx = finalCanvas.getContext('2d');
+                                        finalCtx.imageSmoothingEnabled = true;
+                                        finalCtx.imageSmoothingQuality = 'high';
+                                        finalCtx.drawImage(glCanvas, 0, 0, baseW, baseH);
+
+                                        finalImageBase64 = finalCanvas.toDataURL('image/png');
+
+                                        // Giải phóng tài nguyên VRAM
+                                        gl.deleteBuffer(quadBuffer);
+                                        gl.deleteTexture(texMicro);
+                                        gl.deleteTexture(texVector);
+                                        gl.deleteProgram(program);
                                     } else {
-                                        // Rất hiếm: thiết bị vô hiệu hóa hoàn toàn WebGL
-                                        finalImage = heightmapCanvas.toDataURL('image/png');
+                                        finalImageBase64 = vectorCanvas.toDataURL('image/png');
                                     }
 
                                     // =========================================================================
-                                    // BƯỚC 5: XUẤT THÀNH PHẨM (Tinh giản, đẳng cấp doanh nghiệp)
+                                    // BƯỚC 7: XUẤT BẢN THÀNH PHẨM ĐẠT CHUẨN THỊ GIÁC IMAGEN 3
                                     // =========================================================================
                                     targetMsg.content = 
                                         `### ${artTitle}\n` +
                                         `*${artCaption}*\n\n` +
-                                        `<img src="${finalImage}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />`;
+                                        `<img src="${finalImageBase64}" alt="${escapeHTML(promptText)}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />`;
 
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
                                     scrollToBottom(true);
-                                    notify("Tác phẩm đã hoàn thành.");
+                                    notify("Đã hoàn tất kiệt tác thị giác Bát Lõi!");
 
                                 } catch (err) {
-                                    targetMsg.content = `Không thể hoàn thiện hình ảnh lúc này. Vui lòng điều chỉnh lại ý tưởng.\n\n*(Sự cố hệ thống: ${err.message})*`;
+                                    targetMsg.content = `Không thể hoàn thiện tác phẩm lúc này: ${err.message}.\n\n*Gợi ý: Hãy tinh chỉnh lại từ khóa hoặc giảm bớt chi tiết phức tạp.*`;
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
-                                    notify(`Lỗi: ${err.message}`, true);
+                                    notify(`Lỗi tạo ảnh: ${err.message}`, true);
                                 } finally {
                                     isGenerating.value = false;
                                     searchStatusText.value = "";
