@@ -10714,421 +10714,358 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 });
                                 currentMessages.value.push(targetMsg);
 
-                                const parseAspectRatioValue = (ratioStr) => {
-                                    if (!ratioStr || typeof ratioStr !== 'string') return 1.0;
-                                    const parts = ratioStr.split(':').map(Number);
-                                    return (parts.length === 2 && parts[1] > 0) ? (parts[0] / parts[1]) : 1.0;
-                                };
-
-                                const targetAR = parseAspectRatioValue(imageConfig.aspectRatio);
-                                const currentStyleDesc = getImageStylePromptModifier(imageConfig.style);
-                                const currentSeed = imageConfig.keepCharacter ? imageConfig.characterSeed : Math.floor(Math.random() * 899999) + 100000;
-
-                                const PIXEL_BUDGET = 1048576.0; // 1024x1024
-                                const renderW = Math.round(Math.sqrt(PIXEL_BUDGET * targetAR));
-                                const renderH = Math.round(renderW / targetAR);
-
-                                const cleanPythonString = (raw) => {
-                                    if (!raw) return '';
-                                    let s = String(raw).trim();
-                                    s = s.replace(/^```(?:python)?\s*/i, '').replace(/```\s*$/i, '').trim();
-                                    return s;
-                                };
-
-                                const infiniteResilientDispatch = async (payload, statusHint) => {
-                                    let attemptCount = 0;
-                                    while (true) {
-                                        if (abortController?.signal?.aborted) throw new DOMException("Đã dừng tác vụ", "AbortError");
-                                        attemptCount++;
-                                        while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
-                                            searchStatusText.value = "Đang kết nối lại...";
-                                            await new Promise(r => setTimeout(r, 2000));
-                                        }
-                                        const keyObj = getNextHealthyApiKey();
-                                        if (!keyObj?.key) {
-                                            searchStatusText.value = "Đang đồng bộ dữ liệu...";
-                                            await new Promise(r => setTimeout(r, 2500));
-                                            continue;
-                                        }
-                                        searchStatusText.value = `${statusHint}`;
-                                        try {
-                                            const res = await dispatchBackgroundTaskWithFallback(payload);
-                                            const rawContent = res?.candidates?.[0]?.content?.parts?.[0]?.text;
-                                            if (rawContent && rawContent.trim()) {
-                                                markApiKeySuccess(keyObj);
-                                                return rawContent;
-                                            }
-                                        } catch (err) { markApiKeyFailure(keyObj); }
-                                        await new Promise(r => setTimeout(r, 1200));
-                                    }
-                                };
-
                                 try {
-                                    if (!promptText && currentAtts.length === 0) throw new Error("Chưa có mô tả hình ảnh.");
+                                    if (!promptText && currentAtts.length === 0) {
+                                        throw new Error("Vui lòng cung cấp mô tả hình ảnh mong muốn.");
+                                    }
 
-                                    if (typeof window.THREE === 'undefined') {
-                                        await new Promise((resolve, reject) => {
-                                            const script = document.createElement('script');
-                                            script.src = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
-                                            script.onload = resolve;
-                                            script.onerror = reject;
-                                            document.head.appendChild(script);
+                                    const parseRatio = (str) => {
+                                        if (!str || typeof str !== 'string') return 1.0;
+                                        const parts = str.split(':').map(Number);
+                                        return (parts.length === 2 && parts[1] > 0) ? (parts[0] / parts[1]) : 1.0;
+                                    };
+
+                                    const ar = parseRatio(imageConfig.aspectRatio);
+                                    const BASE_DIM = 1024;
+                                    let renderW = ar >= 1.0 ? BASE_DIM : Math.round(BASE_DIM * ar);
+                                    let renderH = ar >= 1.0 ? Math.round(BASE_DIM / ar) : BASE_DIM;
+                                    renderW = Math.round(renderW / 16) * 16;
+                                    renderH = Math.round(renderH / 16) * 16;
+
+                                    const renderSvgToCanvas = async (svgString, w, h) => {
+                                        const canvas = document.createElement('canvas');
+                                        canvas.width = w; canvas.height = h;
+                                        if (!svgString) return canvas;
+                                        const cleanSvg = svgString.replace(/^```(?:xml|svg)?/i, '').replace(/```$/i, '').trim();
+                                        const blob = new Blob([cleanSvg], { type: 'image/svg+xml;charset=utf-8' });
+                                        const url = URL.createObjectURL(blob);
+                                        const ctx = canvas.getContext('2d');
+                                        await new Promise((resolve) => {
+                                            const img = new Image();
+                                            img.onload = () => { ctx.drawImage(img, 0, 0, w, h); URL.revokeObjectURL(url); resolve(); };
+                                            img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+                                            img.src = url;
+                                        });
+                                        return canvas;
+                                    };
+
+                                    // =========================================================================
+                                    // BƯỚC 0: CHUẨN HÓA VÀ LÀM GIÀU NGỮ NGHĨA (PROMPT ENRICHMENT)
+                                    // =========================================================================
+                                    searchStatusText.value = "Đang phân tích và làm giàu ý niệm nghệ thuật...";
+
+                                    const enrichmentPrompt = 
+                                        `Bạn là Giám Tuyển Nghệ Thuật Kỹ Thuật Số Cao Cấp.\n` +
+                                        `Ý tưởng gốc: "${promptText}". Phong cách: ${imageConfig.style}.\n\n` +
+                                        `Hãy làm giàu ý tưởng này thành một Bản Thiết Kế Thị Giác hoàn hảo:\n` +
+                                        `1. Chuẩn hóa hình thái: Xác định rõ cấu trúc giải phẫu/đặc điểm nhận diện của chủ thể.\n` +
+                                        `2. Bố cục 3 tầng: Miêu tả Tiền cảnh, Trung cảnh (chủ thể) và Hậu cảnh chiều sâu.\n` +
+                                        `3. Ánh sáng & Vật liệu: Miêu tả Key Light, Rim Light và tính chất vật liệu (kim loại, da thịt, sương mù...).\n\n` +
+                                        `Trả về JSON:\n` +
+                                        `{\n` +
+                                        `  "title": "Tên tác phẩm",\n` +
+                                        `  "caption": "Mô tả thi vị 1 câu",\n` +
+                                        `  "enriched_prompt": "Bản mô tả thị giác chi tiết đã làm giàu"\n` +
+                                        `}`;
+
+                                    const enrichPayload = {
+                                        contents: [{ role: 'user', parts: [{ text: enrichmentPrompt }] }],
+                                        generationConfig: { temperature: 0.3, maxOutputTokens: 2000, responseMimeType: "application/json" }
+                                    };
+
+                                    let enrichedData = null;
+                                    for (let attempt = 0; attempt < 2; attempt++) {
+                                        if (abortController?.signal?.aborted) throw new DOMException("Đã dừng tiến trình", "AbortError");
+                                        const res = await dispatchBackgroundTaskWithFallback(enrichPayload);
+                                        const out = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                                        enrichedData = SearchIntelligenceEngine.robustJsonRepair(out);
+                                        if (enrichedData?.enriched_prompt) break;
+                                        await new Promise(r => setTimeout(r, 400));
+                                    }
+
+                                    const artTitle = enrichedData?.title || "Tác Phẩm Thị Giác";
+                                    const artCaption = enrichedData?.caption || "Hình ảnh được kiến tạo chuẩn xác theo định hướng toán - lý.";
+                                    const masterPrompt = enrichedData?.enriched_prompt || promptText;
+
+                                    // =========================================================================
+                                    // BƯỚC 1: TRUY XUẤT 6 TRỤ CỘT TOÁN - LÝ & KHỞI TẠO QUAD-CORE ENGINE
+                                    // =========================================================================
+                                    searchStatusText.value = "Đang giải tích hóa hình thái và trường vật lý...";
+
+                                    const quadCorePrompt = 
+                                        `Bạn là Bách Khoa Toàn Thư Khoa Học & Siêu Kiến Trúc Sư Đồ Họa Giải Tích.\n` +
+                                        `Dựa trên bản thiết kế: "${masterPrompt}".\n\n` +
+                                        `NHIỆM VỤ: Hãy truy xuất giải phẫu học thực tế và vận dụng 6 trụ cột khoa học sau để tạo ra 3 lõi mã nguồn phối hợp.\n` +
+                                        `[6 TRỤ CỘT BẮT BUỘC SỬ DỤNG]:\n` +
+                                        `1. Siêu công thức Gielis r(theta) & Đường cong Bézier bậc 3 (Khắc họa giải phẫu).\n` +
+                                        `2. Turing PDE & Voronoi Worley F2-F1 (Tạo vi cấu trúc bề mặt, vân nứt, tế bào).\n` +
+                                        `3. Quang học PBR Cook-Torrance & SSS Dipole (Phản xạ vi mặt, tán xạ xuyên thấu).\n` +
+                                        `4. Khí quyển Beer-Lambert & Henyey-Greenstein (Sương mù, God-rays).\n` +
+                                        `5. Xoắn ốc Fibonacci & Bokeh DoF (Bố cục tiêu điểm và xóa phông quang học).\n` +
+                                        `6. Phối màu Cosine Inigo Quilez C(t) = a + b*cos(2*PI*(c*t+d)).\n\n` +
+                                        `[YÊU CẦU 3 LÕI MÃ NGUỒN]:\n` +
+                                        `LÕI 1 - BẢN ĐỒ ĐỘ SÂU (PYTHON HEIGHTMAP):\n` +
+                                        `- Viết mã Python (numpy, matplotlib) xuất 1 ảnh heatmap mô phỏng mật độ khối lượng, độ gồ ghề bề mặt hoặc nhiễu Turing/Voronoi. Tắt trục (plt.axis('off')).\n\n` +
+                                        `LÕI 2 - GIẢI PHẪU CHỦ THỂ (SVG ANATOMY):\n` +
+                                        `- Viết mã SVG (viewBox="0 0 ${renderW} ${renderH}").\n` +
+                                        `- Áp dụng hệ Bézier và Gielis để vẽ ĐÚNG hình dáng thực tế của chủ thể. CẤM dùng khối hình học cơ bản. Vẽ chi tiết mắt, cơ bắp, cấu trúc bề mặt.\n\n` +
+                                        `LÕI 3 - QUANG HỌC VẬT LÝ (GLSL PBR SHADER):\n` +
+                                        `- Viết hàm GLSL: void mainImage(out vec4 fragColor, in vec2 fragCoord).\n` +
+                                        `- Đọc Texture uTexHeight (Lõi 1) để tính Normal vi phân (Bump Mapping).\n` +
+                                        `- Đọc Texture uTexColor (Lõi 2) làm Base Color.\n` +
+                                        `- Áp dụng Cook-Torrance (PBR), Henyey-Greenstein (Tán xạ) và Inigo Quilez (Màu sắc) bằng các tham số bạn tự tính.\n\n` +
+                                        `Trả về JSON:\n` +
+                                        `{\n` +
+                                        `  "python_heightmap": "Mã Python",\n` +
+                                        `  "svg_anatomy": "Mã SVG chi tiết cao",\n` +
+                                        `  "glsl_pbr_shader": "Mã Fragment Shader tổng hợp"\n` +
+                                        `}`;
+
+                                    const corePayload = {
+                                        contents: [{ role: 'user', parts: [{ text: quadCorePrompt }] }],
+                                        generationConfig: { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" }
+                                    };
+
+                                    let blueprint = null;
+                                    for (let attempt = 0; attempt < 2; attempt++) {
+                                        if (abortController?.signal?.aborted) throw new DOMException("Đã dừng tiến trình", "AbortError");
+                                        const res = await dispatchBackgroundTaskWithFallback(corePayload);
+                                        const out = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                                        blueprint = SearchIntelligenceEngine.robustJsonRepair(out);
+                                        if (blueprint?.python_heightmap && blueprint?.svg_anatomy && blueprint?.glsl_pbr_shader) break;
+                                        await new Promise(r => setTimeout(r, 400));
+                                    }
+
+                                    if (!blueprint) throw new Error("Không thể cấu trúc trường giải tích đa chiều.");
+
+                                    // =========================================================================
+                                    // BƯỚC 2: THỰC THI LÕI PYTHON (Tính toán Displacement/Heightmap)
+                                    // =========================================================================
+                                    searchStatusText.value = "Đang tổng hợp phương trình Turing và phân bố khối lượng...";
+                                    
+                                    const pythonCode = blueprint.python_heightmap
+                                        .replace(/^```(?:python)?\s*/i, '').replace(/```$/i, '')
+                                        .replace(/plt\.show\(\)/g, '');
+
+                                    let baseImageBase64 = null;
+                                    const pyResult = await PythonEngine.run(pythonCode);
+                                    
+                                    if (pyResult.outcome === 'ERROR' || !pyResult.plotBase64) {
+                                        // Auto-Heal Python 1 lần
+                                        const fixPyPayload = {
+                                            contents: [{ role: 'user', parts: [{ text: `Sửa mã Python sau (cấm plt.show) trả về duy nhất khối \`\`\`python ... \`\`\`:\nLỗi: ${pyResult.output}\nMã:\n${pythonCode}` }] }],
+                                            generationConfig: { temperature: 0.1, maxOutputTokens: 4000 }
+                                        };
+                                        const fixRes = await dispatchBackgroundTaskWithFallback(fixPyPayload);
+                                        const fixOut = fixRes?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                                        const healedPy = fixOut.match(/```(?:python)?([\s\S]*?)```/i);
+                                        const retryRes = await PythonEngine.run(healedPy ? healedPy[1] : fixOut);
+                                        baseImageBase64 = retryRes.plotBase64 || null;
+                                    } else {
+                                        baseImageBase64 = pyResult.plotBase64;
+                                    }
+
+                                    const heightmapCanvas = document.createElement('canvas');
+                                    heightmapCanvas.width = renderW; heightmapCanvas.height = renderH;
+                                    const hmCtx = heightmapCanvas.getContext('2d');
+                                    hmCtx.fillStyle = '#808080'; hmCtx.fillRect(0, 0, renderW, renderH);
+
+                                    if (baseImageBase64) {
+                                        await new Promise((resolve) => {
+                                            const img = new Image();
+                                            img.onload = () => { hmCtx.drawImage(img, 0, 0, renderW, renderH); resolve(); };
+                                            img.onerror = resolve;
+                                            img.src = `data:image/png;base64,${baseImageBase64}`;
                                         });
                                     }
 
                                     // =========================================================================
-                                    // [KHÂU 1: THIẾT KẾ MẢNH GHÉP NGUYÊN BẢN - KHÔNG GÁN ÉP MẶC ĐỊNH]
+                                    // BƯỚC 3: KẾT XUẤT LÕI VECTOR SVG (Đường nét giải phẫu Gielis/Bézier)
                                     // =========================================================================
-                                    const modularGenesisInstruction = 
-                                        "[CONSTITUTION: PURE ZERO-FALLBACK MODULAR COMPOSITING ARCHITECT]\n" +
-                                        "Nhiệm vụ: Bạn là Kiến Trúc Sư Lắp Ghép Không Gian. Bóc tách bức tranh thành các Mảnh Ghép độc lập (Lego Blocks), mỗi mảnh có z_index riêng (từ 0 đến 10).\n\n" +
-                                        "KỶ LUẬT THÉP (TUYỆT ĐỐI KHÔNG DỰ PHÒNG):\n" +
-                                        "1. BẮT BUỘC PHẢI CÓ LỚP NỀN (z_index = 0): Phải tự vẽ màu sắc không gian phủ kín toàn bộ tọa độ uv với Alpha = 1.0. Không có lớp nền đặc tự tạo thì hệ thống sẽ từ chối.\n" +
-                                        "2. CÁC LỚP CHỦ THỂ & VẬT THỂ (z_index >= 1): Phải vẽ ra hình thể rõ ràng, vùng có vật thể trả về Alpha = 1.0, vùng trống trả về Alpha = 0.0.\n" +
-                                        "3. Mỗi mảnh ghép BẮT BUỘC có một kịch bản Python độc lập để xuất mã GLSL hợp lệ, in ra JSON chứa 'math' và 'shader' kẹp giữa __GDEEP_COMPILE_START__ và __GDEEP_COMPILE_END__.\n" +
-                                        "   Hàm GLSL bắt buộc: vec4 renderBlock(vec2 uv, float time) -> trả về vec4(r, g, b, alpha).";
-
-                                    const modularSchema = {
-                                        type: "OBJECT",
-                                        properties: {
-                                            master_mental_imagery: { type: "STRING" },
-                                            lego_blocks: {
-                                                type: "ARRAY",
-                                                items: {
-                                                    type: "OBJECT",
-                                                    properties: {
-                                                        block_id: { type: "STRING" },
-                                                        z_index: { type: "INTEGER" },
-                                                        description: { type: "STRING" },
-                                                        python_transcriber_script: { type: "STRING" }
-                                                    },
-                                                    required: ["block_id", "z_index", "python_transcriber_script"]
-                                                }
-                                            }
-                                        },
-                                        required: ["master_mental_imagery", "lego_blocks"]
-                                    };
-
-                                    let masterPlan = null;
-                                    const genesisPayload = {
-                                        systemInstruction: { parts: [{ text: modularGenesisInstruction }] },
-                                        contents: [{ role: 'user', parts: [{ text: `TẠO KẾ HOẠCH LẮP GHÉP NGUYÊN BẢN: "${promptText}". AR=${targetAR}. Mã: ${currentSeed}.` }] }],
-                                        generationConfig: { temperature: 0.35, maxOutputTokens: 8192, responseMimeType: "application/json", responseSchema: modularSchema }
-                                    };
-
-                                    // LẶP CHO ĐẾN KHI CÓ KẾ HOẠCH HỢP LỆ (KHÔNG TỰ Ý CHÈN LAYER DỰ PHÒNG)
-                                    while (!masterPlan || !masterPlan.lego_blocks || masterPlan.lego_blocks.length === 0) {
-                                        const rawJson = await infiniteResilientDispatch(genesisPayload, "Đang thiết lập kế hoạch phân lớp không gian...");
-                                        const sIdx = rawJson.indexOf('{'); const eIdx = rawJson.lastIndexOf('}');
-                                        const cleanJson = (sIdx !== -1 && eIdx !== -1) ? rawJson.slice(sIdx, eIdx + 1).trim() : rawJson;
-                                        masterPlan = SearchIntelligenceEngine.robustJsonRepair(cleanJson);
-                                    }
-
-                                    let activeLegoBlocks = [...masterPlan.lego_blocks].sort((a, b) => a.z_index - b.z_index);
-
-                                    // KHỞI TẠO RENDERER WEBGL (CLEAR COLOR HOÀN TOÀN TRONG SUỐT, ZERO MÀU DỰ PHÒNG)
-                                    const canvas = document.createElement('canvas');
-                                    canvas.width = renderW; canvas.height = renderH;
-                                    
-                                    const renderer = new window.THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: "high-performance" });
-                                    renderer.setSize(renderW, renderH, false);
-                                    renderer.autoClear = false;
-
-                                    const orthoCam = new window.THREE.OrthographicCamera(-1, 1, 1, -1, -10, 10);
-                                    orthoCam.position.set(0, 0, 1);
-                                    orthoCam.lookAt(0, 0, 0);
-
-                                    const quadGeometry = new window.THREE.PlaneGeometry(2, 2);
-                                    const compiledMaterialsCache = new Map();
-                                    const gl = renderer.getContext();
+                                    searchStatusText.value = "Đang khắc họa cấu trúc giải phẫu học thực tế...";
+                                    const vectorCanvas = await renderSvgToCanvas(blueprint.svg_anatomy, renderW, renderH);
 
                                     // =========================================================================
-                                    // [KHÂU 2: CÔ LẬP TỪNG MẢNH GHÉP - HỎNG ĐÂU RETRY ĐÓ ĐẾN KHI THÀNH CÔNG]
-                                    // TUYỆT ĐỐI KHÔNG CÓ SHADER DỰ PHÒNG HAY MÀU THẾ MẠNG!
+                                    // BƯỚC 4: KẾT XUẤT LÕI WEBGL & VÒNG LẶP ĐỐI SOÁT (PBR + Vision Loop)
                                     // =========================================================================
-                                    const getCompiledBlockMaterial = async (block) => {
-                                        if (compiledMaterialsCache.has(block.block_id)) return compiledMaterialsCache.get(block.block_id);
+                                    searchStatusText.value = "Đang tính toán phản xạ quang học và bóng đổ vi phân...";
 
-                                        let material = null;
-                                        let compileAttempt = 0;
+                                    const glCanvas = document.createElement('canvas');
+                                    glCanvas.width = renderW; glCanvas.height = renderH;
+                                    const gl = glCanvas.getContext('webgl', { antialias: true, preserveDrawingBuffer: true });
 
-                                        while (!material) {
-                                            compileAttempt++;
-                                            searchStatusText.value = `Kết xuất mảnh ghép [${block.block_id}] (Lần ${compileAttempt})...`;
+                                    let finalImage = "";
 
-                                            const pyScript = cleanPythonString(block.python_transcriber_script);
-                                            const pyResult = await PythonEngine.run(pyScript);
-                                            const outStr = pyResult.output || '';
-                                            const sTag = '__GDEEP_COMPILE_START__', eTag = '__GDEEP_COMPILE_END__';
-                                            let sIdx = outStr.indexOf(sTag); let eIdx = outStr.indexOf(eTag);
-                                            
-                                            let jsonPayload = "";
-                                            if (sIdx !== -1 && eIdx !== -1) {
-                                                jsonPayload = outStr.slice(sIdx + sTag.length, eIdx).trim();
+                                    if (gl) {
+                                        let rawGlsl = blueprint.glsl_pbr_shader.replace(/^```(?:glsl)?\s*/i, '').replace(/```$/i, '').trim();
+                                        
+                                        const vSrc = `attribute vec2 p; varying vec2 uv; void main(){ uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }`;
+                                        let fSrc = `
+                                            precision highp float;
+                                            varying vec2 uv;
+                                            uniform vec2 iResolution;
+                                            uniform sampler2D uTexHeight;
+                                            uniform sampler2D uTexColor;
+
+                                            ${rawGlsl}
+
+                                            // ACES Filmic Tone Mapping chống cháy sáng
+                                            vec3 ACESFilm(vec3 x) {
+                                                float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
+                                                return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
                                             }
 
-                                            const compiledPkg = jsonPayload ? SearchIntelligenceEngine.robustJsonRepair(jsonPayload) : null;
+                                            void main() {
+                                                vec4 c = vec4(0.0);
+                                                mainImage(c, gl_FragCoord.xy);
+                                                
+                                                // Tán xạ phát quang nhẹ (Bloom)
+                                                vec3 bloom = texture2D(uTexColor, uv + vec2(0.001)).rgb * 0.1;
+                                                c.rgb += bloom;
 
-                                            // 1. RETRY NẾU PYTHON HỎNG: BẮT AI SỬA ĐÚNG MÃ PYTHON CỦA BLOCK NÀY
-                                            if (!compiledPkg || !compiledPkg.shader) {
-                                                searchStatusText.value = `Khắc phục lỗi mã nguồn [${block.block_id}]...`;
-                                                const errDetail = pyResult.outcome === 'ERROR' ? pyResult.output : (outStr || "Python không xuất đúng thẻ JSON chứa shader.");
-                                                const fixPyPayload = {
-                                                    systemInstruction: { parts: [{ text: modularGenesisInstruction }] },
-                                                    contents: [{
-                                                        role: 'user',
-                                                        parts: [{
-                                                            text: `MÃ PYTHON CỦA MẢNH GHÉP [${block.block_id}] BỊ LỖI:\n${errDetail}\n\nMÃ HIỆN TẠI:\n${block.python_transcriber_script}\n\nHãy sửa lại python_transcriber_script cho riêng mảnh này để in ra đúng JSON giữa __GDEEP_COMPILE_START__ và __GDEEP_COMPILE_END__. Tuyệt đối không dùng mã dự phòng.`
-                                                        }]
-                                                    }],
-                                                    generationConfig: { temperature: 0.15, maxOutputTokens: 4096 }
-                                                };
-                                                const healedRaw = await infiniteResilientDispatch(fixPyPayload, `Đang sửa mã Python [${block.block_id}]...`);
-                                                const healedParsed = SearchIntelligenceEngine.robustJsonRepair(healedRaw);
-                                                const newScript = healedParsed?.python_transcriber_script || cleanPythonString(healedRaw);
-                                                if (newScript) block.python_transcriber_script = newScript;
-                                                continue; // RETRY LẠI CHO ĐẾN KHI PYTHON CHẠY ĐƯỢC
+                                                c.rgb = ACESFilm(c.rgb);
+                                                gl_FragColor = vec4(c.rgb, 1.0);
                                             }
+                                        `;
 
-                                            let rawShaderCode = compiledPkg.shader.trim();
-                                            if (!rawShaderCode.includes("renderBlock")) {
-                                                rawShaderCode = `vec4 renderBlock(vec2 uv, float time){\n${rawShaderCode}\n}`;
-                                            }
-
-                                            const fragmentShader = `
-                                                precision highp float;
-                                                uniform vec2 u_resolution;
-                                                uniform float u_time;
-
-                                                #define PI 3.14159265358979323846
-                                                float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
-                                                float noise(vec2 p) {
-                                                    vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-                                                    return mix(mix(hash(i + vec2(0,0)), hash(i + vec2(1,0)), f.x),
-                                                               mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), f.x), f.y);
-                                                }
-
-                                                ${compiledPkg.math || ''}
-
-                                                ${rawShaderCode}
-
-                                                void main() {
-                                                    vec2 uv = gl_FragCoord.xy / u_resolution.xy;
-                                                    vec4 col = renderBlock(uv, u_time);
-                                                    gl_FragColor = col;
-                                                }
-                                            `;
-
-                                            // 2. RETRY NẾU SHADER WEBGL HỎNG: BẮT AI SỬA ĐÚNG CÚ PHÁP SHADER CỦA BLOCK NÀY
-                                            const testShader = gl.createShader(gl.FRAGMENT_SHADER);
-                                            gl.shaderSource(testShader, fragmentShader);
-                                            gl.compileShader(testShader);
-                                            const isShaderOk = gl.getShaderParameter(testShader, gl.COMPILE_STATUS);
-
-                                            if (!isShaderOk) {
-                                                const log = gl.getShaderInfoLog(testShader);
-                                                gl.deleteShader(testShader);
-                                                searchStatusText.value = `Khắc phục lỗi Shader [${block.block_id}]...`;
-
-                                                const fixShaderPayload = {
-                                                    systemInstruction: { parts: [{ text: modularGenesisInstruction }] },
-                                                    contents: [{
-                                                        role: 'user',
-                                                        parts: [{
-                                                            text: `SHADER CỦA MẢNH GHÉP [${block.block_id}] BỊ LỖI BIÊN DỊCH WEBGL:\n${log}\n\nMÃ NGUỒN HIỆN TẠI:\n${compiledPkg.shader}\n\nHãy sửa lại python_transcriber_script để xuất ra GLSL hợp lệ. Tuyệt đối không dùng mã dự phòng.`
-                                                        }]
-                                                    }],
-                                                    generationConfig: { temperature: 0.15, maxOutputTokens: 4096 }
-                                                };
-                                                const healedRaw = await infiniteResilientDispatch(fixShaderPayload, `Đang sửa Shader [${block.block_id}]...`);
-                                                const healedParsed = SearchIntelligenceEngine.robustJsonRepair(healedRaw);
-                                                const newScript = healedParsed?.python_transcriber_script || cleanPythonString(healedRaw);
-                                                if (newScript) block.python_transcriber_script = newScript;
-                                                continue; // RETRY LẠI CHO ĐẾN KHI SHADER BIÊN DỊCH THÀNH CÔNG
-                                            }
-                                            gl.deleteShader(testShader);
-
-                                            // Khi đã qua 2 chốt kiểm duyệt gắt gao, khởi tạo ShaderMaterial chính thức
-                                            material = new window.THREE.ShaderMaterial({
-                                                vertexShader: `
-                                                    varying vec2 vUv;
-                                                    void main(){
-                                                        vUv = uv;
-                                                        gl_Position = vec4(position.x, position.y, 0.0, 1.0);
-                                                    }
-                                                `,
-                                                fragmentShader,
-                                                uniforms: {
-                                                    u_resolution: { value: new window.THREE.Vector2(renderW, renderH) },
-                                                    u_time: { value: Math.random() * 50.0 }
-                                                },
-                                                transparent: true,
-                                                blending: window.THREE.NormalBlending,
-                                                depthTest: false,
-                                                depthWrite: false,
-                                                side: window.THREE.DoubleSide
-                                            });
-
-                                            compiledMaterialsCache.set(block.block_id, material);
-                                        }
-                                        return material;
-                                    };
-
-                                    // =========================================================================
-                                    // [KHÂU 3: LẮP GHÉP KHÔNG GIAN TRỰC TIẾP TRÊN CANVAS]
-                                    // =========================================================================
-                                    const renderProgressiveStackToCanvas = async (blocksArray) => {
-                                        // Xóa sạch canvas về trạng thái trong suốt nguyên thủy (0x000000, 0.0)
-                                        renderer.setClearColor(0x000000, 0.0);
-                                        renderer.clear();
-
-                                        const blockScene = new window.THREE.Scene();
-                                        const blockMesh = new window.THREE.Mesh(quadGeometry, null);
-                                        blockScene.add(blockMesh);
-
-                                        for (let i = 0; i < blocksArray.length; i++) {
-                                            const block = blocksArray[i];
-                                            const mat = await getCompiledBlockMaterial(block);
-                                            blockMesh.material = mat;
-                                            renderer.render(blockScene, orthoCam); // Xếp đè từng lớp lên nhau
-                                        }
-
-                                        // KIỂM ĐỊNH TƯƠNG PHẢN THỰC TẾ
-                                        const buf = new Uint8Array(64 * 64 * 4);
-                                        gl.readPixels(Math.floor((renderW-64)/2), Math.floor((renderH-64)/2), 64, 64, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-                                        let tL=0, mL=255, ML=0;
-                                        for(let i=0; i<buf.length; i+=4) {
-                                            const l = 0.2126*buf[i] + 0.7152*buf[i+1] + 0.0722*buf[i+2];
-                                            tL+=l; if(l<mL) mL=l; if(l>ML) ML=l;
-                                        }
-                                        const v = ML - mL;
-                                        const finalCanvasPng = canvas.toDataURL('image/png');
-
-                                        return {
-                                            success: (v >= 8.0),
-                                            pngUrl: finalCanvasPng,
-                                            variance: v
+                                        const createS = (type, src) => {
+                                            const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s;
                                         };
-                                    };
 
-                                    // =========================================================================
-                                    // [KHÂU 4: VÒNG LẶP KIỂM ĐỊNH THIẾT QUÂN LUẬT - HỘI TỤ 100 ĐIỂM]
-                                    // =========================================================================
-                                    let loop = 0, converged = false, finalOutputPng = "", score = 0;
+                                        let fs = createS(gl.FRAGMENT_SHADER, fSrc);
 
-                                    while (!converged) {
-                                        loop++;
-                                        searchStatusText.value = `[Vòng ${loop}] Đang lắp ghép các mảnh không gian...`;
-                                        
-                                        let compositeResult = await renderProgressiveStackToCanvas(activeLegoBlocks);
-                                        
-                                        // 3. RETRY NẾU LẮP GHÉP BỊ LỖI HOẶC BỊ TRƯỢT TƯƠNG PHẢN (KHÔNG CHÈN KHỐI GIẢ)
-                                        while (!compositeResult.success) {
-                                            searchStatusText.value = `[Lắp ghép trượt #${loop}] Tương phản thấp (${compositeResult.variance.toFixed(1)}). Đang tái cấu trúc...`;
-                                            const rePlanPayload = {
-                                                systemInstruction: { parts: [{ text: modularGenesisInstruction }] },
-                                                contents: [{
-                                                    role: 'user',
-                                                    parts: [{
-                                                        text: `CÁC MẢNH GHÉP LẮP RÁP LẠI BỊ TRỐNG HOẶC MỜ TỐI (Phương sai = ${compositeResult.variance.toFixed(1)} < 8.0).\nDANH SÁCH MẢNH HIỆN TẠI: ${JSON.stringify(activeLegoBlocks, null, 2)}\n\nHãy quy hoạch lại mã nguồn cho các mảnh ghép, bắt buộc Lớp nền z=0 phải phủ kín Alpha=1.0 và các lớp vật thể phải có độ tương phản cao. Tuyệt đối không dùng mã dự phòng.`
-                                                    }]
-                                                }],
-                                                generationConfig: { temperature: 0.2, responseMimeType: "application/json", responseSchema: modularSchema }
+                                        // Auto-Heal GLSL 1 lần
+                                        if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                                            const fixPayload = {
+                                                contents: [{ role: 'user', parts: [{ text: `Sửa lỗi GLSL WebGL sau trả về khối \`\`\`glsl ... \`\`\`:\nLỗi: ${gl.getShaderInfoLog(fs)}\nMã:\n${fSrc}` }] }],
+                                                generationConfig: { temperature: 0.1, maxOutputTokens: 6000 }
                                             };
-                                            const rePlanRaw = await infiniteResilientDispatch(rePlanPayload, "Đang cấu trúc lại các lớp không gian...");
-                                            const rePlanParsed = SearchIntelligenceEngine.robustJsonRepair(rePlanRaw);
-                                            if (rePlanParsed?.lego_blocks?.length > 0) {
-                                                activeLegoBlocks = rePlanParsed.lego_blocks.sort((a, b) => a.z_index - b.z_index);
-                                                compiledMaterialsCache.clear(); // Xóa cache để bắt buộc biên dịch lại các mảnh mới
-                                            }
-                                            compositeResult = await renderProgressiveStackToCanvas(activeLegoBlocks);
+                                            const fixRes = await dispatchBackgroundTaskWithFallback(fixPayload);
+                                            const fixText = fixRes?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                                            const healMatch = fixText.match(/```(?:glsl)?([\s\S]*?)```/i);
+                                            fSrc = (healMatch ? healMatch[1] : fixText).trim();
+                                            fs = createS(gl.FRAGMENT_SHADER, fSrc);
                                         }
 
-                                        finalOutputPng = compositeResult.pngUrl;
-                                        const base64Clean = String(finalOutputPng || '').replace(/^data:image\/png;base64,/, '');
+                                        const vs = createS(gl.VERTEX_SHADER, vSrc);
+                                        let prog = gl.createProgram();
+                                        gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+                                        gl.useProgram(prog);
 
-                                        searchStatusText.value = `[Kiểm toán ${loop}] Thẩm định chi tiết thực tế...`;
+                                        const qBuf = gl.createBuffer();
+                                        gl.bindBuffer(gl.ARRAY_BUFFER, qBuf);
+                                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
 
-                                        const auditInstruction = 
-                                            "[CONSTITUTION: UNCOMPROMISING ADDITIVE AUDITOR]\n" +
-                                            "Nhiệm vụ: Chấm điểm và Bổ sung mảnh ghép thực sự thiếu.\n" +
-                                            "1. ĐỐI CHIẾU MẪU VẬT THỰC TẾ: Bức ảnh đã có đầy đủ chủ thể và không gian theo đúng ý niệm chưa? Mọi chi tiết đã sắc nét và rõ ràng chưa?\n" +
-                                            "2. BỔ SUNG MẢNH GHÉP: Nếu chưa đạt 100 điểm, bạn BẮT BUỘC định nghĩa thêm mảnh ghép mới tại 'new_lego_blocks_to_add' để lấp đầy chi tiết thiếu.\n" +
-                                            "3. TIÊU CHUẨN: Chỉ cho phép converged = true khi và chỉ khi đạt ĐÚNG 100/100 ĐIỂM TUYỆT ĐỐI.";
+                                        const pLoc = gl.getAttribLocation(prog, "p");
+                                        gl.enableVertexAttribArray(pLoc);
+                                        gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
 
-                                        const auditSchema = {
-                                            type: "OBJECT",
-                                            properties: {
-                                                score: { type: "NUMBER", description: "Từ 0 đến 100. Phải đúng 100 mới hoàn tất." },
-                                                converged: { type: "BOOLEAN" },
-                                                critique_missing_parts: { type: "STRING" },
-                                                new_lego_blocks_to_add: {
-                                                    type: "ARRAY",
-                                                    items: {
-                                                        type: "OBJECT",
-                                                        properties: {
-                                                            block_id: { type: "STRING" },
-                                                            z_index: { type: "INTEGER" },
-                                                            description: { type: "STRING" },
-                                                            python_transcriber_script: { type: "STRING", description: "Mã Python xuất GLSL cho riêng mảnh ghép mới này." }
-                                                        },
-                                                        required: ["block_id", "z_index", "python_transcriber_script"]
+                                        const bindTextures = (p) => {
+                                            const texHeight = gl.createTexture();
+                                            gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texHeight);
+                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                                            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, heightmapCanvas);
+                                            gl.uniform1i(gl.getUniformLocation(p, "uTexHeight"), 0);
+
+                                            const texColor = gl.createTexture();
+                                            gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texColor);
+                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                                            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, vectorCanvas);
+                                            gl.uniform1i(gl.getUniformLocation(p, "uTexColor"), 1);
+                                        };
+
+                                        bindTextures(prog);
+                                        gl.uniform2f(gl.getUniformLocation(prog, "iResolution"), renderW, renderH);
+                                        gl.viewport(0, 0, renderW, renderH);
+                                        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+                                        // --- VÒNG LẶP KIỂM TOÁN THỊ GIÁC (VISION SELF-CORRECTION) ---
+                                        searchStatusText.value = "Đang đối soát chất lượng thực tế...";
+                                        let finalBitmapBase64 = glCanvas.toDataURL('image/jpeg', 0.85).replace(/^data:image\/jpeg;base64,/, '');
+
+                                        let isAligned = false;
+                                        let visionLoops = 0;
+                                        
+                                        while (!isAligned && visionLoops < 2) {
+                                            if (abortController?.signal?.aborted) break;
+                                            visionLoops++;
+
+                                            const auditPrompt = 
+                                                `Nhìn bức ảnh bạn vừa kết xuất. Yêu cầu gốc: "${masterPrompt}".\n\n` +
+                                                `KIỂM TOÁN LỖI NGHIÊM TRỌNG:\n` +
+                                                `1. Ảnh có bị biến thành mảng cắt giấy phẳng (thiếu khối lượng) không?\n` +
+                                                `2. Chủ thể có bị biến dạng hay thiếu tương phản 3D từ thuật toán PBR không?\n\n` +
+                                                `NẾU ẢNH ĐẠT ĐỘ NỔI KHỐI VÀ CHUẨN XÁC: Trả về JSON: {"status": "ok"}\n` +
+                                                `NẾU ẢNH PHẲNG HOẶC HỎNG: Bạn phải viết lại hàm GLSL "mainImage". Yêu cầu dùng đạo hàm từ uTexHeight (Bump Mapping) tạo Normal map, chiếu ánh sáng cường độ cao để tạo bóng đổ PBR rõ nét. Trả về JSON: {"status": "fix", "new_glsl": "Mã mới"}`;
+
+                                            const auditPayload = {
+                                                contents: [{ role: 'user', parts: [{ text: auditPrompt }, { inlineData: { mimeType: "image/jpeg", data: finalBitmapBase64 } }] }],
+                                                generationConfig: { temperature: 0.15, maxOutputTokens: 5000, responseMimeType: "application/json" }
+                                            };
+
+                                            try {
+                                                const auditRes = await dispatchBackgroundTaskWithFallback(auditPayload);
+                                                const auditText = auditRes?.candidates?.[0]?.content?.parts?.[0]?.text;
+                                                const review = SearchIntelligenceEngine.robustJsonRepair(auditText);
+
+                                                if (review?.status === "ok") {
+                                                    isAligned = true;
+                                                } else if (review?.new_glsl) {
+                                                    searchStatusText.value = `Hiệu chỉnh tương phản quang học lần ${visionLoops}...`;
+                                                    
+                                                    let newGlsl = review.new_glsl.replace(/^```(?:glsl)?\s*/i, '').replace(/```$/i, '').trim();
+                                                    // Đảm bảo không mất hàm ACES
+                                                    fSrc = fSrc.replace(rawGlsl, newGlsl);
+                                                    rawGlsl = newGlsl; // Cập nhật raw để replace lần sau nếu cần
+
+                                                    let newFs = createS(gl.FRAGMENT_SHADER, fSrc);
+                                                    
+                                                    if (gl.getShaderParameter(newFs, gl.COMPILE_STATUS)) {
+                                                        gl.deleteProgram(prog);
+                                                        prog = gl.createProgram();
+                                                        gl.attachShader(prog, vs); gl.attachShader(prog, newFs); gl.linkProgram(prog);
+                                                        gl.useProgram(prog);
+                                                        
+                                                        gl.enableVertexAttribArray(pLoc);
+                                                        gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+                                                        bindTextures(prog);
+                                                        gl.uniform2f(gl.getUniformLocation(prog, "iResolution"), renderW, renderH);
+                                                        
+                                                        gl.drawArrays(gl.TRIANGLES, 0, 6);
+                                                        finalBitmapBase64 = glCanvas.toDataURL('image/jpeg', 0.85).replace(/^data:image\/jpeg;base64,/, '');
                                                     }
                                                 }
-                                            },
-                                            required: ["score", "converged", "critique_missing_parts"]
-                                        };
-
-                                        const auditPayload = {
-                                            systemInstruction: { parts: [{ text: auditInstruction }] },
-                                            contents: [{
-                                                role: 'user',
-                                                parts: [
-                                                    { text: `DANH SÁCH MẢNH ĐÃ LẮP GHÉP:\n${activeLegoBlocks.map(b => b.block_id).join(', ')}\n\nCHẤM ĐIỂM VÀ BỔ SUNG NẾU CHƯA ĐẠT 100 ĐIỂM:` },
-                                                    { inlineData: { mimeType: "image/png", data: base64Clean } }
-                                                ]
-                                            }],
-                                            generationConfig: { temperature: 0.15, responseMimeType: "application/json", responseSchema: auditSchema }
-                                        };
-
-                                        const auditRaw = await infiniteResilientDispatch(auditPayload, "Đang đối soát mảnh ghép...");
-                                        const auditRes = SearchIntelligenceEngine.robustJsonRepair(auditRaw);
-                                        
-                                        score = Number(auditRes?.score) || 0;
-
-                                        if ((auditRes?.converged === true && score >= 100) || score >= 100) {
-                                            converged = true;
-                                        } else {
-                                            if (auditRes?.new_lego_blocks_to_add && auditRes.new_lego_blocks_to_add.length > 0) {
-                                                auditRes.new_lego_blocks_to_add.forEach(newBlock => {
-                                                    if (!activeLegoBlocks.find(b => b.block_id === newBlock.block_id)) {
-                                                        activeLegoBlocks.push(newBlock);
-                                                    }
-                                                });
-                                                activeLegoBlocks.sort((a, b) => a.z_index - b.z_index);
-                                            }
-                                            triggerHaptic('light');
-                                            searchStatusText.value = `Hoàn thiện chi tiết (${score}%)...`;
-                                            await new Promise(r => setTimeout(r, 600));
-
-                                            if (abortController?.signal?.aborted || loop >= 25) converged = true;
+                                            } catch (_) { break; }
                                         }
+
+                                        finalImage = glCanvas.toDataURL('image/png');
+                                        gl.deleteBuffer(qBuf);
+                                        gl.deleteProgram(prog);
+                                    } else {
+                                        // Rất hiếm: thiết bị vô hiệu hóa hoàn toàn WebGL
+                                        finalImage = heightmapCanvas.toDataURL('image/png');
                                     }
 
-                                    compiledMaterialsCache.forEach(mat => mat.dispose());
-                                    quadGeometry.dispose();
-                                    renderer.dispose();
+                                    // =========================================================================
+                                    // BƯỚC 5: XUẤT THÀNH PHẨM (Tinh giản, đẳng cấp doanh nghiệp)
+                                    // =========================================================================
+                                    targetMsg.content = 
+                                        `### ${artTitle}\n` +
+                                        `*${artCaption}*\n\n` +
+                                        `<img src="${finalImage}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />`;
 
-                                    targetMsg.content = `Tác phẩm hoàn thiện theo yêu cầu của bạn.\n\n<img src="${finalOutputPng}" alt="Tác phẩm nghệ thuật" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/20 hover:brightness-110 transition-all cursor-zoom-in" />\n\n*Độ phân giải: ${renderW}x${renderH} | Phương pháp: Lắp ghép Không gian Độc lập (Zero-Fallback) | Phong cách: ${imageConfig.style}*`;
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
                                     scrollToBottom(true);
-                                    notify(`Đã hoàn tất tạo tác phẩm (${score}/100đ)!`);
+                                    notify("Tác phẩm đã hoàn thành.");
 
                                 } catch (err) {
-                                    targetMsg.content = (targetMsg.content || '') + `\n\n*(Không thể hoàn tất tạo ảnh: ${err.message})*`;
+                                    targetMsg.content = `Không thể hoàn thiện hình ảnh lúc này. Vui lòng điều chỉnh lại ý tưởng.\n\n*(Sự cố hệ thống: ${err.message})*`;
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
+                                    notify(`Lỗi: ${err.message}`, true);
                                 } finally {
                                     isGenerating.value = false;
                                     searchStatusText.value = "";
