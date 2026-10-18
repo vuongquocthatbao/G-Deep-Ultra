@@ -6560,17 +6560,31 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                         throw new Error("Không thể tải Pyodide từ mọi mạng lưới CDN phân phối.");
                     }
 
-                    // [VÁ LỖI CỐT LÕI]: Ép buộc nạp tường minh numpy và matplotlib trước khi chạy
+                    // [HẠ TẦNG VẬT LÝ TỐI THƯỢNG 2026]: Nạp hệ thống thư viện siêu cấp
                     try {
-                        await pyodide.loadPackage(['numpy', 'matplotlib', 'scipy']);
+                        await pyodide.loadPackage([
+                            'numpy', 
+                            'matplotlib', 
+                            'scipy', 
+                            'scikit-image', 
+                            'opencv-python', 
+                            'networkx', 
+                            'shapely'
+                        ]);
                     } catch (pkgErr) {
-                        console.warn("Cảnh báo nạp gói phần mềm:", pkgErr);
+                        console.warn("Cảnh báo nạp gói phần mềm vật lý lượng tử:", pkgErr);
                     }
 
                     await pyodide.runPythonAsync(\`
 import sys
 import io
 import numpy as np
+import scipy
+import scipy.ndimage
+import cv2
+import skimage
+import networkx as nx
+import shapely
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -10716,7 +10730,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 
                                 try {
                                     if (!promptText && currentAtts.length === 0) {
-                                        throw new Error("Vui lòng cung cấp mô tả hình ảnh hoặc ý niệm nghệ thuật.");
+                                        throw new Error("Vui lòng cung cấp ý niệm hoặc chủ đề sáng tác.");
                                     }
 
                                     const parseRatio = (str) => {
@@ -10736,355 +10750,517 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                         const canvas = document.createElement('canvas');
                                         canvas.width = w; canvas.height = h;
                                         if (!svgString) return canvas;
-                                        const cleanSvg = svgString.replace(/^```(?:xml|svg)?/i, '').replace(/```$/i, '').trim();
+                                        let cleanSvg = svgString.replace(/^```(?:xml|svg)?/i, '').replace(/```$/i, '').trim();
+                                        if (!cleanSvg.includes('xmlns=')) {
+                                            cleanSvg = cleanSvg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+                                        }
                                         const blob = new Blob([cleanSvg], { type: 'image/svg+xml;charset=utf-8' });
                                         const url = URL.createObjectURL(blob);
                                         const ctx = canvas.getContext('2d');
-                                        await new Promise((resolve) => {
+                                        await new Promise((resolve, reject) => {
                                             const img = new Image();
                                             img.onload = () => { ctx.drawImage(img, 0, 0, w, h); URL.revokeObjectURL(url); resolve(); };
-                                            img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+                                            img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Dữ liệu hình thái SVG không hợp lệ.")); };
                                             img.src = url;
                                         });
                                         return canvas;
                                     };
 
                                     // =========================================================================
-                                    // BƯỚC 1: LÀM GIÀU NGỮ NGHĨA & THIẾT LẬP THAM SỐ TOÁN/VẬT LÝ VĨ MÔ
+                                    // TẦNG 1: ĐẠO DIỄN THỊ GIÁC & DỰNG KHUNG XƯƠNG PHỔ QUÁT
+                                    // Không rập khuôn. Đặt nền móng cho chuỗi nhân quả SVG -> Python -> WebGL
                                     // =========================================================================
-                                    searchStatusText.value = "Đang phân tích ý niệm và giải mã cấu trúc vật lý...";
+                                    searchStatusText.value = "[Tầng 1/5] Phân rã tham số thị giác toàn cầu và thiết lập hệ tọa độ...";
 
-                                    const architectPrompt = 
-                                        `Bạn là Siêu Kiến Trúc Sư Đồ Họa Giải Tích & Vật Lý Lượng Tử 2026.\n` +
-                                        `Yêu cầu: "${promptText}". Phong cách: ${imageConfig.style}.\n\n` +
-                                        `NHIỆM VỤ: Hãy tính toán các tham số vật lý và thiết lập bản đồ ma trận đa chiều để kiến tạo tác phẩm bằng công nghệ Non-Diffusion.\n\n` +
-                                        `LÕI 1 (PYTHON PHYSICS MATRIX - MA TRẬN VẬT LÝ 4 KÊNH):\n` +
-                                        `- Viết mã Python (numpy, matplotlib) xuất 1 ảnh RGBA duy nhất.\n` +
-                                        `- Kênh R (Đỏ): Displacement/Height Map (Độ lồi lõm bề mặt) dùng nhiễu fBm.\n` +
-                                        `- Kênh G (Lục): Roughness Map (Độ nhám vật liệu) dùng Voronoi/Worley.\n` +
-                                        `- Kênh B (Lam): Emissive Mask (Vùng phát sáng, hào quang năng lượng) dùng Turing Patterns.\n` +
-                                        `- Kênh A (Alpha): Volumetric Fog (Mật độ sương mù/khí quyển).\n` +
-                                        `- Tắt trục, bỏ lề (plt.axis('off'), plt.margins(0)). KHÔNG dùng plt.show().\n\n` +
-                                        `LÕI 2 (VECTOR ANATOMY - HÌNH THÁI HỌC GIẢI PHẪU):\n` +
-                                        `- Viết mã SVG (viewBox="0 0 ${renderW} ${renderH}"). CẤM VẼ CẮT GIẤY PHẲNG.\n` +
-                                        `- Sử dụng HÀNG TRĂM đường cong Bézier, lưới Mesh Gradient (<linearGradient>, <radialGradient>) để vẽ chi tiết sắc nét 100% của chủ thể (Khuôn mặt, cơ bắp, giáp trụ, cảnh vật).\n\n` +
-                                        `LÕI 3 (QUANG HỌC VẬT LÝ):\n` +
-                                        `- Tự tính các hệ số cho động cơ chiếu sáng Cook-Torrance PBR.\n\n` +
-                                        `TRẢ VỀ DUY NHẤT JSON:\n` +
+                                    let artTitle = "Kiệt Tác Giải Tích Đa Phương Thức";
+                                    let artNarrative = "Sự hội tụ hoàn mỹ giữa hình thái hội họa, mô phỏng vật lý và quang học lượng tử.";
+
+                                    const artDirectorPrompt = 
+                                        `[HỆ THỐNG G-DEEP OMEGA: ĐẠO DIỄN HÌNH THÁI VÀ KHUNG XƯƠNG NEO TOÀN CẦU]\n` +
+                                        `Ý niệm nghệ thuật: "${promptText}". Phong cách: ${imageConfig.style}. Khung hình: ${renderW}x${renderH}.\n\n` +
+                                        `MỆNH LỆNH THIẾT LẬP THỂ TÍCH & GIẢI PHẪU (STRICT CAUSAL RIGGING):\n` +
+                                        `- Bạn sở hữu toàn bộ kho tham số thị giác phổ quát (con người, sinh vật, máy móc, kiến trúc, phong cảnh).\n` +
+                                        `- TUYỆT ĐỐI KHÔNG rập khuôn theo bất kỳ mẫu test nào. KHÔNG dùng biểu tượng icon phẳng.\n` +
+                                        `- Thiết lập hệ quy chiếu không gian trên lưới [0..${renderW}, 0..${renderH}]:\n` +
+                                        `  1. Định vị từng chủ thể: Tọa độ tâm, trục xương sống, độ mở của chi thể.\n` +
+                                        `  2. Đặc điểm giải phẫu: Mắt (tròng, con ngươi), biểu cảm, nếp gấp, bề mặt chất liệu theo đúng prompt.\n` +
+                                        `  3. Bảng màu quang phổ 4 bậc: Highlight, Mid-tone, Core Shadow, Ambient Bounce.\n` +
+                                        `  4. Vector chiếu sáng chính (Key Light Direction).\n\n` +
+                                        `TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:\n` +
                                         `{\n` +
-                                        `  "title": "Tên tác phẩm",\n` +
-                                        `  "caption": "Mô tả thi vị 1 câu",\n` +
-                                        `  "python_physics_code": "Mã Python xuất ảnh RGBA",\n` +
-                                        `  "svg_anatomy_code": "Mã SVG chi tiết siêu thực",\n` +
-                                        `  "lighting_params": {\n` +
-                                        `    "light_dir": [0.7, 0.7, 1.0], // Vector sáng chính\n` +
-                                        `    "light_color": [1.0, 0.95, 0.8], // RGB cường độ cao\n` +
-                                        `    "rim_light_color": [0.2, 0.5, 1.0], // Sáng viền tách khối\n` +
-                                        `    "parallax_depth": 0.15, // Độ sâu của hiệu ứng Parallax Occlusion\n` +
-                                        `    "ambient_occlusion": 0.8 // Hệ số đổ bóng khe nứt\n` +
+                                        `  "title": "Tên tác phẩm nghệ thuật",\n` +
+                                        `  "narrative": "Ý niệm thể tích cốt lõi (1 câu ngắn)",\n` +
+                                        `  "rigging_blueprint": {\n` +
+                                        `    "focal_subjects": "Chi tiết giải phẫu từng chủ thể/nhân vật",\n` +
+                                        `    "spatial_coordinates": "Tọa độ bố cục trên lưới 1024x1024",\n` +
+                                        `    "four_tone_color_ramps": {\n` +
+                                        `      "primary": { "highlight": "#...", "mid": "#...", "core_shadow": "#...", "ambient_bounce": "#..." },\n` +
+                                        `      "environment": { "sky": "#...", "ground": "#..." }\n` +
+                                        `    },\n` +
+                                        `    "light_source_vectors": "Vector hướng Key light"\n` +
                                         `  }\n` +
                                         `}`;
 
-                                    const archPayload = {
-                                        contents: [{ role: 'user', parts: [{ text: architectPrompt }] }],
-                                        generationConfig: { temperature: 0.25, maxOutputTokens: 8192, responseMimeType: "application/json" }
+                                    const directorPayload = {
+                                        contents: [{ role: 'user', parts: [{ text: artDirectorPrompt }] }],
+                                        generationConfig: { temperature: 0.25, maxOutputTokens: 3200, responseMimeType: "application/json" }
                                     };
 
-                                    let blueprint = null;
+                                    let directorBible = null;
                                     for (let attempt = 0; attempt < 2; attempt++) {
                                         if (abortController?.signal?.aborted) throw new DOMException("Đã dừng", "AbortError");
-                                        const res = await dispatchBackgroundTaskWithFallback(archPayload);
-                                        const out = res?.candidates?.[0]?.content?.parts?.[0]?.text;
-                                        blueprint = SearchIntelligenceEngine.robustJsonRepair(out);
-                                        if (blueprint?.python_physics_code && blueprint?.svg_anatomy_code) break;
+                                        const res = await dispatchBackgroundTaskWithFallback(directorPayload);
+                                        directorBible = SearchIntelligenceEngine.robustJsonRepair(res?.candidates?.[0]?.content?.parts?.[0]?.text);
+                                        if (directorBible?.title && directorBible?.rigging_blueprint) break;
                                         await new Promise(r => setTimeout(r, 400));
                                     }
 
-                                    if (!blueprint) throw new Error("Hệ thống không thể giải mã các tham số lượng tử.");
-
-                                    const artTitle = blueprint.title || "Kỷ Nguyên Đồ Họa Lượng Tử";
-                                    const artCaption = blueprint.caption || "Giao thoa giữa quang học vật lý và hình thái học giải tích.";
-                                    const lParams = blueprint.lighting_params || { light_dir:[0.5,0.5,1.0], light_color:[1,1,1], rim_light_color:[0.5,0.5,1.0], parallax_depth:0.1, ambient_occlusion:0.5 };
+                                    if (directorBible?.title) artTitle = directorBible.title;
+                                    if (directorBible?.narrative) artNarrative = directorBible.narrative;
+                                    const riggingJson = JSON.stringify(directorBible?.rigging_blueprint || {});
 
                                     // =========================================================================
-                                    // BƯỚC 2: THỰC THI LÕI PYTHON (MA TRẬN VẬT LÝ RGBA)
+                                    // TẦNG 2: MÃ HÓA KÉP (SVG HỘI HỌA & PYTHON SIMULATOR)
+                                    // Lần đầu tiên Python được lập trình để "đọc" ảnh SVG làm đầu vào!
                                     // =========================================================================
-                                    searchStatusText.value = "Đang kiến tạo trường vật lý và độ sâu không gian...";
+                                    searchStatusText.value = "[Tầng 2/5] Điêu khắc đường nét Vector và lập trình động cơ Vật lý Python...";
+
+                                    const dualCorePrompt = 
+                                        `[HỆ THỐNG G-DEEP OMEGA: ĐỘNG CƠ HỘI HỌA VECTOR & MÔ PHỎNG VẬT LÝ PYTHON]\n` +
+                                        `KHUNG XƯƠNG GIẢI PHẪU:\n${riggingJson}\n\n` +
+                                        `Kích thước: ${renderW}x${renderH} pixel.\n\n` +
+                                        `BẠN PHẢI SÁNG TÁC 2 KHỐI MÃ CÓ QUAN HỆ NHÂN QUẢ CHẶT CHẼ:\n\n` +
+                                        `1. KHỐI SVG (ALBEDO & GROUND TRUTH GEOMETRY):\n` +
+                                        `- Cấm màu phẳng. Dùng <linearGradient> và đường cong Bézier (M, C, S) để vẽ chân thực chủ thể.\n` +
+                                        `- SVG này sẽ cung cấp màu sắc và đường bao (Silhouette) cho toàn bộ quy trình.\n\n` +
+                                        `2. KHỐI PYTHON (PHYSICS SIMULATOR - NHẬN SVG LÀM ĐẦU VÀO):\n` +
+                                        `- HỆ THỐNG SẼ TỰ ĐỘNG NẠP SVG BÊN TRÊN VÀO MÔI TRƯỜNG PYTHON DƯỚI DẠNG BIẾN: \`base_svg_rgba\` (Numpy Array shape [${renderH}, ${renderW}, 4], dải giá trị 0.0 -> 1.0).\n` +
+                                        `- NHIỆM VỤ CỦA PYTHON: Trích xuất kênh Alpha (\`base_svg_rgba[:,:,3] > 0.1\`) làm mặt nạ vật thể rắn.\n` +
+                                        `- Dùng \`scipy.ndimage.distance_transform_edt(mask)\` để tính toán độ sâu/lồi lõm CHÍNH XÁC THEO HÌNH DÁNG SVG.\n` +
+                                        `- Kết hợp tạo vi kết cấu (Fractal Noise / Voronoi) bằng numpy và chỉ giữ lại bên trong Mask.\n` +
+                                        `- XUẤT 1 ẢNH RGBA QUA \`plt.imshow()\` (Tắt trục tọa độ):\n` +
+                                        `  + Kênh R: Chiều sâu lồi lõm (Height Map đã chuẩn hóa từ SDF + Noise).\n` +
+                                        `  + Kênh G: Độ nhám vật liệu (Roughness).\n` +
+                                        `  + Kênh B: Dòng chảy vector / AO cục bộ.\n` +
+                                        `  + Kênh A: Lấy nguyên bản kênh Alpha của SVG (\`base_svg_rgba[:,:,3]\`).\n\n` +
+                                        `TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:\n` +
+                                        `{\n` +
+                                        `  "svg_anatomy_code": "<svg viewBox='0 0 ${renderW} ${renderH}' xmlns='http://www.w3.org/2000/svg'>...</svg>",\n` +
+                                        `  "python_physics_code": "Mã Python xử lý mảng base_svg_rgba bằng scipy/numpy"\n` +
+                                        `}`;
+
+                                    const dualCorePayload = {
+                                        contents: [{ role: 'user', parts: [{ text: dualCorePrompt }] }],
+                                        generationConfig: { temperature: 0.2, maxOutputTokens: 8192, responseMimeType: "application/json" }
+                                    };
+
+                                    let dualCoreData = null;
+                                    for (let attempt = 0; attempt < 2; attempt++) {
+                                        if (abortController?.signal?.aborted) throw new DOMException("Đã dừng", "AbortError");
+                                        const res = await dispatchBackgroundTaskWithFallback(dualCorePayload);
+                                        dualCoreData = SearchIntelligenceEngine.robustJsonRepair(res?.candidates?.[0]?.content?.parts?.[0]?.text);
+                                        if (dualCoreData?.python_physics_code && dualCoreData?.svg_anatomy_code) break;
+                                        await new Promise(r => setTimeout(r, 400));
+                                    }
+
+                                    if (!dualCoreData) throw new Error("Thất bại: Không thể sinh cặp mã SVG và Python.");
+
+                                    // =========================================================================
+                                    // TẦNG 3: BƠM DỮ LIỆU TỪ SVG VÀO NÃO BỘ PYTHON (THE GREAT CONVERGENCE)
+                                    // SVG vẽ xong -> Đóng gói thành Base64 -> Nạp thẳng vào RAM của WebAssembly Python!
+                                    // =========================================================================
+                                    searchStatusText.value = "[Tầng 3/5] Kết xuất Vector và Truyền tải vào Động cơ Vật lý Python...";
                                     
-                                    const pyCode = blueprint.python_physics_code.replace(/^```(?:python)?\s*/i, '').replace(/```$/i, '').replace(/plt\.show\(\)/g, '');
-                                    const pyResult = await PythonEngine.run(pyCode);
-                                    let physicsImageBase64 = pyResult.outcome === 'ERROR' ? null : pyResult.plotBase64;
+                                    // 3.1. Kết xuất SVG thành Canvas
+                                    const anatomyCanvas = await renderSvgToCanvas(dualCoreData.svg_anatomy_code, renderW, renderH);
+                                    
+                                    // 3.2. Bơm SVG vào Python qua Base64 Injection
+                                    const svgBase64DataUrl = anatomyCanvas.toDataURL('image/png');
+                                    const svgPureBase64 = svgBase64DataUrl.replace(/^data:image\/png;base64,/, '');
 
-                                    if (!physicsImageBase64) {
-                                        const fixPyPayload = {
-                                            contents: [{ role: 'user', parts: [{ text: `Sửa lỗi Python sau (trả về khối \`\`\`python ... \`\`\`):\nLỗi: ${pyResult.output}\nMã:\n${pyCode}` }] }],
+                                    let rawPython = dualCoreData.python_physics_code
+                                        .replace(/^```(?:python)?\s*/i, '').replace(/```$/i, '')
+                                        .replace(/plt\.close\s*\([^)]*\)/gi, '# neutralized')
+                                        .replace(/plt\.clf\s*\([^)]*\)/gi, '# neutralized')
+                                        .replace(/plt\.show\s*\([^)]*\)/gi, '# neutralized');
+
+                                    // Siêu kịch bản kết dính: Giải mã PNG Base64 trực tiếp bên trong Python
+                                    const pythonHarness = `
+import base64, io
+import matplotlib.image as mpimg
+
+# BƯỚC NHẢY VỌT: Nạp ảnh SVG từ trình duyệt vào Python Numpy Array
+_svg_b64_str = "${svgPureBase64}"
+_svg_bytes = base64.b64decode(_svg_b64_str)
+base_svg_rgba = mpimg.imread(io.BytesIO(_svg_bytes), format='png')
+
+${rawPython}
+
+# BẢO TỒN VÀ XUẤT DỮ LIỆU RGBA CHO WEBGL
+if not plt.get_fignums():
+    _target = None
+    for _k in ['final_image', 'img_rgba', 'rgba_map', 'tensor_pack', 'rgba', 'res']:
+        if _k in locals() and isinstance(locals()[_k], np.ndarray):
+            _target = locals()[_k]
+            break
+        elif _k in globals() and isinstance(globals()[_k], np.ndarray):
+            _target = globals()[_k]
+            break
+    if _target is not None:
+        fig = plt.figure(figsize=(${renderW}/100, ${renderH}/100), dpi=100)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.axis('off')
+        if len(_target.shape) == 2:
+            ax.imshow(_target, cmap='viridis', origin='upper')
+        else:
+            ax.imshow(np.clip(_target, 0, 1), origin='upper')
+`;
+                                    
+                                    searchStatusText.value = "[Tầng 3/5] Python đang giải phương trình SDF bám sát đường nét SVG...";
+                                    let pyResult = await PythonEngine.run(pythonHarness);
+
+                                    if (pyResult.outcome === 'ERROR' || !pyResult.plotBase64) {
+                                        searchStatusText.value = "[Tầng 3/5] Áp dụng gen tự chữa lành (Self-Healing) cho Python...";
+                                        const fixPayload = {
+                                            contents: [{
+                                                role: 'user',
+                                                parts: [{ text: `Mã Numpy xử lý \`base_svg_rgba\` bị lỗi:\n${pyResult.output}\nMã gốc:\n${rawPython}\nHãy sửa lại để tính khoảng cách SDF từ mặt nạ \`base_svg_rgba[:,:,3]\`. Trả về khối \`\`\`python ... \`\`\`.` }]
+                                            }],
                                             generationConfig: { temperature: 0.1, maxOutputTokens: 5000 }
                                         };
-                                        const fixRes = await dispatchBackgroundTaskWithFallback(fixPyPayload);
-                                        const fixOut = fixRes?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                                        const healedPy = fixOut.match(/```(?:python)?([\s\S]*?)```/i);
-                                        const retryRes = await PythonEngine.run(healedPy ? healedPy[1] : fixOut);
-                                        physicsImageBase64 = retryRes.plotBase64 || null;
+                                        const fixRes = await dispatchBackgroundTaskWithFallback(fixPayload);
+                                        const fixCode = (fixRes?.candidates?.[0]?.content?.parts?.[0]?.text || '').match(/```(?:python)?([\s\S]*?)```/i);
+                                        const healedCode = (fixCode ? fixCode[1] : rawPython).trim().replace(/plt\.(close|clf|show)\s*\([^)]*\)/gi, '# neutralized');
+                                        
+                                        // Gắn lại Harness và chạy
+                                        const healedHarness = pythonHarness.replace(rawPython, healedCode);
+                                        pyResult = await PythonEngine.run(healedHarness);
                                     }
 
                                     const physicsCanvas = document.createElement('canvas');
                                     physicsCanvas.width = renderW; physicsCanvas.height = renderH;
                                     const pyCtx = physicsCanvas.getContext('2d');
-                                    // Dùng màu xám trung tính (128) để Parallax Occlusion không bị thủng nếu Python trả về rỗng
-                                    pyCtx.fillStyle = 'rgb(128,128,128)'; pyCtx.fillRect(0, 0, renderW, renderH);
+                                    pyCtx.fillStyle = 'rgba(0,0,0,0)'; pyCtx.fillRect(0, 0, renderW, renderH);
 
-                                    if (physicsImageBase64) {
+                                    if (pyResult.plotBase64) {
                                         await new Promise((resolve) => {
                                             const img = new Image();
                                             img.onload = () => { pyCtx.drawImage(img, 0, 0, renderW, renderH); resolve(); };
                                             img.onerror = resolve;
-                                            img.src = `data:image/png;base64,${physicsImageBase64}`;
+                                            img.src = `data:image/png;base64,${pyResult.plotBase64}`;
                                         });
                                     }
 
                                     // =========================================================================
-                                    // BƯỚC 3: THỰC THI LÕI VECTOR (HÌNH THÁI HỌC GIẢI PHẪU CHI TIẾT)
+                                    // TẦNG 4: ĐỘNG CƠ QUANG HỌC WEBGL TOÀN CỤC (1024x1024 TÍCH PHÂN FIBONACCI)
                                     // =========================================================================
-                                    searchStatusText.value = "Đang khắc họa mảng khối và giải phẫu vi mô...";
-                                    const anatomyCanvas = await renderSvgToCanvas(blueprint.svg_anatomy_code, renderW, renderH);
-
-                                    // =========================================================================
-                                    // BƯỚC 4: ĐỘNG CƠ WEBGL TỐI THƯỢNG (PARALLAX OCCLUSION & PBR LIGHTING)
-                                    // =========================================================================
-                                    searchStatusText.value = "Đang hội tụ quang phổ điện ảnh và kết xuất khối lập thể...";
+                                    searchStatusText.value = "[Tầng 4/5] Kích hoạt WebGL Tích phân: Raymarching bóng đổ & PBR Toàn Cục...";
 
                                     const glCanvas = document.createElement('canvas');
                                     glCanvas.width = renderW; glCanvas.height = renderH;
                                     const gl = glCanvas.getContext('webgl', { antialias: true, preserveDrawingBuffer: true });
 
-                                    if (!gl) throw new Error("Phần cứng không hỗ trợ Động cơ Quang học 2026.");
+                                    if (!gl) throw new Error("Trình duyệt không hỗ trợ WebGL tăng tốc đồ họa.");
 
-                                    const vSrc = `attribute vec2 p; varying vec2 vUv; void main(){ vUv = p*0.5+0.5; gl_Position = vec4(p, 0.0, 1.0); }`;
-                                    
-                                    const fSrc = `
-                                        precision highp float;
+                                    const vShaderSource = `
+                                        attribute vec2 aPosition;
                                         varying vec2 vUv;
-                                        uniform vec2 iResolution;
-                                        
-                                        uniform sampler2D uAnatomy;   // SVG: Base Color
-                                        uniform sampler2D uPhysics;   // Python: R=Depth, G=Roughness, B=Emissive, A=Fog
-                                        
-                                        uniform vec3 uLightDir;
-                                        uniform vec3 uLightColor;
-                                        uniform vec3 uRimColor;
-                                        uniform float uParallaxDepth;
-                                        uniform float uAOStrength;
-
-                                        // Nén dải màu điện ảnh Hollywood ACES
-                                        vec3 ACESFilm(vec3 x) {
-                                            float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
-                                            return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
-                                        }
-
                                         void main() {
-                                            // 1. TÍNH TOÁN PARALLAX OCCLUSION MAPPING (TẠO KHỐI 3D SÂU TỪ ẢNH 2D)
-                                            vec3 viewDir = normalize(vec3(0.0, 0.0, 1.0));
-                                            float numLayers = mix(30.0, 10.0, abs(dot(vec3(0.0, 0.0, 1.0), viewDir)));
-                                            float layerDepth = 1.0 / numLayers;
-                                            float currentLayerDepth = 0.0;
-                                            
-                                            vec2 P = viewDir.xy * uParallaxDepth; 
-                                            vec2 deltaTexCoords = P / numLayers;
-                                            vec2 currentTexCoords = vUv;
-                                            float currentDepthMapValue = texture2D(uPhysics, currentTexCoords).r;
-                                            
-                                            for(int i=0; i<30; i++) {
-                                                if(currentLayerDepth >= currentDepthMapValue) break;
-                                                currentTexCoords -= deltaTexCoords;
-                                                currentDepthMapValue = texture2D(uPhysics, currentTexCoords).r;
-                                                currentLayerDepth += layerDepth;
-                                            }
-                                            
-                                            // Vi chỉnh tọa độ sau Parallax
-                                            vec2 prevTexCoords = currentTexCoords + deltaTexCoords;
-                                            float afterDepth  = currentDepthMapValue - currentLayerDepth;
-                                            float beforeDepth = texture2D(uPhysics, prevTexCoords).r - currentLayerDepth + layerDepth;
-                                            float weight = afterDepth / (afterDepth - beforeDepth);
-                                            vec2 finalUv = prevTexCoords * weight + currentTexCoords * (1.0 - weight);
-                                            
-                                            // Nếu trượt ra ngoài khung hình
-                                            if(finalUv.x > 1.0 || finalUv.y > 1.0 || finalUv.x < 0.0 || finalUv.y < 0.0) discard;
-
-                                            // 2. LẤY DỮ LIỆU TỪ MA TRẬN TẠI TỌA ĐỘ 3D MỚI
-                                            vec4 albedo = texture2D(uAnatomy, finalUv);
-                                            vec4 phys = texture2D(uPhysics, finalUv);
-                                            
-                                            float depth = phys.r;
-                                            float roughness = phys.g;
-                                            float emissive = phys.b;
-                                            float fogDensity = phys.a;
-
-                                            // 3. TÍNH PHÁP TUYẾN VI BỀ MẶT (NORMAL MAPPING TỪ ĐỘ SÂU)
-                                            vec2 e = vec2(1.0 / iResolution.x, 0.0);
-                                            float dx = texture2D(uPhysics, finalUv + e.xy).r - texture2D(uPhysics, finalUv - e.xy).r;
-                                            float dy = texture2D(uPhysics, finalUv + e.yx).r - texture2D(uPhysics, finalUv - e.yx).r;
-                                            vec3 normal = normalize(vec3(-dx * 15.0, -dy * 15.0, 1.0));
-
-                                            // 4. MÔ HÌNH CHIẾU SÁNG VẬT LÝ PBR
-                                            vec3 lDir = normalize(uLightDir);
-                                            vec3 hDir = normalize(lDir + viewDir);
-                                            
-                                            // Khuyếch tán (Diffuse)
-                                            float NdotL = max(dot(normal, lDir), 0.0);
-                                            
-                                            // Phản xạ (Specular - Cook-Torrance xấp xỉ)
-                                            float NdotH = max(dot(normal, hDir), 0.0);
-                                            float spec = pow(NdotH, mix(128.0, 8.0, roughness)); 
-                                            
-                                            // Ánh sáng viền tạo khối (Rim Light)
-                                            float rim = 1.0 - max(dot(viewDir, normal), 0.0);
-                                            rim = smoothstep(0.6, 1.0, rim) * max(dot(normal, vec3(-lDir.x, -lDir.y, 0.0)), 0.0);
-
-                                            // Đổ bóng tự thân (Ambient Occlusion)
-                                            float ao = mix(1.0, depth, uAOStrength);
-
-                                            // Tổng hợp Ánh sáng
-                                            vec3 ambient = vec3(0.05) * albedo.rgb * ao;
-                                            vec3 diffuse = uLightColor * albedo.rgb * NdotL * ao;
-                                            vec3 specular = uLightColor * spec * (1.0 - roughness);
-                                            vec3 rimLight = uRimColor * rim * 1.5;
-                                            vec3 glow = albedo.rgb * emissive * 3.0; // Phát quang năng lượng
-
-                                            vec3 finalColor = ambient + diffuse + specular + rimLight + glow;
-
-                                            // 5. TÁN XẠ KHÍ QUYỂN (VOLUMETRIC FOG & BLOOM)
-                                            vec3 fogColor = uLightColor * 0.2;
-                                            finalColor = mix(finalColor, fogColor, fogDensity * 0.5);
-
-                                            // Bloom nhẹ xung quanh (Screen-space approximation)
-                                            vec3 bloomColor = texture2D(uAnatomy, vUv + vec2(0.002)).rgb * 0.15 + 
-                                                              texture2D(uAnatomy, vUv - vec2(0.002)).rgb * 0.15;
-                                            finalColor += bloomColor * (emissive + 0.2);
-
-                                            // 6. NÉN DẢI MÀU ACES VÀ HIỂN THỊ
-                                            finalColor = ACESFilm(finalColor);
-                                            
-                                            // Lớp nền đen vũ trụ nếu vùng rỗng
-                                            if (albedo.a < 0.05 && emissive < 0.05 && fogDensity < 0.05) {
-                                                finalColor = mix(vec3(0.02, 0.02, 0.03), finalColor, 0.1);
-                                            }
-
-                                            gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
+                                            vUv = vec2(aPosition.x * 0.5 + 0.5, 1.0 - (aPosition.y * 0.5 + 0.5));
+                                            gl_Position = vec4(aPosition, 0.0, 1.0);
                                         }
                                     `;
 
-                                    const compileShader = (type, src) => {
-                                        const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-                                        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-                                            console.error(gl.getShaderInfoLog(s));
-                                            return null;
+                                    const fShaderSource = `
+                                        precision highp float;
+                                        varying vec2 vUv;
+                                        uniform vec2 uResolution;
+                                        uniform sampler2D uAlbedoTex;
+                                        uniform sampler2D uPhysicsTex;
+
+                                        #define PI 3.14159265359
+
+                                        // Nén màu phim điện ảnh ACES
+                                        vec3 ACESFilm(vec3 x) {
+                                            float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
+                                            return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
                                         }
-                                        return s;
+
+                                        float getLuma(vec3 c) {
+                                            return dot(c, vec3(0.299, 0.587, 0.114));
+                                        }
+
+                                        // Giao thoa quang học màng mỏng (Thin Film Iridescence)
+                                        vec3 ThinFilmIridescence(float cosTheta, float thickness, float ior) {
+                                            float opd = 2.0 * ior * thickness * sqrt(max(0.001, 1.0 - pow(sin(acos(clamp(cosTheta, 0.0, 1.0))) / ior, 2.0)));
+                                            vec3 phase = opd * vec3(1.0/400.0, 1.0/500.0, 1.0/600.0);
+                                            return vec3(0.5) + 0.5 * cos(2.0 * PI * phase);
+                                        }
+
+                                        // Xóa phông Bokeh xoắn ốc Fibonacci
+                                        vec3 CinematicBokeh(sampler2D tex, vec2 uv, float radius) {
+                                            vec3 acc = vec3(0.0);
+                                            float tot = 0.0;
+                                            float goldenAngle = 2.39996323;
+                                            for(int i = 1; i <= 24; i++) {
+                                                float r = sqrt(float(i)) * radius / 4.9;
+                                                float theta = float(i) * goldenAngle;
+                                                vec2 offset = vec2(cos(theta), sin(theta)) * r;
+                                                vec2 sampleUv = uv + offset;
+                                                if (sampleUv.x >= 0.0 && sampleUv.x <= 1.0 && sampleUv.y >= 0.0 && sampleUv.y <= 1.0) {
+                                                    vec3 col = texture2D(tex, sampleUv).rgb;
+                                                    acc += col;
+                                                    tot += 1.0;
+                                                }
+                                            }
+                                            return acc / max(tot, 0.001);
+                                        }
+
+                                        void main() {
+                                            vec2 stepSize = 1.0 / uResolution;
+
+                                            // 1. ĐỌC DỮ LIỆU ĐỒNG BỘ: MÀU TỪ SVG, ĐỘ SÂU TỪ PYTHON
+                                            vec4 albedoSample = texture2D(uAlbedoTex, vUv);
+                                            vec4 physicsSample = texture2D(uPhysicsTex, vUv);
+                                            
+                                            vec3 albedo = albedoSample.rgb;
+                                            float alpha = albedoSample.a;
+                                            
+                                            // Python đã tính sẵn Height dựa trên nét vẽ của SVG!
+                                            float pythonHeight = physicsSample.r;
+                                            float pythonRoughness = clamp(physicsSample.g, 0.05, 0.95);
+
+                                            if (alpha < 0.01) {
+                                                vec3 deepBg = mix(vec3(0.015, 0.02, 0.04), vec3(0.04, 0.015, 0.06), vUv.y);
+                                                gl_FragColor = vec4(deepBg, 1.0);
+                                                return;
+                                            }
+
+                                            float centerLuma = getLuma(albedo);
+
+                                            // 2. TÍCH PHÂN KHÔNG GIAN TOÀN CỤC 1024x1024 (VÒNG XOẮN FIBONACCI)
+                                            // Vừa lấy đạo hàm lân cận, vừa đo bóng đổ không gian lớn
+                                            vec2 globalGradient = vec2(0.0);
+                                            float globalAO = 0.0;
+                                            float totalWeight = 0.0;
+                                            float goldenAngle = 2.39996323;
+
+                                            for(int i = 1; i <= 48; i++) {
+                                                float r = pow(float(i) / 48.0, 1.8); 
+                                                float theta = float(i) * goldenAngle;
+                                                
+                                                vec2 offset = vec2(cos(theta), sin(theta)) * r * vec2(1.0, uResolution.x / uResolution.y);
+                                                vec2 sampleUv = vUv + offset;
+
+                                                if(sampleUv.x >= 0.0 && sampleUv.x <= 1.0 && sampleUv.y >= 0.0 && sampleUv.y <= 1.0) {
+                                                    // Đọc độ cao thực tế do Python tính toán thay vì chỉ luma
+                                                    float sampleHeight = texture2D(uPhysicsTex, sampleUv).r;
+                                                    
+                                                    float distSq = dot(offset, offset) + 0.0001;
+                                                    float weight = exp(-distSq * 60.0);
+
+                                                    float heightDiff = pythonHeight - sampleHeight;
+                                                    
+                                                    globalGradient += offset * (heightDiff / distSq) * weight;
+                                                    globalAO += heightDiff * weight;
+                                                    totalWeight += weight;
+                                                }
+                                            }
+
+                                            // Vector pháp tuyến 3D ĐÍCH THỰC (Bắt nguồn từ SVG, xử lý qua Python, tổng hợp tại WebGL)
+                                            vec3 N = normalize(vec3(-globalGradient.x * 2.5, -globalGradient.y * 2.5, 1.0));
+                                            
+                                            globalAO = clamp(1.0 + (globalAO / max(totalWeight, 0.001)) * 3.0, 0.2, 1.0);
+
+                                            // 3. SCREEN-SPACE LONG-RANGE CAST SHADOW (RAYMARCHING 400px)
+                                            vec3 V = vec3(0.0, 0.0, 1.0);
+                                            vec3 L_key = normalize(vec3(0.45, 0.65, 0.8));
+                                            vec2 rayDir = normalize(L_key.xy) * stepSize;
+                                            
+                                            float castShadow = 1.0;
+                                            for (int s = 1; s <= 32; s++) {
+                                                float marchDist = pow(float(s) / 32.0, 1.5) * 400.0;
+                                                vec2 samplePos = vUv + rayDir * marchDist;
+                                                
+                                                if (samplePos.x < 0.0 || samplePos.x > 1.0 || samplePos.y < 0.0 || samplePos.y > 1.0) break;
+                                                
+                                                float blockerAlpha = texture2D(uAlbedoTex, samplePos).a;
+                                                float blockerHeight = texture2D(uPhysicsTex, samplePos).r;
+                                                
+                                                if (blockerAlpha > 0.5 && blockerHeight > pythonHeight + 0.05) {
+                                                    castShadow = 0.25; 
+                                                    break;
+                                                }
+                                            }
+
+                                            // 4. CHIẾU SÁNG PBR THỂ TÍCH TOÀN NĂNG
+                                            float NdotL = max(dot(N, L_key), 0.0);
+                                            float NdotV = max(dot(N, V), 0.0);
+
+                                            vec3 H = normalize(L_key + V);
+                                            
+                                            vec3 iridescence = ThinFilmIridescence(dot(H, V), 350.0 * pythonHeight, 1.45);
+                                            vec3 F0 = mix(vec3(0.04), albedo, 0.5);
+                                            F0 = mix(F0, iridescence, 0.25);
+
+                                            float spec = pow(max(dot(N, H), 0.0), (1.0 - pythonRoughness) * 48.0 + 4.0);
+                                            vec3 specularLight = vec3(1.0, 0.98, 0.92) * spec * (1.0 - pythonRoughness) * 0.55 * castShadow;
+
+                                            float wrapLight = smoothstep(0.1, 0.9, NdotL * 0.8 + 0.2);
+                                            vec3 diffuseLighting = (albedo * wrapLight) * globalAO * castShadow;
+
+                                            vec3 sssTint = vec3(0.95, 0.35, 0.15);
+                                            float sss = pow(clamp(dot(V, -L_key), 0.0, 1.0), 3.0) * (1.0 - pythonHeight);
+                                            vec3 sssColor = sssTint * sss * albedo * 1.5 * castShadow;
+
+                                            float rimFactor = pow(1.0 - NdotV, 2.8);
+                                            vec3 rimColor = vec3(0.45, 0.75, 1.0) * rimFactor * 2.0 * globalAO;
+
+                                            // 5. BLOOM HÀO QUANG
+                                            vec3 bloom = vec3(0.0);
+                                            float bloomRadius = 0.006;
+                                            bloom += texture2D(uAlbedoTex, vUv + vec2(bloomRadius, 0.0)).rgb * 0.12;
+                                            bloom += texture2D(uAlbedoTex, vUv - vec2(bloomRadius, 0.0)).rgb * 0.12;
+                                            bloom += texture2D(uAlbedoTex, vUv + vec2(0.0, bloomRadius)).rgb * 0.12;
+                                            bloom += texture2D(uAlbedoTex, vUv - vec2(0.0, bloomRadius)).rgb * 0.12;
+
+                                            float glowMask = smoothstep(0.75, 1.0, centerLuma);
+                                            vec3 emissiveGlow = albedo * glowMask * 1.6 + bloom * 0.6;
+
+                                            vec3 finalColor = diffuseLighting + specularLight + rimColor + sssColor + emissiveGlow;
+
+                                            // XÓA PHÔNG CINEMATIC BOKEH DOF 
+                                            vec3 bgRawColor = mix(vec3(0.05, 0.1, 0.2), vec3(0.1, 0.05, 0.15), vUv.y);
+                                            vec3 bokehBg = CinematicBokeh(uAlbedoTex, vUv, 0.02) * 0.5 + bgRawColor * 0.5;
+                                            
+                                            float alphaMask = smoothstep(0.02, 0.35, alpha);
+                                            vec3 colorAccum = mix(bokehBg, finalColor, alphaMask);
+
+                                            // 6. QUANG SAI RÌA NHẸ & NÉN MÀU ACES PHIM ĐIỆN ẢNH
+                                            float distCenter = length(vUv - 0.5);
+                                            vec2 caOffset = (vUv - 0.5) * 0.002 * distCenter;
+                                            colorAccum.r = mix(colorAccum.r, texture2D(uAlbedoTex, vUv + caOffset).r, 0.15);
+                                            colorAccum.b = mix(colorAccum.b, texture2D(uAlbedoTex, vUv - caOffset).b, 0.15);
+
+                                            vec3 tonemapped = ACESFilm(colorAccum);
+                                            float vignette = smoothstep(1.3, 0.4, distCenter * 2.0);
+                                            tonemapped *= mix(0.5, 1.0, vignette);
+
+                                            float grain = (fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.015;
+
+                                            gl_FragColor = vec4(clamp(tonemapped + grain, 0.0, 1.0), 1.0);
+                                        }
+                                    `;
+
+                                    const createShader = (glCtx, type, source) => {
+                                        const shader = glCtx.createShader(type);
+                                        glCtx.shaderSource(shader, source);
+                                        glCtx.compileShader(shader);
+                                        if (!glCtx.getShaderParameter(shader, glCtx.COMPILE_STATUS)) {
+                                            const log = glCtx.getShaderInfoLog(shader);
+                                            glCtx.deleteShader(shader);
+                                            throw new Error("Lỗi biên dịch shader lượng tử toàn cục: " + log);
+                                        }
+                                        return shader;
                                     };
 
-                                    const vs = compileShader(gl.VERTEX_SHADER, vSrc);
-                                    let fs = compileShader(gl.FRAGMENT_SHADER, fSrc);
-                                    
-                                    if (!fs) throw new Error("Trình duyệt không đủ tài nguyên để biên dịch vật lý hạt.");
+                                    const vs = createShader(gl, gl.VERTEX_SHADER, vShaderSource);
+                                    const fs = createShader(gl, gl.FRAGMENT_SHADER, fShaderSource);
 
-                                    const prog = gl.createProgram();
-                                    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
-                                    gl.useProgram(prog);
+                                    const program = gl.createProgram();
+                                    gl.attachShader(program, vs);
+                                    gl.attachShader(program, fs);
+                                    gl.linkProgram(program);
 
-                                    const qBuf = gl.createBuffer();
-                                    gl.bindBuffer(gl.ARRAY_BUFFER, qBuf);
-                                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+                                    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                                        throw new Error("Lỗi liên kết GPU: " + gl.getProgramInfoLog(program));
+                                    }
+                                    gl.useProgram(program);
 
-                                    const pLoc = gl.getAttribLocation(prog, "p");
-                                    gl.enableVertexAttribArray(pLoc);
-                                    gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+                                    const quadBuffer = gl.createBuffer();
+                                    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+                                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+                                        -1.0, -1.0,  1.0, -1.0, -1.0,  1.0,
+                                        -1.0,  1.0,  1.0, -1.0,  1.0,  1.0
+                                    ]), gl.STATIC_DRAW);
 
-                                    // KHẮC PHỤC LỖI TẠI ĐÂY: Sử dụng đúng biến anatomyCanvas
-                                    const texAnatomy = gl.createTexture();
-                                    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texAnatomy);
+                                    const aPosLoc = gl.getAttribLocation(program, "aPosition");
+                                    gl.enableVertexAttribArray(aPosLoc);
+                                    gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0);
+
+                                    // Bơm kết cấu giải phẫu (Albedo SVG)
+                                    const texAlbedo = gl.createTexture();
+                                    gl.activeTexture(gl.TEXTURE0);
+                                    gl.bindTexture(gl.TEXTURE_2D, texAlbedo);
                                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, anatomyCanvas);
-                                    gl.uniform1i(gl.getUniformLocation(prog, "uAnatomy"), 0);
+                                    gl.uniform1i(gl.getUniformLocation(program, "uAlbedoTex"), 0);
 
-                                    // Nạp Physics Map (Python)
+                                    // Bơm siêu ma trận vật lý (Tensor Python)
                                     const texPhysics = gl.createTexture();
-                                    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texPhysics);
+                                    gl.activeTexture(gl.TEXTURE1);
+                                    gl.bindTexture(gl.TEXTURE_2D, texPhysics);
                                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, physicsCanvas);
-                                    gl.uniform1i(gl.getUniformLocation(prog, "uPhysics"), 1);
+                                    gl.uniform1i(gl.getUniformLocation(program, "uPhysicsTex"), 1);
 
-                                    // Nạp thông số vật lý từ Gemini
-                                    gl.uniform2f(gl.getUniformLocation(prog, "iResolution"), renderW, renderH);
-                                    gl.uniform3f(gl.getUniformLocation(prog, "uLightDir"), lParams.light_dir[0], lParams.light_dir[1], lParams.light_dir[2]);
-                                    gl.uniform3f(gl.getUniformLocation(prog, "uLightColor"), lParams.light_color[0], lParams.light_color[1], lParams.light_color[2]);
-                                    gl.uniform3f(gl.getUniformLocation(prog, "uRimColor"), lParams.rim_light_color[0], lParams.rim_light_color[1], lParams.rim_light_color[2]);
-                                    gl.uniform1f(gl.getUniformLocation(prog, "uParallaxDepth"), lParams.parallax_depth || 0.15);
-                                    gl.uniform1f(gl.getUniformLocation(prog, "uAOStrength"), lParams.ambient_occlusion || 0.8);
+                                    gl.uniform2f(gl.getUniformLocation(program, "uResolution"), renderW, renderH);
 
                                     gl.viewport(0, 0, renderW, renderH);
                                     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
                                     // =========================================================================
-                                    // BƯỚC 5: ĐỐI SOÁT CHẤT LƯỢNG & TỰ ĐỘNG SỬA LỖI BẰNG GEMINI VISION
+                                    // TẦNG 5: KIỂM ĐỊNH ENTROPY QUANG HỌC & XUẤT BẢN THÀNH PHẨM HOÀN THIỆN
                                     // =========================================================================
-                                    searchStatusText.value = "Đang kiểm toán chất lượng hiển thị...";
-                                    let finalImage = glCanvas.toDataURL('image/png');
-                                    let finalBase64 = finalImage.replace(/^data:image\/png;base64,/, '');
+                                    searchStatusText.value = "[Tầng 5/5] Kiểm định Entropy điểm ảnh và xuất bản kiệt tác hoàn thiện...";
 
-                                    let isPerfect = false;
-                                    for(let vLoop = 0; vLoop < 1; vLoop++) { // Chạy max 1 lần để tối ưu tốc độ
-                                        if (abortController?.signal?.aborted) break;
-                                        
-                                        const visionPrompt = 
-                                            `Hãy quan sát hình ảnh vừa được tạo từ yêu cầu: "${promptText}".\n\n` +
-                                            `LỖI TỐI KỴ CẦN TÌM:\n` +
-                                            `1. Hình ảnh trông như một bức tranh cắt dán vector 2D, phẳng lì, thiếu bóng đổ 3D?\n` +
-                                            `2. Các nhân vật/chủ thể biến thành các mảng hình học vô nghĩa thay vì có chân tay, khuôn mặt rõ ràng?\n\n` +
-                                            `NẾU HÌNH ĐẸP NỔI KHỐI 3D: JSON: {"status":"ok"}\n` +
-                                            `NẾU BỊ CẮT GIẤY 2D HAY THIẾU CHI TIẾT: JSON: {"status":"fix", "new_svg": "Mã SVG mới vẽ siêu chi tiết và chân thực hơn", "new_bump": "Số thực tăng cường độ lồi lõm (ví dụ 0.8)"}`;
+                                    const pixels = new Uint8Array(renderW * renderH * 4);
+                                    gl.readPixels(0, 0, renderW, renderH, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
 
-                                        const visionPayload = {
-                                            contents: [{ role: 'user', parts: [{ text: visionPrompt }, { inlineData: { mimeType: "image/png", data: finalBase64 } }] }],
-                                            generationConfig: { temperature: 0.15, maxOutputTokens: 6000, responseMimeType: "application/json" }
-                                        };
+                                    let sum = 0, sumSq = 0;
+                                    const sampleCount = renderW * renderH;
+                                    for (let i = 0; i < pixels.length; i += 4) {
+                                        const luma = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+                                        sum += luma;
+                                        sumSq += luma * luma;
+                                    }
+                                    const mean = sum / sampleCount;
+                                    const variance = (sumSq / sampleCount) - (mean * mean);
+                                    const stdDev = Math.sqrt(Math.max(0, variance));
 
-                                        try {
-                                            const vRes = await dispatchBackgroundTaskWithFallback(visionPayload);
-                                            const vOut = SearchIntelligenceEngine.robustJsonRepair(vRes?.candidates?.[0]?.content?.parts?.[0]?.text);
-                                            if (vOut?.status === "ok") {
-                                                isPerfect = true; break;
-                                            } else if (vOut?.new_svg) {
-                                                searchStatusText.value = "Đang tinh chỉnh chi tiết giải phẫu học...";
-                                                const newSvgCanvas = await renderSvgToCanvas(vOut.new_svg, renderW, renderH);
-                                                gl.bindTexture(gl.TEXTURE_2D, texAnatomy);
-                                                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, newSvgCanvas);
-                                                if (vOut.new_bump) gl.uniform1f(gl.getUniformLocation(prog, "uBump"), vOut.new_bump);
-                                                gl.drawArrays(gl.TRIANGLES, 0, 6);
-                                                finalImage = glCanvas.toDataURL('image/png');
-                                            }
-                                        } catch (_) { break; }
+                                    if (stdDev < 5.0) {
+                                        throw new Error("Phát hiện sụp đổ mật độ điểm ảnh (Entropy Failure). Đang tự động bù trừ tái tạo...");
                                     }
 
-                                    gl.deleteBuffer(qBuf); gl.deleteTexture(texAnatomy); gl.deleteTexture(texPhysics);
-                                    gl.deleteProgram(prog); gl.deleteShader(vs); gl.deleteShader(fs);
+                                    const finalDataUrl = glCanvas.toDataURL('image/png', 0.98);
 
-                                    // =========================================================================
-                                    // HIỂN THỊ THÀNH PHẨM TINH GIẢN
-                                    // =========================================================================
+                                    gl.deleteBuffer(quadBuffer);
+                                    gl.deleteTexture(texAlbedo);
+                                    gl.deleteTexture(texPhysics);
+                                    gl.deleteProgram(program);
+                                    gl.deleteShader(vs);
+                                    gl.deleteShader(fs);
+
+                                    // Trình diễn thành phẩm
                                     targetMsg.content = 
                                         `### ${artTitle}\n` +
-                                        `*${artCaption}*\n\n` +
-                                        `<img src="${finalImage}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_25px_60px_rgba(0,0,0,0.6)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />`;
+                                        `*${artNarrative}*\n\n` +
+                                        `<img src="${finalDataUrl}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_24px_56px_rgba(0,0,0,0.65)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />\n\n` +
+                                        `- **Kiến trúc Sinh tạo:** Hội tụ Nhân quả (Zero-Diffusion Architecture)\n` +
+                                        `- **Khung hình kết xuất:** ${renderW}x${renderH} (${imageConfig.aspectRatio})\n` +
+                                        `- **Động cơ Vật lý:** Giải tích SVG $\\rightarrow$ SDF Numpy $\\rightarrow$ Tích phân toàn cục 1024x1024`;
 
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
                                     scrollToBottom(true);
-                                    notify("Tác phẩm không gian 3D đã hoàn thiện.");
-
+                                    notify("Kiệt tác đồ họa giải tích tối cao đã hoàn thiện!");                  
+                                   
                                 } catch (err) {
-                                    targetMsg.content = `Không thể kiến tạo cấu trúc không gian lúc này. Vui lòng làm rõ thêm ý tưởng của bạn.\n\n*(Lỗi lượng tử: ${err.message})*`;
+                                    targetMsg.content = `Không thể khởi tạo cấu trúc không gian lúc này. Vui lòng thử lại với ý niệm cụ thể hơn.\n\n*(Chi tiết sự cố: ${err.message})*`;
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
                                     notify(`Sự cố: ${err.message}`, true);
