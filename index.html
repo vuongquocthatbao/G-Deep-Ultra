@@ -6735,23 +6735,25 @@ __builtins__.input = _mock_input
         const PythonEngine = {
             /**
              * NƠ-RON AI THỰC THI PYTHON ĐỘC LẬP (PYTHON EXEC NEURON)
+             * Hỗ trợ tham số timeout tùy chỉnh, mặc định nâng từ 45s lên 150s an toàn
              */
-            async run(code) {
+            async run(code, timeoutMs = 150000) {
                 const neuron = SynapticNeuralMesh.get('PythonExecNeuron') || SynapticNeuralMesh.register(
                     'PythonExecNeuron',
-                    (c) => typeof c === 'string' && c.trim().length > 0,
-                    async (cleanCode) => await this._executeRawPython(cleanCode),
+                    (p) => p && typeof p.code === 'string' && p.code.trim().length > 0,
+                    async ({ cleanCode, timeout }) => await this._executeRawPython(cleanCode, timeout),
                     { output: "Lỗi thực thi mã nguồn", outcome: "ERROR", plotBase64: null },
                     { tags: ['compute', 'python'] }
                 );
-                return await neuron.fire(code, 'WasmKernel', (badCode) => {
-                    // Vi phẫu: Gỡ bỏ các thẻ markdown code fence nếu AI vô tình dán thừa
-                    let sanitized = String(badCode || '').replace(/^```python\s*/i, '').replace(/```$/i, '').trim();
-                    return sanitized;
+                return await neuron.fire({ cleanCode: code, timeout: timeoutMs }, 'WasmKernel', (badInput) => {
+                    const raw = typeof badInput === 'object' ? badInput.cleanCode : badInput;
+                    const sanitized = String(raw || '').replace(/^```python\s*/i, '').replace(/```$/i, '').trim();
+                    const t = typeof badInput === 'object' && badInput.timeout ? badInput.timeout : 150000;
+                    return { cleanCode: sanitized, timeout: t };
                 });
             },
 
-            _executeRawPython(code) {
+            _executeRawPython(code, timeoutMs = 150000) {
                 return new Promise((resolve) => {
                     if (!pyodideWorker) {
                         resolve({ output: "Trình duyệt không hỗ trợ Web Worker.", outcome: "ERROR", plotBase64: null });
@@ -6760,19 +6762,20 @@ __builtins__.input = _mock_input
 
                     pyodideExecutionQueue = pyodideExecutionQueue.then(async () => {
                         const id = Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+                        const effectiveTimeout = Math.max(10000, Number(timeoutMs) || 150000);
 
-                        // Giới hạn thời gian chạy tối đa 45s (Watchdog)
+                        // Watchdog an toàn: Tự động giải phóng tiến trình nếu quá thời hạn cho phép
                         const timer = setTimeout(() => {
                             if (pyodidePromises.has(id)) {
                                 pyodidePromises.get(id).resolve({
-                                    output: "Thời gian thực thi vượt quá giới hạn an toàn (45s). Đã cưỡng bức dừng tiến trình.",
+                                    output: `Thời gian tính toán vượt quá giới hạn an toàn (${Math.round(effectiveTimeout / 1000)}s).`,
                                     outcome: "ERROR",
                                     plotBase64: null
                                 });
                                 pyodidePromises.delete(id);
-                                createPyodideWorker(); // Làm mới worker để dọn dẹp biến rác
+                                createPyodideWorker(); // Tái sinh worker giải phóng rác RAM
                             }
-                        }, 45000);
+                        }, effectiveTimeout);
 
                         pyodidePromises.set(id, { resolve, timer });
 
@@ -6781,7 +6784,7 @@ __builtins__.input = _mock_input
                         } catch (e) {
                             clearTimeout(timer);
                             pyodidePromises.delete(id);
-                            resolve({ output: "Lỗi gửi tác vụ: " + e.message, outcome: "ERROR", plotBase64: null });
+                            resolve({ output: "Lỗi truyền dữ liệu sang luồng WASM: " + e.message, outcome: "ERROR", plotBase64: null });
                         }
                     });
                 });
@@ -11177,7 +11180,7 @@ ax.axis('off')
 ax.imshow(tensor_export, origin='upper')
 `;
 
-                                    let pyResult = await PythonEngine.run(pythonPhysicsSolverHarness);
+                                    let pyResult = await PythonEngine.run(pythonPhysicsSolverHarness, 180000);
 
                                     if (pyResult.outcome === 'ERROR' || !pyResult.plotBase64) {
                                         throw new Error(`Động cơ giải phẫu gặp sự cố: ${pyResult.output?.slice(0, 150) || "Lỗi tính toán quang học"}`);
