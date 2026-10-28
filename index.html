@@ -10731,7 +10731,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 });
                                 currentMessages.value.push(targetMsg);
 
-                                // Quản lý luồng Worker đồ họa ngầm
                                 let graphicsWorker = null;
 
                                 try {
@@ -10749,15 +10748,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     };
 
                                     const ar = parseRatio(imageConfig.aspectRatio);
-                                    const BASE_DIM = 512; // Chuẩn hóa an toàn cho VRAM mọi thiết bị (bao gồm Mobile)
+                                    const BASE_DIM = 512;
                                     let renderW = ar >= 1.0 ? BASE_DIM : Math.round(BASE_DIM * ar);
                                     let renderH = ar >= 1.0 ? Math.round(BASE_DIM / ar) : BASE_DIM;
-                                    renderW = Math.round(renderW / 8) * 8; // Đảm bảo chia hết cho 8 cho Tensor
+                                    renderW = Math.round(renderW / 8) * 8;
                                     renderH = Math.round(renderH / 8) * 8;
 
                                     const dynamicSeed = (imageConfig.keepCharacter && imageConfig.characterSeed)
                                         ? Number(imageConfig.characterSeed)
                                         : Math.floor(Math.random() * 2147483647);
+
+                                    let referenceImageBase64 = null;
+                                    if (currentAtts && currentAtts.length > 0) {
+                                        const refImg = currentAtts.find(a => a && a.mimeType && a.mimeType.startsWith('image/'));
+                                        if (refImg && refImg.data) referenceImageBase64 = cleanBase64Data(refImg.data);
+                                    }
 
                                     // =========================================================================
                                     // 2. BỘ ĐIỀU PHỐI XOAY TUA 25+ KEY (GỌI ĐẠO DIỄN GEMINI ROBOTICS)
@@ -10814,12 +10819,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     searchStatusText.value = "Kích hoạt đạo diễn AI..."; // 5 từ
 
                                     const styleName = imageConfig.style || "photorealistic";
-                                    let referenceImageBase64 = null;
-                                    if (currentAtts && currentAtts.length > 0) {
-                                        const refImg = currentAtts.find(a => a && a.mimeType && a.mimeType.startsWith('image/'));
-                                        if (refImg && refImg.data) referenceImageBase64 = cleanBase64Data(refImg.data);
-                                    }
-
                                     const enrichmentParts = [
                                         {
                                             text: `[DIFFUSION PROMPT ENGINEERING - EXPERT LEVEL]\n` +
@@ -10858,18 +10857,30 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     const artTitle = promptData.title || "Tác phẩm Đồ họa GPU";
 
                                     // =========================================================================
-                                    // 4. GIAI ĐOẠN 2: CHUYỂN GIAO CHO WEB WORKER ĐỒ HỌA (GIẢI PHÓNG MAIN THREAD)
+                                    // 4. GIAI ĐOẠN 2: CHUYỂN GIAO CHO WEB WORKER ĐỒ HỌA (CÓ CƠ CHẾ TRƯỢT HẠ CẤP)
                                     // =========================================================================
-                                    searchStatusText.value = "Khởi động động cơ WebGPU..."; // 5 từ
+                                    searchStatusText.value = "Khởi động động cơ đồ họa..."; // 5 từ
 
                                     const workerScript = `
                                         importScripts('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.2.0');
                                         
-                                        // Tối ưu hóa cấu hình cho môi trường Worker
                                         self.env.allowLocalModels = false;
                                         self.env.backends.onnx.wasm.numThreads = 4;
                                         
                                         let pipelineInstance = null;
+                                        let activeEngine = 'webgpu';
+
+                                        const loadPipelineWithDevice = async (targetDevice) => {
+                                            return await self.pipeline('text-to-image', 'Xenova/stable-diffusion-v1-5-webgpu', {
+                                                device: targetDevice,
+                                                progress_callback: (info) => {
+                                                    if (info.status === 'downloading') {
+                                                        const pct = Math.round(info.progress || 0);
+                                                        self.postMessage({ status: 'Tải trọng số: ' + pct + '%' }); // 4 từ
+                                                    }
+                                                }
+                                            });
+                                        };
 
                                         self.onmessage = async (e) => {
                                             const { type, pos_prompt, neg_prompt, seed, w, h } = e.data;
@@ -10877,25 +10888,31 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                             if (type === 'GENERATE') {
                                                 try {
                                                     if (!pipelineInstance) {
-                                                        self.postMessage({ status: 'Tải mô hình vào VRAM...' });
-                                                        pipelineInstance = await self.pipeline('text-to-image', 'Xenova/stable-diffusion-v1-5-webgpu', {
-                                                            device: 'webgpu', // Sẽ tự động Fallback xuống WebGL/WASM nếu máy yếu
-                                                            progress_callback: (info) => {
-                                                                if (info.status === 'downloading') {
-                                                                    const pct = Math.round(info.progress || 0);
-                                                                    self.postMessage({ status: 'Tải trọng số: ' + pct + '%' });
-                                                                }
+                                                        // KHỞI ĐỘNG TRƯỢT 3 TẦNG (CASCADING FALLBACK)
+                                                        try {
+                                                            self.postMessage({ status: 'Khởi động lõi WebGPU...' }); // 4 từ
+                                                            pipelineInstance = await loadPipelineWithDevice('webgpu');
+                                                            activeEngine = 'WebGPU Native';
+                                                        } catch (errGpu) {
+                                                            try {
+                                                                self.postMessage({ status: 'Hạ cấp lõi WebGL...' }); // 4 từ
+                                                                pipelineInstance = await loadPipelineWithDevice('webgl');
+                                                                activeEngine = 'WebGL Fallback';
+                                                            } catch (errGl) {
+                                                                self.postMessage({ status: 'Hạ cấp lõi WASM...' }); // 4 từ
+                                                                pipelineInstance = await loadPipelineWithDevice('wasm');
+                                                                activeEngine = 'WASM CPU';
                                                             }
-                                                        });
+                                                        }
                                                     }
 
-                                                    self.postMessage({ status: 'Khuếch tán điểm ảnh GPU...' });
+                                                    self.postMessage({ status: 'Khuếch tán điểm ảnh...' }); // 4 từ
                                                     
                                                     const output = await pipelineInstance(pos_prompt, {
                                                         negative_prompt: neg_prompt,
                                                         width: w,
                                                         height: h,
-                                                        num_inference_steps: 20, // Chuẩn khử nhiễu
+                                                        num_inference_steps: 20,
                                                         guidance_scale: 7.5,
                                                         seed: seed
                                                     });
@@ -10906,7 +10923,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                                     const reader = new FileReader();
                                                     reader.readAsDataURL(blob);
                                                     reader.onloadend = () => {
-                                                        self.postMessage({ status: 'SUCCESS', dataUrl: reader.result });
+                                                        self.postMessage({ status: 'SUCCESS', dataUrl: reader.result, engine: activeEngine });
                                                     };
                                                 } catch (err) {
                                                     self.postMessage({ status: 'ERROR', error: err.message });
@@ -10915,15 +10932,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                         };
                                     `;
 
-                                    // Khởi tạo Blob URL cho Worker để lách chính sách CORS
                                     const blobWorker = new Blob([workerScript], { type: 'application/javascript' });
                                     const workerUrl = URL.createObjectURL(blobWorker);
                                     graphicsWorker = new Worker(workerUrl);
                                     URL.revokeObjectURL(workerUrl);
 
-                                    // Khởi chạy Promise chờ Worker hoàn thành tác vụ
+                                    let utilizedEngine = 'WebGPU';
+
                                     const finalDataUrl = await new Promise((resolve, reject) => {
-                                        // Lắng nghe lệnh Hủy từ người dùng
                                         if (abortController) {
                                             abortController.signal.addEventListener('abort', () => {
                                                 graphicsWorker.terminate();
@@ -10934,31 +10950,22 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                         graphicsWorker.onmessage = (e) => {
                                             const data = e.data;
                                             if (data.status === 'SUCCESS') {
+                                                utilizedEngine = data.engine || 'WebGPU';
                                                 resolve(data.dataUrl);
                                             } else if (data.status === 'ERROR') {
                                                 reject(new Error(data.error));
                                             } else if (data.status) {
-                                                // Cập nhật trạng thái từ luồng ngầm lên Giao diện (Luôn <= 6 từ)
                                                 searchStatusText.value = data.status; 
                                             }
                                         };
 
-                                        graphicsWorker.onerror = (e) => {
-                                            reject(new Error("Lỗi luồng xử lý đồ họa ngầm."));
-                                        };
+                                        graphicsWorker.onerror = () => reject(new Error("Lỗi luồng xử lý đồ họa ngầm."));
 
-                                        // Bắn lệnh kích hoạt xuống Worker
                                         graphicsWorker.postMessage({
-                                            type: 'GENERATE',
-                                            pos_prompt: finalPosPrompt,
-                                            neg_prompt: finalNegPrompt,
-                                            seed: dynamicSeed,
-                                            w: renderW,
-                                            h: renderH
+                                            type: 'GENERATE', pos_prompt: finalPosPrompt, neg_prompt: finalNegPrompt, seed: dynamicSeed, w: renderW, h: renderH
                                         });
                                     });
 
-                                    // Hủy Worker ngay sau khi xong để giải phóng toàn bộ RAM/VRAM
                                     graphicsWorker.terminate();
                                     graphicsWorker = null;
 
@@ -10969,10 +10976,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 
                                     targetMsg.content = 
                                         `### ${artTitle}\n` +
-                                        `*Sáng tác bởi Đạo diễn Gemini Robotics và thực thi trên GPU phần cứng của bạn.*\n\n` +
+                                        `*Sáng tác bởi Đạo diễn Gemini Robotics và thực thi trên phần cứng của bạn.*\n\n` +
                                         `<img src="${finalDataUrl}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_24px_56px_rgba(0,0,0,0.65)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />\n\n` +
                                         `- **Khung hình:** ${imageConfig.aspectRatio} (${renderW}x${renderH}px)\n` +
-                                        `- **Động cơ cốt lõi:** WebGPU Web Worker (Giải phóng 100% CPU)\n` +
+                                        `- **Động cơ cốt lõi:** ${utilizedEngine} Worker (Giải phóng CPU)\n` +
                                         `- **Bảo toàn nhân vật:** Lõi Seed #${dynamicSeed}\n` +
                                         `- **Chỉ thị khuếch tán:** \`${finalPosPrompt.slice(0, 100)}...\``;
 
@@ -10982,13 +10989,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     notify("Tác phẩm đã hoàn thiện.");                  
                                    
                                 } catch (err) {
-                                    targetMsg.content = `Quá trình kết xuất gián đoạn: ${err.message}\n\n*Lưu ý: Môi trường WebGPU yêu cầu cấu hình thiết bị phần cứng tương thích. Các thiết bị quá yếu sẽ tự động bị hạ cấp hiệu năng.*`;
+                                    targetMsg.content = `Quá trình kết xuất gián đoạn: ${err.message}\n\n*Hệ thống đã tự động thử các cơ chế hạ cấp phần cứng nhưng chưa thành công.*`;
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
                                     notify(`Lỗi kết xuất: ${err.message}`, true);
                                 } finally {
-                                    // Dọn dẹp Worker nếu xảy ra lỗi văng luồng
-                                    if (typeof graphicsWorker !== 'undefined' && graphicsWorker !== null) {
+                                    if (graphicsWorker) {
                                         try { graphicsWorker.terminate(); } catch (e) {}
                                     }
                                     isGenerating.value = false;
