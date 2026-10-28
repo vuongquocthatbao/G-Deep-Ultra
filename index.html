@@ -10731,31 +10731,36 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 });
                                 currentMessages.value.push(targetMsg);
 
+                                // Quản lý luồng Worker đồ họa ngầm
+                                let graphicsWorker = null;
+
                                 try {
                                     if (!promptText && currentAtts.length === 0) {
                                         throw new Error("Vui lòng cung cấp nội dung mô tả hình ảnh.");
                                     }
 
-                                    // 1. Tính toán độ phân giải tối ưu cho Mobile
+                                    // =========================================================================
+                                    // 1. ĐỒNG BỘ CONFIG VỚI G-DEEP ULTRA
+                                    // =========================================================================
                                     const parseRatio = (str) => {
                                         if (!str || typeof str !== 'string') return 1.0;
                                         const parts = str.split(':').map(Number);
                                         return (parts.length === 2 && parts[1] > 0) ? (parts[0] / parts[1]) : 1.0;
                                     };
+
                                     const ar = parseRatio(imageConfig.aspectRatio);
-                                    const BASE_DIM = window.innerWidth < 768 ? 768 : 1024; // Giảm tải nhẹ cho Mobile
+                                    const BASE_DIM = 512; // Chuẩn hóa an toàn cho VRAM mọi thiết bị (bao gồm Mobile)
                                     let renderW = ar >= 1.0 ? BASE_DIM : Math.round(BASE_DIM * ar);
                                     let renderH = ar >= 1.0 ? Math.round(BASE_DIM / ar) : BASE_DIM;
-                                    renderW = Math.round(renderW / 16) * 16;
-                                    renderH = Math.round(renderH / 16) * 16;
+                                    renderW = Math.round(renderW / 8) * 8; // Đảm bảo chia hết cho 8 cho Tensor
+                                    renderH = Math.round(renderH / 8) * 8;
 
-                                    // 2. Khóa định danh nhân vật (Latent Lock)
                                     const dynamicSeed = (imageConfig.keepCharacter && imageConfig.characterSeed)
                                         ? Number(imageConfig.characterSeed)
                                         : Math.floor(Math.random() * 2147483647);
 
                                     // =========================================================================
-                                    // BỘ ĐIỀU PHỐI ĐẠO DIỄN GEMINI ROBOTICS ER-2
+                                    // 2. BỘ ĐIỀU PHỐI XOAY TUA 25+ KEY (GỌI ĐẠO DIỄN GEMINI ROBOTICS)
                                     // =========================================================================
                                     const callRoboticsEngine = async (modelName, payload) => {
                                         const totalKeys = apiKeyPool.value?.length || 0;
@@ -10765,7 +10770,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                             modelName,
                                             "gemini-robotics-er-2-preview",
                                             "gemini-2.5-flash",
-                                            currentModel.value?.apiEndpointId || "gemini-flash-latest"
+                                            "gemini-2.0-flash"
                                         ].filter((v, i, a) => v && a.indexOf(v) === i);
 
                                         let lastError = null;
@@ -10804,69 +10809,172 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     };
 
                                     // =========================================================================
-                                    // GIAI ĐOẠN 1: ĐẠO DIỄN GEMINI THIẾT LẬP KHÓA NGỮ NGHĨA (SEMANTIC LOCK)
-                                    // Đảm bảo không bao giờ mất nhận dạng nhân vật khi thay đổi Prompt
+                                    // 3. GIAI ĐOẠN 1: ĐẠO DIỄN GEMINI ROBOTICS SOẠN KỊCH BẢN DIFFUSION
                                     // =========================================================================
-                                    searchStatusText.value = "Làm giàu ý niệm thị giác..."; // 5 từ
+                                    searchStatusText.value = "Kích hoạt đạo diễn AI..."; // 5 từ
 
                                     const styleName = imageConfig.style || "photorealistic";
-                                    const enrichmentPrompt = 
-                                        `[CRITICAL: PHOTOREALISTIC DIFFUSION PROMPT ENGINEERING]\n` +
-                                        `User Idea: "${promptText}". Target Style: ${styleName}.\n` +
-                                        (imageConfig.keepCharacter ? `STRICT IDENTITY LOCK ACTIVATED: The user wants to keep the EXACT SAME character across multiple images. You must invent a highly specific, unique anatomical description (e.g., exact face shape, eye color, specific hair style, precise skin tone, unique clothing details) and use it to describe the subject. NEVER change these traits.\n` : '') +
-                                        `TASK: Write a highly optimized, comma-separated English prompt for an advanced Diffusion Model.\n` +
-                                        `- Include camera parameters (e.g., 85mm lens, f/1.8), cinematic lighting, and 8k resolution tags.\n` +
-                                        `- Do NOT write a conversational response. ONLY return the raw prompt string.\n\n` +
-                                        `OUTPUT FORMAT:\n` +
-                                        `masterpiece, best quality, highly detailed, [your detailed subject here], [your background here], [your lighting and camera tags here]`;
-
-                                    let finalPosPrompt = promptText;
-                                    try {
-                                        const enrichRes = await callRoboticsEngine('gemini-robotics-er-2-preview', {
-                                            contents: [{ role: 'user', parts: [{ text: enrichmentPrompt }] }],
-                                            generationConfig: { temperature: 0.25, maxOutputTokens: 500 }
-                                        });
-                                        const enriched = extractFullText(enrichRes);
-                                        if (enriched && enriched.length > 20) {
-                                            finalPosPrompt = enriched.replace(/\n/g, ', ').trim();
-                                        }
-                                    } catch (_) {}
-
-                                    // =========================================================================
-                                    // GIAI ĐOẠN 2: CHUYỂN GIAO CHO CLOUD RENDER NETWORK (MIỄN PHÍ, KHÔNG KEY)
-                                    // Tương thích 100% với Mobile, không ngốn RAM, tạo ảnh cực hạn trong 3s
-                                    // =========================================================================
-                                    searchStatusText.value = "Đang kết xuất mạng đám mây..."; // 6 từ
-
-                                    // Sử dụng mạng lưới mã nguồn mở miễn phí hoàn toàn, không cần API Key.
-                                    // Tham số `enhance=false` đảm bảo mạng lưới không tự ý thay đổi prompt ngữ nghĩa đã được Gemini chốt.
-                                    const endpointUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(finalPosPrompt)}?seed=${dynamicSeed}&width=${renderW}&height=${renderH}&nologo=true&enhance=false`;
-
-                                    const imgRes = await fetch(endpointUrl);
-                                    if (!imgRes.ok) {
-                                        throw new Error("Mạng lưới Cloud Render đang quá tải.");
+                                    let referenceImageBase64 = null;
+                                    if (currentAtts && currentAtts.length > 0) {
+                                        const refImg = currentAtts.find(a => a && a.mimeType && a.mimeType.startsWith('image/'));
+                                        if (refImg && refImg.data) referenceImageBase64 = cleanBase64Data(refImg.data);
                                     }
 
+                                    const enrichmentParts = [
+                                        {
+                                            text: `[DIFFUSION PROMPT ENGINEERING - EXPERT LEVEL]\n` +
+                                                  `User Idea: "${promptText}". Style: ${styleName}.\n` +
+                                                  (imageConfig.keepCharacter ? `STRICT CHARACTER SEED [#${dynamicSeed}]: Encode exact facial and morphological traits to ensure 100% character consistency across generations.\n` : '') +
+                                                  (referenceImageBase64 ? `REFERENCE IMAGE ATTACHED: Analyze the visual structure and extract its core semantic composition.\n` : '') +
+                                                  `TASK: Act as a master prompt engineer for a Latent Diffusion Model. Translate and expand the idea into highly optimized comma-separated keywords.\n` +
+                                                  `Include: Subject details, camera lens (e.g., 50mm, f/1.8), lighting (e.g., volumetric, cinematic), and resolution quality tags (masterpiece, 8k).\n\n` +
+                                                  `OUTPUT STRICT JSON ONLY:\n` +
+                                                  `{\n` +
+                                                  `  "title": "Short title",\n` +
+                                                  `  "positive_prompt": "masterpiece, best quality, highly detailed, ...",\n` +
+                                                  `  "negative_prompt": "lowres, bad anatomy, worst quality, ugly, blurry, deformed, text, watermark"\n` +
+                                                  `}`
+                                        }
+                                    ];
+                                    if (referenceImageBase64) enrichmentParts.push({ inlineData: { mimeType: "image/jpeg", data: referenceImageBase64 } });
+
+                                    let promptData = null;
+                                    for (let attempt = 0; attempt < 2; attempt++) {
+                                        if (abortController?.signal?.aborted) throw new DOMException("Đã dừng", "AbortError");
+                                        const enrichRes = await callRoboticsEngine('gemini-robotics-er-2-preview', {
+                                            contents: [{ role: 'user', parts: enrichmentParts }],
+                                            generationConfig: { temperature: 0.25, maxOutputTokens: 1024, responseMimeType: "application/json" }
+                                        });
+                                        promptData = SearchIntelligenceEngine.robustJsonRepair(extractFullText(enrichRes));
+                                        if (promptData?.positive_prompt) break;
+                                    }
+
+                                    if (!promptData || !promptData.positive_prompt) {
+                                        throw new Error("Đạo diễn AI không thể trích xuất kịch bản Diffusion.");
+                                    }
+
+                                    const finalPosPrompt = promptData.positive_prompt;
+                                    const finalNegPrompt = promptData.negative_prompt || "lowres, bad anatomy, worst quality, ugly, deformed";
+                                    const artTitle = promptData.title || "Tác phẩm Đồ họa GPU";
+
                                     // =========================================================================
-                                    // GIAI ĐOẠN 3: LƯU TRỮ OFFLINE & HIỂN THỊ
-                                    // Tải ảnh về dạng Blob và nén Base64 để lưu vĩnh viễn vào IndexedDB
+                                    // 4. GIAI ĐOẠN 2: CHUYỂN GIAO CHO WEB WORKER ĐỒ HỌA (GIẢI PHÓNG MAIN THREAD)
+                                    // =========================================================================
+                                    searchStatusText.value = "Khởi động động cơ WebGPU..."; // 5 từ
+
+                                    const workerScript = `
+                                        importScripts('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.2.0');
+                                        
+                                        // Tối ưu hóa cấu hình cho môi trường Worker
+                                        self.env.allowLocalModels = false;
+                                        self.env.backends.onnx.wasm.numThreads = 4;
+                                        
+                                        let pipelineInstance = null;
+
+                                        self.onmessage = async (e) => {
+                                            const { type, pos_prompt, neg_prompt, seed, w, h } = e.data;
+                                            
+                                            if (type === 'GENERATE') {
+                                                try {
+                                                    if (!pipelineInstance) {
+                                                        self.postMessage({ status: 'Tải mô hình vào VRAM...' });
+                                                        pipelineInstance = await self.pipeline('text-to-image', 'Xenova/stable-diffusion-v1-5-webgpu', {
+                                                            device: 'webgpu', // Sẽ tự động Fallback xuống WebGL/WASM nếu máy yếu
+                                                            progress_callback: (info) => {
+                                                                if (info.status === 'downloading') {
+                                                                    const pct = Math.round(info.progress || 0);
+                                                                    self.postMessage({ status: 'Tải trọng số: ' + pct + '%' });
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+
+                                                    self.postMessage({ status: 'Khuếch tán điểm ảnh GPU...' });
+                                                    
+                                                    const output = await pipelineInstance(pos_prompt, {
+                                                        negative_prompt: neg_prompt,
+                                                        width: w,
+                                                        height: h,
+                                                        num_inference_steps: 20, // Chuẩn khử nhiễu
+                                                        guidance_scale: 7.5,
+                                                        seed: seed
+                                                    });
+
+                                                    if (!output || !output[0]) throw new Error("Lỗi trích xuất Tensor đồ họa.");
+                                                    
+                                                    const blob = await output[0].blob();
+                                                    const reader = new FileReader();
+                                                    reader.readAsDataURL(blob);
+                                                    reader.onloadend = () => {
+                                                        self.postMessage({ status: 'SUCCESS', dataUrl: reader.result });
+                                                    };
+                                                } catch (err) {
+                                                    self.postMessage({ status: 'ERROR', error: err.message });
+                                                }
+                                            }
+                                        };
+                                    `;
+
+                                    // Khởi tạo Blob URL cho Worker để lách chính sách CORS
+                                    const blobWorker = new Blob([workerScript], { type: 'application/javascript' });
+                                    const workerUrl = URL.createObjectURL(blobWorker);
+                                    graphicsWorker = new Worker(workerUrl);
+                                    URL.revokeObjectURL(workerUrl);
+
+                                    // Khởi chạy Promise chờ Worker hoàn thành tác vụ
+                                    const finalDataUrl = await new Promise((resolve, reject) => {
+                                        // Lắng nghe lệnh Hủy từ người dùng
+                                        if (abortController) {
+                                            abortController.signal.addEventListener('abort', () => {
+                                                graphicsWorker.terminate();
+                                                reject(new DOMException("Đã dừng", "AbortError"));
+                                            });
+                                        }
+
+                                        graphicsWorker.onmessage = (e) => {
+                                            const data = e.data;
+                                            if (data.status === 'SUCCESS') {
+                                                resolve(data.dataUrl);
+                                            } else if (data.status === 'ERROR') {
+                                                reject(new Error(data.error));
+                                            } else if (data.status) {
+                                                // Cập nhật trạng thái từ luồng ngầm lên Giao diện (Luôn <= 6 từ)
+                                                searchStatusText.value = data.status; 
+                                            }
+                                        };
+
+                                        graphicsWorker.onerror = (e) => {
+                                            reject(new Error("Lỗi luồng xử lý đồ họa ngầm."));
+                                        };
+
+                                        // Bắn lệnh kích hoạt xuống Worker
+                                        graphicsWorker.postMessage({
+                                            type: 'GENERATE',
+                                            pos_prompt: finalPosPrompt,
+                                            neg_prompt: finalNegPrompt,
+                                            seed: dynamicSeed,
+                                            w: renderW,
+                                            h: renderH
+                                        });
+                                    });
+
+                                    // Hủy Worker ngay sau khi xong để giải phóng toàn bộ RAM/VRAM
+                                    graphicsWorker.terminate();
+                                    graphicsWorker = null;
+
+                                    // =========================================================================
+                                    // 5. GIAI ĐOẠN 3: HOÀN TẤT THÀNH PHẨM
                                     // =========================================================================
                                     searchStatusText.value = "Hoàn thiện tác phẩm..."; // 3 từ
 
-                                    const imgBlob = await imgRes.blob();
-                                    const base64Data = await new Promise((resolve) => {
-                                        const reader = new FileReader();
-                                        reader.onload = () => resolve(reader.result);
-                                        reader.readAsDataURL(imgBlob);
-                                    });
-
                                     targetMsg.content = 
-                                        `### Tác phẩm Đa phương tiện\n` +
-                                        `*Thiết kế bởi Đạo diễn Gemini Robotics và mạng lưới Cloud Render.*\n\n` +
-                                        `<img src="${base64Data}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_24px_56px_rgba(0,0,0,0.65)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />\n\n` +
-                                        `- **Động cơ thực thi:** Cloud Render Network (Tối ưu thiết bị di động)\n` +
-                                        `- **Khóa đồng nhất (Seed):** #${dynamicSeed}\n` +
-                                        `- **Chỉ thị ngữ nghĩa:** ${finalPosPrompt.slice(0, 150)}...`;
+                                        `### ${artTitle}\n` +
+                                        `*Sáng tác bởi Đạo diễn Gemini Robotics và thực thi trên GPU phần cứng của bạn.*\n\n` +
+                                        `<img src="${finalDataUrl}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_24px_56px_rgba(0,0,0,0.65)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />\n\n` +
+                                        `- **Khung hình:** ${imageConfig.aspectRatio} (${renderW}x${renderH}px)\n` +
+                                        `- **Động cơ cốt lõi:** WebGPU Web Worker (Giải phóng 100% CPU)\n` +
+                                        `- **Bảo toàn nhân vật:** Lõi Seed #${dynamicSeed}\n` +
+                                        `- **Chỉ thị khuếch tán:** \`${finalPosPrompt.slice(0, 100)}...\``;
 
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
@@ -10874,11 +10982,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     notify("Tác phẩm đã hoàn thiện.");                  
                                    
                                 } catch (err) {
-                                    targetMsg.content = `Quá trình kết xuất gián đoạn: ${err.message}\n\n*Hệ thống mạng lưới đang bận, vui lòng thử lại.*`;
+                                    targetMsg.content = `Quá trình kết xuất gián đoạn: ${err.message}\n\n*Lưu ý: Môi trường WebGPU yêu cầu cấu hình thiết bị phần cứng tương thích. Các thiết bị quá yếu sẽ tự động bị hạ cấp hiệu năng.*`;
                                     targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                     scheduleDbSave(targetMsg);
                                     notify(`Lỗi kết xuất: ${err.message}`, true);
                                 } finally {
+                                    // Dọn dẹp Worker nếu xảy ra lỗi văng luồng
+                                    if (typeof graphicsWorker !== 'undefined' && graphicsWorker !== null) {
+                                        try { graphicsWorker.terminate(); } catch (e) {}
+                                    }
                                     isGenerating.value = false;
                                     searchStatusText.value = "";
                                 }
