@@ -8293,43 +8293,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                     try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(JSON.parse(JSON.stringify(apiKeyPool.value)))); } catch (_) {}
                 };
-
-                // GHI NHỚ VÀO MA TRẬN KHI MODEL GẶP LỖI
-                const markKeyModelFailure = (k, modelId, statusCode = null, errorMsg = '') => {
-                    if (!k) return;
-                    const now = Date.now();
-                    if (!k.models) k.models = {};
-
-                    if (statusCode === 401) {
-                        k.status = 'invalid';
-                        k.cooldownUntil = now + 86400000;
-                        console.warn(`[G-Deep Memory Matrix] Key [${k.key.slice(-6)}] không hợp lệ (401), vô hiệu hóa toàn cục.`);
-                    } 
-                    else if (statusCode === 404 || (statusCode === 403 && (errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('not found')))) {
-                        k.models[modelId] = {
-                            status: 'unsupported',
-                            reason: statusCode,
-                            lastUpdated: now
-                        };
-                        console.warn(`[G-Deep Memory Matrix] Đã ghi nhớ: Key [${k.key.slice(-6)}] không hỗ trợ model [${modelId}] (404/403).`);
-                    } 
-                    else if (statusCode === 429) {
-                        const mFail = (k.models[modelId]?.failCount || 0) + 1;
-                        k.models[modelId] = {
-                            status: 'cooldown',
-                            failCount: mFail,
-                            cooldownUntil: now + Math.min(60 * mFail, 300) * 1000,
-                            lastUpdated: now
-                        };
-                        console.warn(`[G-Deep Memory Matrix] Key [${k.key.slice(-6)}] cạn quota (429) trên [${modelId}]. Tạm dừng model này 60s.`);
-                    } 
-                    else {
-                        k.failCount = (k.failCount || 0) + 1;
-                    }
-
-                    try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(JSON.parse(JSON.stringify(apiKeyPool.value)))); } catch (_) {}
-                };
-
+                
                 const getNextHealthyApiKey = (modelId = null) => {
                     if (modelId) {
                         const validKeys = getKeysForModel(modelId);
@@ -11195,13 +11159,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 }
                             }
 
+                            const attachedImg = currentAtts.find(a => a && a.mimeType && a.mimeType.startsWith('image/'));
+
                             if (!isRegenerate) {
                                 inputText.value = "";
                                 sessionStorage.removeItem('gdeep_draft_input');
                                 pendingAttachments.value = [];
                                 resizeTextarea();
 
-                                const attachedImg = currentAtts.find(a => a.mimeType && a.mimeType.startsWith('image/'));
                                 const prefix = enableCinemaStudio.value ? "🎬 Phân cảnh điện ảnh:" : "🎨 Tạo hình ảnh:";
                                 const userMsg = createMessageRecord({
                                     threadId: currentThreadId.value,
@@ -12772,7 +12737,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         const resumeLexerState = { inThought: false, buffer: "" };
 
                         try {
-                            const streamRes = await fetchStreamWithFaultTolerance(continuationPayload, modelId, (chunk) => {
+                            const streamRes = await fetchStreamWithFaultTolerance(continuationPayload, activeModelIds, (chunk) => {
                                 const parts = chunk.candidates?.[0]?.content?.parts || [];
                                 for (const rawPart of parts) {
                                     // SỬA LỖI: Dùng Lexer trả mảng Tokens thay vì trả Object đơn
