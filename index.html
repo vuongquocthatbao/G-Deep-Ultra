@@ -10972,7 +10972,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     // [TẦNG VẬN CHUYỂN BỌC THÉP NỘI BỘ]: ĐỒNG BỘ MA TRẬN BỘ NHỚ VỚI CƠ CHẾ TRƯỢT NGẦM
                     // =========================================================================
                     const fetchStreamWithFaultTolerance = async (payloadTemplate, modelCandidates, onChunk, signal, onModelChange = null) => {
-                        const gateway = 'v1beta'; // Tối giản Gateway, tập trung vào API V1Beta ổn định nhất
+                        const gateway = 'v1beta';
                         let hasReceivedAnyChunk = false;
                         let lastErrorMessage = "";
 
@@ -10980,41 +10980,44 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             return { success: false, errorMessage: "Chưa cấu hình chìa khóa API trong Cài đặt." };
                         }
 
-                        // Chuẩn hóa danh sách Model dự phòng
+                        // Chuẩn hóa danh sách Model dự phòng + Bổ sung các Model cứu sinh vĩnh cửu
                         const rawList = Array.isArray(modelCandidates) ? modelCandidates : [modelCandidates];
                         const modelsToTry = Array.from(new Set(rawList.filter(Boolean)));
                         
-                        const universalFailsafes = ["gemini-2.5-flash", "gemini-2-flash", "gemini-3.5-flash-lite"];
+                        // Danh sách cứu sinh bắt buộc phải có tên chuẩn xác của Google
+                        const universalFailsafes = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
                         for (const fs of universalFailsafes) {
                             if (!modelsToTry.includes(fs)) modelsToTry.push(fs);
                         }
 
-                        // VÒNG LẶP TRƯỢT MODEL VÀ KEY KẾT HỢP (DYNAMIC TIERED SLIDING MATRIX)
+                        // VÒNG LẶP TRƯỢT MODEL
                         for (let mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
                             const currentModelId = modelsToTry[mIdx];
                             
-                            // Lấy danh sách Key khả dụng cho Model hiện tại (Load Balanced)
+                            // Lấy danh sách Key khả dụng cho Model hiện tại
                             const candidateKeys = getKeysForModel(currentModelId);
-                            
                             if (!candidateKeys || candidateKeys.length === 0) {
-                                console.log(`[G-Deep Matrix] Trượt qua ${currentModelId} trong 0ms (Toàn bộ Key đang Cooldown hoặc không hỗ trợ).`);
                                 continue;
                             }
 
                             if (typeof onModelChange === 'function') onModelChange(currentModelId, mIdx);
 
-                            // Vòng lặp trượt Key cho Model đang xét
+                            let forceNextModel = false;
+
+                            // VÒNG LẶP TRƯỢT KEY
                             for (let kIdx = 0; kIdx < candidateKeys.length; kIdx++) {
-                                if (signal?.aborted) return { success: false, isMidStreamDrop: false };
+                                if (signal?.aborted || forceNextModel) break;
 
                                 const keyObj = candidateKeys[kIdx];
                                 const apiKeyString = typeof keyObj === 'string' ? keyObj : (keyObj?.key || '');
                                 if (!apiKeyString) continue;
 
                                 const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${currentModelId}:streamGenerateContent?alt=sse&key=${apiKeyString}`;
+                                
+                                // Cấu hình payload ban đầu
                                 const reqPayload = JSON.parse(JSON.stringify(payloadTemplate));
 
-                                // Xử lý Logic Thinking Config cho từng thế hệ Model
+                                // Thích ứng Thinking Config theo từng model cụ thể
                                 if (enableDeepThinking.value && !enableCodeExecution.value) {
                                     if (!reqPayload.generationConfig) reqPayload.generationConfig = {};
                                     const isGen3 = String(currentModelId).includes('gemini-3');
@@ -11032,102 +11035,102 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     delete reqPayload.generationConfig.thinkingConfig;
                                 }
 
-                                const stallAbortController = new AbortController();
-                                let combinedSignal = stallAbortController.signal;
-                                if (signal) {
-                                    if (signal.aborted) return { success: false, isMidStreamDrop: false };
-                                    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
-                                        try { combinedSignal = AbortSignal.any([signal, stallAbortController.signal]); }
-                                        catch (_) { combinedSignal = signal; }
-                                    } else {
-                                        combinedSignal = signal;
+                                // Cơ chế thử lại 1 lần nếu dính lỗi 400 mà không bao giờ gây lặp vô tận
+                                let attemptsForKey = 0;
+                                while (attemptsForKey < 2) {
+                                    attemptsForKey++;
+
+                                    const stallAbortController = new AbortController();
+                                    let combinedSignal = stallAbortController.signal;
+                                    if (signal) {
+                                        if (signal.aborted) return { success: false, isMidStreamDrop: false };
+                                        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
+                                            try { combinedSignal = AbortSignal.any([signal, stallAbortController.signal]); }
+                                            catch (_) { combinedSignal = signal; }
+                                        } else {
+                                            combinedSignal = signal;
+                                        }
                                     }
-                                }
 
-                                let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 90000);
+                                    // Timeout phản hồi ban đầu rút xuống 15s để không bị treo
+                                    let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 15000);
 
-                                try {
-                                    const response = await fetch(endpoint, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(reqPayload),
-                                        signal: combinedSignal
-                                    });
-
-                                    // KẾT NỐI THÀNH CÔNG -> ĐỌC STREAM
-                                    if (response.ok) {
-                                        markKeyModelSuccess(keyObj, currentModelId);
-                                        let chunkCount = 0;
-
-                                        await readSSEStream(response, combinedSignal, (chunk) => {
-                                            clearTimeout(stallWatchdog);
-                                            stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 45000);
-                                            chunkCount++;
-                                            hasReceivedAnyChunk = true;
-                                            onChunk(chunk);
+                                    try {
+                                        const response = await fetch(endpoint, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify(reqPayload),
+                                            signal: combinedSignal
                                         });
 
-                                        clearTimeout(stallWatchdog);
-                                        
-                                        // Hoàn thành trọn vẹn stream, ngắt hàm
-                                        if (chunkCount > 0) {
-                                            return { success: true, activeModel: currentModelId, isMidStreamDrop: false };
-                                        } else {
-                                            // Lỗi dị thường: Phản hồi 200 OK nhưng stream rỗng -> Đổi key khác
-                                            markKeyModelFailure(keyObj, currentModelId, null, "Empty Stream");
-                                            continue;
-                                        }
-                                    } 
-                                    // KẾT NỐI LỖI (MÃ HTTP LỖI)
-                                    else {
-                                        clearTimeout(stallWatchdog);
-                                        const errJson = await response.json().catch(() => ({}));
-                                        const serverMsg = errJson?.error?.message || response.statusText;
-                                        lastErrorMessage = `[${currentModelId}]: ${serverMsg}`;
-                                        
-                                        // 1. Phân nhánh hành vi theo mã lỗi (The Decisive Routing)
-                                        if (response.status === 400) {
-                                            // Lỗi 400: Sai Schema/Config -> Sửa Payload và BẮT BUỘC thử lại nguyên cặp Key-Model này
-                                            if (reqPayload.generationConfig?.thinkingConfig) {
-                                                console.warn(`[G-Deep Healing] Xóa thinkingConfig cho ${currentModelId} và thử lại tức thì...`);
-                                                delete reqPayload.generationConfig.thinkingConfig;
-                                                kIdx--; // Lùi chỉ số để vòng lặp thử lại đúng Key này
-                                                continue;
-                                            }
-                                        }
-                                        else if (response.status === 429) {
-                                            // Lỗi 429: Cạn Quota -> Phạt Key, Vòng lặp tự động nhích sang Key TIẾP THEO cho CÙNG MODEL
-                                            markKeyModelFailure(keyObj, currentModelId, response.status, serverMsg);
-                                            continue; 
-                                        }
-                                        else if (response.status === 500 || response.status === 503 || response.status === 504) {
-                                            // Lỗi 50X: Sập Server Google Model này -> Không phí Key, trượt TỨC THÌ sang MODEL KHÁC
-                                            console.warn(`[G-Deep Auto-Slide] Model ${currentModelId} sập server (${response.status}). Đang trượt sang model dự phòng...`);
-                                            break; // Thoát vòng lặp Key, tiếp tục vòng lặp Model
-                                        }
+                                        // THÀNH CÔNG -> ĐỌC STREAM
+                                        if (response.ok) {
+                                            markKeyModelSuccess(keyObj, currentModelId);
+                                            let chunkCount = 0;
 
-                                        // Các lỗi khác (403, 404, 401...)
-                                        markKeyModelFailure(keyObj, currentModelId, response.status, serverMsg);
-                                        continue; 
+                                            await readSSEStream(response, combinedSignal, (chunk) => {
+                                                clearTimeout(stallWatchdog);
+                                                // Đang stream thì cho phép tối đa 30s giữa các chunk
+                                                stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 30000);
+                                                chunkCount++;
+                                                hasReceivedAnyChunk = true;
+                                                onChunk(chunk);
+                                            });
+
+                                            clearTimeout(stallWatchdog);
+                                            if (chunkCount > 0) {
+                                                return { success: true, activeModel: currentModelId, isMidStreamDrop: false };
+                                            } else {
+                                                markKeyModelFailure(keyObj, currentModelId, null, "Empty Stream");
+                                                break;
+                                            }
+                                        } 
+                                        // GẶP MÃ LỖI HTTP
+                                        else {
+                                            clearTimeout(stallWatchdog);
+                                            const errJson = await response.json().catch(() => ({}));
+                                            const serverMsg = errJson?.error?.message || response.statusText;
+                                            lastErrorMessage = `[${currentModelId}]: ${serverMsg}`;
+
+                                            // 1. Lỗi 400: Nếu do thinkingConfig thì gỡ bỏ và thử lại DUY NHẤT 1 LẦN NGAY TẠI CHỖ
+                                            if (response.status === 400 && reqPayload.generationConfig?.thinkingConfig && attemptsForKey === 1) {
+                                                console.warn(`[G-Deep Auto-Heal] Gỡ thinkingConfig cho ${currentModelId} và thử lại...`);
+                                                delete reqPayload.generationConfig.thinkingConfig;
+                                                continue; // Thử lại lần 2 trong while
+                                            }
+
+                                            // 2. Lỗi 404 (Model không tồn tại): TRƯỢT NGAY SANG MODEL TIẾP THEO trong 0ms
+                                            if (response.status === 404) {
+                                                console.warn(`[G-Deep Auto-Slide] Model ${currentModelId} không tồn tại (404). Trượt sang model tiếp theo ngay lập tức.`);
+                                                markKeyModelFailure(keyObj, currentModelId, 404, serverMsg);
+                                                forceNextModel = true; // Dừng thử các key khác của model chết này
+                                                break;
+                                            }
+
+                                            // 3. Lỗi 500, 503 (Server Google sập): Trượt ngay sang Model khác
+                                            if (response.status >= 500) {
+                                                console.warn(`[G-Deep Auto-Slide] Model ${currentModelId} sập server (${response.status}). Đổi model...`);
+                                                forceNextModel = true;
+                                                break;
+                                            }
+
+                                            // Lỗi 429 (Hết Quota) hoặc 403, 401: Phạt key này và chuyển key tiếp theo
+                                            markKeyModelFailure(keyObj, currentModelId, response.status, serverMsg);
+                                            break;
+                                        }
+                                    } catch (netErr) {
+                                        clearTimeout(stallWatchdog);
+                                        if (signal?.aborted) return { success: false, isMidStreamDrop: false };
+                                        if (hasReceivedAnyChunk) {
+                                            markKeyModelSuccess(keyObj, currentModelId);
+                                            return { success: true, activeModel: currentModelId, isMidStreamDrop: true };
+                                        }
+                                        markKeyModelFailure(keyObj, currentModelId, null, netErr.message);
+                                        break;
                                     }
-                                } catch (netErr) {
-                                    // LỖI MẠNG / BỊ HỦY (ABORT)
-                                    clearTimeout(stallWatchdog);
-                                    
-                                    if (signal?.aborted) return { success: false, isMidStreamDrop: false };
-                                    
-                                    if (hasReceivedAnyChunk) {
-                                        // Mất mạng khi đang stream dở dang
-                                        markKeyModelSuccess(keyObj, currentModelId);
-                                        return { success: true, activeModel: currentModelId, isMidStreamDrop: true };
-                                    }
-                                    
-                                    // Lỗi Fetch API ngay lúc kết nối -> Phạt Key nhẹ, thử Key tiếp theo
-                                    markKeyModelFailure(keyObj, currentModelId, null, netErr.message);
-                                    continue;
-                                }
-                            } // Kết thúc vòng lặp Keys
-                        } // Kết thúc vòng lặp Models
+                                } // Kết thúc while retry
+                            } // Kết thúc vòng lặp Key
+                        } // Kết thúc vòng lặp Model
 
                         return {
                             success: hasReceivedAnyChunk,
