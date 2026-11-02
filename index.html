@@ -4479,41 +4479,37 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "function isServerApiErrorJson(str) {\n" +
 "    if (!str || typeof str !== 'string') return false;\n" +
 "    const s = str.trim();\n" +
-"    // Nhận diện định dạng JSON báo lỗi của Google API / Proxy\n" +
 "    const hasErrorSign = (s.indexOf('\"error\"') !== -1 || s.indexOf('\"RESOURCE_EXHAUSTED\"') !== -1 || s.indexOf('\"Quota exceeded\"') !== -1 || s.indexOf('\"PERMISSION_DENIED\"') !== -1 || s.indexOf('\"API_KEY_INVALID\"') !== -1 || s.indexOf('\"RATE_LIMIT\"') !== -1);\n" +
-"    if (hasErrorSign) {\n" +
-"        // Tuyệt đối không chặn nhầm JSON tham số tạo ảnh hợp lệ (chứa camPos, sunDir, flaw...)\n" +
-"        if (s.indexOf('camPos') === -1 && s.indexOf('sunDir') === -1 && s.indexOf('flaw') === -1 && s.indexOf('map') === -1) {\n" +
-"            return true; // Đích thị là JSON thông báo lỗi -> Vứt bỏ!\n" +
-"        }\n" +
+"    if (hasErrorSign && s.indexOf('camPos') === -1 && s.indexOf('sunDir') === -1) {\n" +
+"        return true;\n" +
 "    }\n" +
 "    return false;\n" +
 "}\n\n" +
 
-// [BÓC TÁCH MÃ GLSL ĐỘC LẬP - MIỄN NHIỄM 100% VỚI JSON]
+// [BÓC TÁCH MÃ GLSL ĐỘC LẬP - MIỄN NHIỄM 100% VỚI JSON VÀ MARKDOWN RÁC]
 "function extractGlslBlock(text) {\n" +
 "    if (!text || typeof text !== 'string') return '';\n" +
 "    if (isServerApiErrorJson(text)) return '';\n" +
-"    const clean = text.trim();\n" +
-"    // 1. Ưu tiên bóc tách từ khối ```glsl ... ```\n" +
+"    let clean = text.trim();\n" +
 "    const m = clean.match(/```(?:glsl)?\\s*([\\s\\S]*?)```/i);\n" +
 "    if (m && m[1]) {\n" +
-"        const code = m[1].trim();\n" +
-"        if (code.indexOf('{') !== 0 && code.indexOf('\"camPos\"') === -1) return code;\n" +
+"        let code = m[1].trim();\n" +
+"        if (code.indexOf('vec2') !== -1 && code.indexOf('Material') !== -1) return code;\n" +
 "    }\n" +
-"    // 2. Nếu không có fence, tìm từ khóa hàm GLSL thực thụ\n" +
-"    const start = clean.search(/(?:vec2\\s+map\\s*\\(|Material\\s+getMaterial\\s*\\()/i);\n" +
-"    if (start !== -1) {\n" +
-"        let code = clean.slice(start);\n" +
-"        const end = code.indexOf('```');\n" +
-"        if (end !== -1) code = code.slice(0, end);\n" +
+"    const mapIdx = clean.search(/vec2\\s+map\\s*\\(/i);\n" +
+"    const matIdx = clean.search(/Material\\s+getMaterial\\s*\\(/i);\n" +
+"    if (mapIdx !== -1 || matIdx !== -1) {\n" +
+"        let code = clean.slice(Math.min(mapIdx !== -1 ? mapIdx : 999999, matIdx !== -1 ? matIdx : 999999));\n" +
+"        const endFence = code.indexOf('```');\n" +
+"        if (endFence !== -1) code = code.slice(0, endFence);\n" +
+"        const lastBrace = code.lastIndexOf('}');\n" +
+"        if (lastBrace !== -1) return code.slice(0, lastBrace + 1).trim();\n" +
 "        return code.trim();\n" +
 "    }\n" +
-"    // Tuyệt đối KHÔNG trả về raw text nếu đó là JSON hoặc văn bản thường để tránh hỏng WebGL\n" +
 "    return '';\n" +
 "}\n\n" +
 
-// [BÓC TÁCH JSON THAM SỐ TẠO ẢNH HỢP LỆ - TỰ ĐỘNG LỌC BỎ JSON BÁO LỖI]
+// [BÓC TÁCH JSON THAM SỐ TẠO ẢNH HỢP LỆ - CÂN BẰNG NGOẶC NHỌN ĐA TẦNG]
 "function parseJsonBlock(text) {\n" +
 "    if (!text || typeof text !== 'string') return {};\n" +
 "    if (isServerApiErrorJson(text)) return {};\n" +
@@ -4524,15 +4520,17 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    if (start !== -1 && end !== -1 && end > start) {\n" +
 "        try {\n" +
 "            const parsed = JSON.parse(raw.slice(start, end + 1));\n" +
-"            // Nếu parse ra object có chứa trường error của API mà không có tham số ảnh -> Vứt bỏ\n" +
-"            if (parsed && parsed.error && !parsed.camPos && !parsed.flaw) return {};\n" +
+"            if (parsed && parsed.error && !parsed.camPos) return {};\n" +
 "            return parsed;\n" +
-"        } catch (e) {}\n" +
+"        } catch (e) {\n" +
+"            let cleaned = raw.slice(start, end + 1).replace(/,(?=\\s*\\})/g, '');\n" +
+"            try { return JSON.parse(cleaned); } catch(e2) { return {}; }\n" +
+"        }\n" +
 "    }\n" +
 "    return {};\n" +
 "}\n\n" +
 
-// [HÀM XOAY KEY & MODEL THÉP - VỨT SỌT RÁC MỌI RESPONSE CHỨA LỖI]
+// [HÀM XOAY KEY & MODEL THÉP - CÓ BACKOFF CHỐNG SPAM]
 "async function callAiWithContinuation(systemInstruction, textPrompt, imageBase64, models, apiKeys) {\n" +
 "    for (let mIdx = 0; mIdx < models.length; mIdx++) {\n" +
 "        const modelId = models[mIdx];\n" +
@@ -4554,21 +4552,18 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "                    delete payload.generationConfig.thinkingConfig;\n" +
 "                    res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });\n" +
 "                }\n" +
-"                // [VỨT BỎ NGAY]: Nếu HTTP Status báo lỗi (429 Quota, 403, 503, 500...) -> Không đọc, trượt sang Key tiếp theo\n" +
-"                if (!res.ok) continue;\n\n" +
-
+"                if (!res.ok) {\n" +
+"                    await new Promise(r => setTimeout(r, 400));\n" +
+"                    continue;\n" +
+"                }\n" +
 "                const data = await res.json();\n" +
-"                // [VỨT BỎ NGAY]: Nếu máy chủ trả về mã 200 nhưng body là JSON lỗi error object\n" +
 "                if (data && data.error) continue;\n" +
-"                if (!data || !data.candidates || !data.candidates[0] || !data.candidates[0].content) continue;\n\n" +
-
+"                if (!data || !data.candidates || !data.candidates[0] || !data.candidates[0].content) continue;\n" +
 "                const text = (data.candidates[0].content.parts && data.candidates[0].content.parts[0]) ? data.candidates[0].content.parts[0].text : '';\n" +
-"                // [VỨT BỎ NGAY]: Nếu text phản hồi chứa chuỗi JSON báo lỗi\n" +
-"                if (isServerApiErrorJson(text)) continue;\n\n" +
-
+"                if (isServerApiErrorJson(text)) continue;\n" +
 "                if (text && text.trim()) return { success: true, text: text, activeModel: modelId };\n" +
 "            } catch (e) {\n" +
-"                // Lỗi mạng hoặc JSON parse fail -> Im lặng trượt sang Key tiếp theo\n" +
+"                await new Promise(r => setTimeout(r, 400));\n" +
 "                continue;\n" +
 "            }\n" +
 "        }\n" +
@@ -4624,7 +4619,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "        \n" +
 "        let currentCam = parseJsonBlock(resGenesis.text);\n" +
 "        let currentSceneGlsl = extractGlslBlock(resGenesis.text);\n" +
-"        if (!currentSceneGlsl) currentSceneGlsl = 'vec2 map(vec3 p){ return vec2(length(p - vec3(0.0,0.5,0.0)) - 0.8, 1.0); }\\nMaterial getMaterial(int id, vec3 p, vec3 n){ Material m; m.albedo = vec3(0.8,0.3,0.2); m.roughness = 0.3; m.metallic = 0.1; m.sss = 0.2; m.emission = vec3(0.0); m.ior = 1.4; return m; }';\n\n" +
+"        if (!currentSceneGlsl) currentSceneGlsl = 'vec2 map(vec3 p){ return vec2(length(p - vec3(0.0,0.5,0.0)) - 0.8, 1.0); }\\nMaterial getMaterial(int id, vec3 p, vec3 n){ Material m; m.albedo = vec3(0.8,0.3,0.2); m.roughness = 0.3; m.metallic = 0.1; m.sss = 0.2; m.emission = vec3(0.0); m.ior = 1.4; return m; }';\n" +
+"        if (!currentCam.camPos) currentCam = { camPos: [0.0, 1.5, -4.5], camTarget: [0.0, 0.5, 0.0], fov: 1.4, sunDir: [1.0, 1.8, -1.2], sunTemp: 5600.0, sunIntensity: 4.5 };\n\n" +
 
 "        postStatus('Đang kiểm tra tính toàn vẹn của tia sáng và quang thông...');\n" +
 "        let dryRun = testCompileAndRenderScene(currentSceneGlsl, currentCam, 64, 64, true);\n" +
@@ -4671,10 +4667,11 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "                const refinedCam = parseJsonBlock(refineRes.text);\n" +
 "                \n" +
 "                if (refinedGlsl) {\n" +
-"                    const testRefine = testCompileAndRenderScene(refinedGlsl, refinedCam.camPos ? refinedCam : currentCam, 64, 64, true);\n" +
+"                    const effectiveCam = (refinedCam && refinedCam.camPos) ? refinedCam : currentCam;\n" +
+"                    const testRefine = testCompileAndRenderScene(refinedGlsl, effectiveCam, 64, 64, true);\n" +
 "                    if (testRefine.valid) {\n" +
 "                        currentSceneGlsl = refinedGlsl;\n" +
-"                        if (refinedCam.camPos) currentCam = refinedCam;\n" +
+"                        currentCam = effectiveCam;\n" +
 "                        const finalPass = await testCompileAndRenderScene(currentSceneGlsl, currentCam, 1024, 1024, false);\n" +
 "                        currentRenderUrl = finalPass.dataUrl;\n" +
 "                    }\n" +
