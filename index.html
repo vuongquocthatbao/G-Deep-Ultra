@@ -4475,24 +4475,64 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    });\n" +
 "}\n\n" +
 
-"function extractCodeBlock(text, tag) {\n" +
-"    if (!text) return '';\n" +
-"    const regex = new RegExp('```(?:' + tag + ')?\\\\s*([\\\\s\\\\S]*?)```', 'i');\n" +
-"    const m = text.match(regex);\n" +
-"    if (m && m[1]) return m[1].trim();\n" +
-"    return text.trim();\n" +
+// [CẢM BIẾN NHẬN DIỆN & VỨT BỎ JSON THÔNG BÁO LỖI TỪ MÁY CHỦ]
+"function isServerApiErrorJson(str) {\n" +
+"    if (!str || typeof str !== 'string') return false;\n" +
+"    const s = str.trim();\n" +
+"    // Nhận diện định dạng JSON báo lỗi của Google API / Proxy\n" +
+"    const hasErrorSign = (s.indexOf('\"error\"') !== -1 || s.indexOf('\"RESOURCE_EXHAUSTED\"') !== -1 || s.indexOf('\"Quota exceeded\"') !== -1 || s.indexOf('\"PERMISSION_DENIED\"') !== -1 || s.indexOf('\"API_KEY_INVALID\"') !== -1 || s.indexOf('\"RATE_LIMIT\"') !== -1);\n" +
+"    if (hasErrorSign) {\n" +
+"        // Tuyệt đối không chặn nhầm JSON tham số tạo ảnh hợp lệ (chứa camPos, sunDir, flaw...)\n" +
+"        if (s.indexOf('camPos') === -1 && s.indexOf('sunDir') === -1 && s.indexOf('flaw') === -1 && s.indexOf('map') === -1) {\n" +
+"            return true; // Đích thị là JSON thông báo lỗi -> Vứt bỏ!\n" +
+"        }\n" +
+"    }\n" +
+"    return false;\n" +
 "}\n\n" +
 
+// [BÓC TÁCH MÃ GLSL ĐỘC LẬP - MIỄN NHIỄM 100% VỚI JSON]
+"function extractGlslBlock(text) {\n" +
+"    if (!text || typeof text !== 'string') return '';\n" +
+"    if (isServerApiErrorJson(text)) return '';\n" +
+"    const clean = text.trim();\n" +
+"    // 1. Ưu tiên bóc tách từ khối ```glsl ... ```\n" +
+"    const m = clean.match(/```(?:glsl)?\\s*([\\s\\S]*?)```/i);\n" +
+"    if (m && m[1]) {\n" +
+"        const code = m[1].trim();\n" +
+"        if (code.indexOf('{') !== 0 && code.indexOf('\"camPos\"') === -1) return code;\n" +
+"    }\n" +
+"    // 2. Nếu không có fence, tìm từ khóa hàm GLSL thực thụ\n" +
+"    const start = clean.search(/(?:vec2\\s+map\\s*\\(|Material\\s+getMaterial\\s*\\()/i);\n" +
+"    if (start !== -1) {\n" +
+"        let code = clean.slice(start);\n" +
+"        const end = code.indexOf('```');\n" +
+"        if (end !== -1) code = code.slice(0, end);\n" +
+"        return code.trim();\n" +
+"    }\n" +
+"    // Tuyệt đối KHÔNG trả về raw text nếu đó là JSON hoặc văn bản thường để tránh hỏng WebGL\n" +
+"    return '';\n" +
+"}\n\n" +
+
+// [BÓC TÁCH JSON THAM SỐ TẠO ẢNH HỢP LỆ - TỰ ĐỘNG LỌC BỎ JSON BÁO LỖI]
 "function parseJsonBlock(text) {\n" +
-"    const clean = extractCodeBlock(text, 'json');\n" +
-"    const start = clean.indexOf('{');\n" +
-"    const end = clean.lastIndexOf('}');\n" +
-"    if (start !== -1 && end !== -1) {\n" +
-"        try { return JSON.parse(clean.slice(start, end + 1)); } catch (e) {}\n" +
+"    if (!text || typeof text !== 'string') return {};\n" +
+"    if (isServerApiErrorJson(text)) return {};\n" +
+"    const m = text.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n" +
+"    const raw = (m && m[1]) ? m[1].trim() : text.trim();\n" +
+"    const start = raw.indexOf('{');\n" +
+"    const end = raw.lastIndexOf('}');\n" +
+"    if (start !== -1 && end !== -1 && end > start) {\n" +
+"        try {\n" +
+"            const parsed = JSON.parse(raw.slice(start, end + 1));\n" +
+"            // Nếu parse ra object có chứa trường error của API mà không có tham số ảnh -> Vứt bỏ\n" +
+"            if (parsed && parsed.error && !parsed.camPos && !parsed.flaw) return {};\n" +
+"            return parsed;\n" +
+"        } catch (e) {}\n" +
 "    }\n" +
 "    return {};\n" +
 "}\n\n" +
 
+// [HÀM XOAY KEY & MODEL THÉP - VỨT SỌT RÁC MỌI RESPONSE CHỨA LỖI]
 "async function callAiWithContinuation(systemInstruction, textPrompt, imageBase64, models, apiKeys) {\n" +
 "    for (let mIdx = 0; mIdx < models.length; mIdx++) {\n" +
 "        const modelId = models[mIdx];\n" +
@@ -4514,14 +4554,26 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "                    delete payload.generationConfig.thinkingConfig;\n" +
 "                    res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });\n" +
 "                }\n" +
-"                if (!res.ok) continue;\n" +
+"                // [VỨT BỎ NGAY]: Nếu HTTP Status báo lỗi (429 Quota, 403, 503, 500...) -> Không đọc, trượt sang Key tiếp theo\n" +
+"                if (!res.ok) continue;\n\n" +
+
 "                const data = await res.json();\n" +
-"                const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts ? data.candidates[0].content.parts[0].text : '';\n" +
+"                // [VỨT BỎ NGAY]: Nếu máy chủ trả về mã 200 nhưng body là JSON lỗi error object\n" +
+"                if (data && data.error) continue;\n" +
+"                if (!data || !data.candidates || !data.candidates[0] || !data.candidates[0].content) continue;\n\n" +
+
+"                const text = (data.candidates[0].content.parts && data.candidates[0].content.parts[0]) ? data.candidates[0].content.parts[0].text : '';\n" +
+"                // [VỨT BỎ NGAY]: Nếu text phản hồi chứa chuỗi JSON báo lỗi\n" +
+"                if (isServerApiErrorJson(text)) continue;\n\n" +
+
 "                if (text && text.trim()) return { success: true, text: text, activeModel: modelId };\n" +
-"            } catch (e) { continue; }\n" +
+"            } catch (e) {\n" +
+"                // Lỗi mạng hoặc JSON parse fail -> Im lặng trượt sang Key tiếp theo\n" +
+"                continue;\n" +
+"            }\n" +
 "        }\n" +
 "    }\n" +
-"    throw new Error('Đứt gãy mạng lưới liên kết API AI.');\n" +
+"    throw new Error('Đứt gãy mạng lưới liên kết API AI. Toàn bộ Key và Model đều đã cạn Quota hoặc bị chặn.');\n" +
 "}\n\n" +
 
 "self.onmessage = async (e) => {\n" +
@@ -4541,12 +4593,12 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            'Nhiệm vụ của bạn: TẠC NÊN BỐI CẢNH, CHỦ THỂ, ĐA CHỦ THỂ THEO ĐÚNG PROMPT NGƯỜI DÙNG.\\n\\n' +\n" +
 "            'BẠN BẮT BUỘC PHẢI VIẾT 2 HÀM GLSL CHUẨN XÁC:\\n' +\n" +
 "            '1. vec2 map(vec3 p): Trả về vec2(khoảng_cách_d, mã_vật_liệu_matId).\\n' +\n" +
-"            '   - Xây dựng hình khối chủ thể chi tiết bằng cách kết hợp: sdSphere, sdBox, sdRoundBox, sdCapsule, sdCylinder, sdPlane.\\n' +\n" +
+"            '   - Dựng hình khối chi tiết bằng cách kết hợp: sdSphere, sdBox, sdRoundBox, sdCapsule, sdCylinder, sdPlane.\\n' +\n" +
 "            '   - Sử dụng smin(d1, d2, k) để hòa trộn giải phẫu mềm mại (Dòng Ricci).\\n' +\n" +
-"            '   - Dùng fbm(p) hoặc curlNoise(p) để tạo độ gồ ghề của địa hình, bối cảnh tự nhiên.\\n' +\n" +
+"            '   - Dùng fbm(p) hoặc curlNoise(p) để tạo địa hình, bối cảnh tự nhiên.\\n' +\n" +
 "            '2. Material getMaterial(int matId, vec3 p, vec3 n):\\n' +\n" +
 "            '   - Trả về Material(vec3 albedo, float roughness, float metallic, float sss, vec3 emission, float ior) tương ứng với từng matId.\\n\\n' +\n" +
-"            'XUẤT RA THEO 2 PHẦN:\\n' +\n" +
+"            'XUẤT RA THEO 2 PHẦN RIÊNG BIỆT:\\n' +\n" +
 "            'Phần 1: Metadata Camera và Mặt trời JSON:\\n' +\n" +
 "            '```json\\n' +\n" +
 "            '{\\n' +\n" +
@@ -4562,7 +4614,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            '}\\n' +\n" +
 "            'Material getMaterial(int id, vec3 p, vec3 n) {\\n' +\n" +
 "            '    Material m;\\n' +\n" +
-"            '    // Định nghĩa chất liệu theo id...\\n' +\n" +
 "            '    return m;\\n' +\n" +
 "            '}\\n' +\n" +
 "            '```';\n\n" +
@@ -4572,7 +4623,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "        const resGenesis = await callAiWithContinuation(ARCHITECT_SYSTEM, genesisPrompt, null, candidateModels, apiKeys);\n" +
 "        \n" +
 "        let currentCam = parseJsonBlock(resGenesis.text);\n" +
-"        let currentSceneGlsl = extractCodeBlock(resGenesis.text, 'glsl');\n\n" +
+"        let currentSceneGlsl = extractGlslBlock(resGenesis.text);\n" +
+"        if (!currentSceneGlsl) currentSceneGlsl = 'vec2 map(vec3 p){ return vec2(length(p - vec3(0.0,0.5,0.0)) - 0.8, 1.0); }\\nMaterial getMaterial(int id, vec3 p, vec3 n){ Material m; m.albedo = vec3(0.8,0.3,0.2); m.roughness = 0.3; m.metallic = 0.1; m.sss = 0.2; m.emission = vec3(0.0); m.ior = 1.4; return m; }';\n\n" +
 
 "        postStatus('Đang kiểm tra tính toàn vẹn của tia sáng và quang thông...');\n" +
 "        let dryRun = testCompileAndRenderScene(currentSceneGlsl, currentCam, 64, 64, true);\n" +
@@ -4585,7 +4637,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "                              'Hãy điều chỉnh lại tọa độ camPos/camTarget trong JSON hoặc sửa hàm map(p)/getMaterial trong GLSL để ảnh không bị đen/trắng và hiển thị rõ ràng!';\n" +
 "            const resFix = await callAiWithContinuation(ARCHITECT_SYSTEM, fixPrompt, null, candidateModels, apiKeys);\n" +
 "            const newCam = parseJsonBlock(resFix.text);\n" +
-"            const newGlsl = extractCodeBlock(resFix.text, 'glsl');\n" +
+"            const newGlsl = extractGlslBlock(resFix.text);\n" +
 "            if (newGlsl) currentSceneGlsl = newGlsl;\n" +
 "            if (newCam && newCam.camPos) currentCam = newCam;\n" +
 "            dryRun = testCompileAndRenderScene(currentSceneGlsl, currentCam, 64, 64, true);\n" +
@@ -4601,7 +4653,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "        const AUDITOR_SYSTEM = 'BẠN LÀ NHÀ QUAN TRẮC VẬT LÝ QUANG HỌC.\\n' +\n" +
 "            'Đối chiếu ảnh render đính kèm với Prompt người dùng: \"' + promptText + '\".\\n' +\n" +
 "            'Hãy chỉ ra 1 điểm khiếm khuyết lớn nhất cần cải thiện (về chi tiết chủ thể, bố cục, màu sắc).\\n' +\n" +
-"            'Trả về JSON: { \"flaw\": \"Mô tả lỗi...\", \"suggestion\": \"Gợi ý thêm chi tiết gì vào map(p) hoặc đổi màu trong getMaterial...\" }';\n\n" +
+"            'TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HỢP LỆ: { \"flaw\": \"Mô tả lỗi...\", \"suggestion\": \"Gợi ý thêm chi tiết vào map(p) hoặc đổi màu trong getMaterial...\" }';\n\n" +
 
 "        let round = 1;\n" +
 "        while (round <= 2) {\n" +
@@ -4610,12 +4662,12 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            const auditJson = parseJsonBlock(auditRes.text);\n" +
 "            \n" +
 "            if (auditJson && auditJson.flaw) {\n" +
-"                postStatus('Đang khắc phục: ' + auditJson.flaw.slice(0, 40) + '...');\n" +
+"                postStatus('Đang khắc phục: ' + String(auditJson.flaw).slice(0, 40) + '...');\n" +
 "                const refinePrompt = 'KHUYẾT TẬT CẦN KHẮC PHỤC: \"' + auditJson.flaw + '\". GỢI Ý: \"' + auditJson.suggestion + '\".\\n' +\n" +
 "                                     'MÃ HIỆN TẠI:\\n```glsl\\n' + currentSceneGlsl + '\\n```\\n' +\n" +
 "                                     'Hãy viết lại toàn bộ mã map(p) và getMaterial để bổ sung đầy đủ chi tiết theo đúng gợi ý!';\n" +
 "                const refineRes = await callAiWithContinuation(ARCHITECT_SYSTEM, refinePrompt, null, candidateModels, apiKeys);\n" +
-"                const refinedGlsl = extractCodeBlock(refineRes.text, 'glsl');\n" +
+"                const refinedGlsl = extractGlslBlock(refineRes.text);\n" +
 "                const refinedCam = parseJsonBlock(refineRes.text);\n" +
 "                \n" +
 "                if (refinedGlsl) {\n" +
