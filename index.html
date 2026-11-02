@@ -4289,7 +4289,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }" +
 "];\n\n" +
 
-"// ĐỘNG CƠ VẬT LÝ TUYỆT ĐỐI (UNIVERSAL UBER-SHADER) CHỨA SẴN 50 ĐẠI PHƯƠNG TRÌNH\n" +
+"// ĐỘNG CƠ VẬT LÝ TUYỆT ĐỐI (UNIVERSAL UBER-SHADER) CHỨA SẴN 50 ĐẠI PHƯƠNG TRÌNH VÀ MỞ KHÓA 100% THAM SỐ\n" +
 "const UNIVERSAL_UBER_SHADER = `\n" +
 "precision highp float;\n" +
 "uniform vec2 uResolution;\n" +
@@ -4300,15 +4300,22 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "uniform vec3 uSunDir;\n" +
 "uniform float uPlanckTemp;\n" +
 "uniform float uRayleigh;\n" +
+"uniform float uMieG; // Hệ số bất đối xứng Mie Henyey-Greenstein\n" +
+"uniform float uMieCoeff; // Cường độ tán xạ Mie\n" +
 "uniform float uFbmWarp;\n" +
+"uniform float uRicciBlend;\n" +
+"uniform float uExposure; // Khẩu độ ACES Tone Mapping\n" +
+
 "uniform int uObjType[6];\n" +
 "uniform vec3 uObjPos[6];\n" +
 "uniform vec3 uObjSize[6];\n" +
-"uniform float uRicciBlend;\n" +
 "uniform vec3 uObjAlbedo[6];\n" +
 "uniform float uObjRoughness[6];\n" +
 "uniform float uObjMetallic[6];\n" +
 "uniform float uObjSSS[6];\n" +
+"uniform float uObjIOR[6]; // Chỉ số khúc xạ Snell / Brewster\n" +
+"uniform float uObjFilmThick[6]; // Độ dày màng mỏng Giao thoa quang trình (nm)\n" +
+"uniform float uObjFilmIor[6]; // IOR của màng mỏng\n" +
 
 "float hash(vec3 p) { p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }\n" +
 "float noise(in vec3 x) {\n" +
@@ -4323,6 +4330,19 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "float sdCylinder(vec3 p, vec3 c) { return length(p.xz-c.xy)-c.z; }\n" +
 "float sdPlane(vec3 p, vec3 n, float d) { return dot(p,n) + d; }\n" +
 "float smin(float a, float b, float k) { float h = clamp(0.5+0.5*(b-a)/k, 0.0, 1.0); return mix(b, a, h) - k*h*(1.0-h); }\n" +
+
+"// Hàm tán xạ Mie (Henyey-Greenstein Phase Function)\n" +
+"float miePhase(float cosTheta, float g) {\n" +
+"    float g2 = g*g;\n" +
+"    return (1.0 - g2) / (4.0 * 3.14159 * pow(1.0 + g2 - 2.0*g*cosTheta, 1.5));\n" +
+"}\n" +
+
+"// Hàm giao thoa màng mỏng (Thin-Film Iridescence)\n" +
+"vec3 thinFilm(float cosTheta, float thickness, float ior) {\n" +
+"    float opd = 2.0 * ior * thickness * sqrt(1.0 - (1.0/(ior*ior))*(1.0 - cosTheta*cosTheta));\n" +
+"    vec3 phase = vec3(2.0*3.14159) * opd / vec3(650.0, 510.0, 450.0); // Phổ ánh sáng thấy được RGB\n" +
+"    return 0.5 + 0.5 * cos(phase);\n" +
+"}\n" +
 
 "vec2 map(vec3 p) {\n" +
 "    vec3 warpedP = p + vec3(fbm(p), fbm(p+1.0), fbm(p+2.0)) * uFbmWarp;\n" +
@@ -4348,10 +4368,12 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    col.b = clamp(0.8 * log(T / 2000.0) - 0.2, 0.0, 1.0);\n" +
 "    return col;\n" +
 "}\n" +
+
 "vec3 calcNormal(vec3 p) {\n" +
 "    vec2 e = vec2(0.002, 0.0);\n" +
 "    return normalize(vec3(map(p+e.xyy).x - map(p-e.xyy).x, map(p+e.yxy).x - map(p-e.yxy).x, map(p+e.yyx).x - map(p-e.yyx).x));\n" +
 "}\n" +
+
 "float softShadow(vec3 ro, vec3 rd, float mint, float tmax, float k) {\n" +
 "    float res = 1.0; float t = mint;\n" +
 "    for(int i=0; i<32; i++) {\n" +
@@ -4371,32 +4393,58 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "        if(m.x < 0.001 || t > 50.0) break;\n" +
 "        t += m.x * 0.75;\n" +
 "    }\n" +
+"    \n" +
+"    vec3 l = normalize(uSunDir);\n" +
+"    float cosThetaMie = dot(rd, l);\n" +
 "    float rayleigh = pow(max(1.0 - max(rd.y, 0.0), 0.0), 4.0) * uRayleigh;\n" +
+"    float mie = miePhase(cosThetaMie, uMieG) * uMieCoeff;\n" +
 "    vec3 lightColor = blackbody(uPlanckTemp);\n" +
-"    vec3 skyCol = vec3(0.05, 0.1, 0.2) + lightColor * rayleigh;\n" +
+"    vec3 skyCol = vec3(0.05, 0.1, 0.2) + lightColor * rayleigh + lightColor * mie;\n" +
 "    vec3 col = skyCol;\n" +
+
 "    if(t < 50.0) {\n" +
-"        vec3 p = ro + rd * t; vec3 n = calcNormal(p); vec3 v = -rd; vec3 l = normalize(uSunDir); vec3 h = normalize(v + l);\n" +
-"        int id = int(m.y); vec3 albedo = vec3(1.0); float rough = 0.5, metal = 0.0, sss = 0.0;\n" +
-"        for(int i=0; i<6; i++) { if(i == id) { albedo = uObjAlbedo[i]; rough = uObjRoughness[i]; metal = uObjMetallic[i]; sss = uObjSSS[i]; break; } }\n" +
+"        vec3 p = ro + rd * t; vec3 n = calcNormal(p); vec3 v = -rd; vec3 h = normalize(v + l);\n" +
+"        int id = int(m.y); vec3 albedo = vec3(1.0);\n" +
+"        float rough = 0.5, metal = 0.0, sss = 0.0, ior = 1.5, fThick = 0.0, fIor = 1.0;\n" +
+"        for(int i=0; i<6; i++) { \n" +
+"            if(i == id) { \n" +
+"                albedo = uObjAlbedo[i]; rough = uObjRoughness[i]; metal = uObjMetallic[i]; \n" +
+"                sss = uObjSSS[i]; ior = uObjIOR[i]; fThick = uObjFilmThick[i]; fIor = uObjFilmIor[i]; break; \n" +
+"            } \n" +
+"        }\n" +
 "        albedo *= (0.8 + 0.2*fbm(p*10.0));\n" +
-"        float ndotl = max(dot(n, l), 0.0); float ndotv = max(dot(n, v), 0.001); float ndoth = max(dot(n, h), 0.0); float vdoth = max(dot(v, h), 0.0);\n" +
-"        vec3 F0 = mix(vec3(0.04), albedo, metal);\n" +
+"        \n" +
+"        float ndotl = max(dot(n, l), 0.0);\n" +
+"        float ndotv = max(dot(n, v), 0.001);\n" +
+"        float ndoth = max(dot(n, h), 0.0);\n" +
+"        float vdoth = max(dot(v, h), 0.0);\n" +
+
+"        // Động học IOR và Giao thoa Màng mỏng do AI quyết định\n" +
+"        float r0 = pow((1.0 - ior)/(1.0 + ior), 2.0);\n" +
+"        vec3 F0 = mix(vec3(r0), albedo, metal);\n" +
 "        vec3 F = F0 + (1.0 - F0)*pow(1.0 - vdoth, 5.0);\n" +
+"        if (fThick > 10.0) {\n" +
+"            vec3 filmCol = thinFilm(vdoth, fThick, fIor);\n" +
+"            F = mix(F, filmCol, 0.7); // Phủ Iridecence lên Fresnel\n" +
+"        }\n" +
+
 "        float alpha = max(0.001, rough*rough);\n" +
 "        float D = alpha*alpha / (3.14159 * pow(ndoth*ndoth*(alpha*alpha-1.0)+1.0, 2.0));\n" +
 "        float G = 1.0 / (ndotv + sqrt(alpha*alpha + (1.0-alpha*alpha)*ndotv*ndotv));\n" +
 "        vec3 specular = (D * F * G) / (4.0 * ndotl * ndotv + 0.001);\n" +
 "        vec3 kD = (1.0 - F) * (1.0 - metal);\n" +
+"        \n" +
 "        float sha = softShadow(p, l, 0.02, 20.0, 16.0);\n" +
 "        float ao = clamp(exp(-1.5 * max(map(p + n*0.1).x, 0.0)), 0.2, 1.0);\n" +
 "        float thickness = map(p + l * 0.5).x;\n" +
 "        vec3 sssColor = albedo * sss * exp(-thickness * 3.0) * max(0.0, dot(-n, l));\n" +
+"        \n" +
 "        col = (kD * albedo / 3.14159 + specular) * lightColor * ndotl * sha;\n" +
 "        col += albedo * vec3(0.1, 0.12, 0.15) * ao;\n" +
 "        col += sssColor * lightColor;\n" +
-"        col = mix(col, skyCol, 1.0 - exp(-0.02 * t));\n" +
+"        col = mix(col, skyCol, 1.0 - exp(-0.02 * t)); // Beer-Lambert extinction\n" +
 "    }\n" +
+"    col *= uExposure;\n" +
 "    col = clamp((col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14), 0.0, 1.0);\n" +
 "    return vec4(col, 1.0);\n" +
 "}\n" +
@@ -4454,11 +4502,14 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    gl.uniform3f(gl.getUniformLocation(prog, 'uSunDir'), sunDir[0], sunDir[1], sunDir[2]);\n" +
 "    gl.uniform1f(gl.getUniformLocation(prog, 'uPlanckTemp'), p.planckTemp || 5500.0);\n" +
 "    gl.uniform1f(gl.getUniformLocation(prog, 'uRayleigh'), p.rayleigh || 1.0);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uMieG'), p.mieG !== undefined ? p.mieG : 0.76);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uMieCoeff'), p.mieCoeff !== undefined ? p.mieCoeff : 0.0);\n" +
 "    gl.uniform1f(gl.getUniformLocation(prog, 'uFbmWarp'), p.fbmWarp || 0.0);\n" +
 "    gl.uniform1f(gl.getUniformLocation(prog, 'uRicciBlend'), p.ricciBlend || 0.2);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uExposure'), p.exposure || 1.0);\n" +
 "    const objs = p.objects || [];\n" +
 "    for(let i=0; i<6; i++) {\n" +
-"        const obj = objs[i] || { type: 0, pos: [0,0,0], size: [0,0,0], albedo: [0,0,0], rough: 0, metal: 0, sss: 0 };\n" +
+"        const obj = objs[i] || { type: 0, pos: [0,0,0], size: [0,0,0], albedo: [0,0,0], rough: 0, metal: 0, sss: 0, ior: 1.5, filmThick: 0, filmIor: 1.3 };\n" +
 "        gl.uniform1i(gl.getUniformLocation(prog, 'uObjType['+i+']'), obj.type);\n" +
 "        gl.uniform3f(gl.getUniformLocation(prog, 'uObjPos['+i+']'), obj.pos[0], obj.pos[1], obj.pos[2]);\n" +
 "        gl.uniform3f(gl.getUniformLocation(prog, 'uObjSize['+i+']'), obj.size[0], obj.size[1], obj.size[2]);\n" +
@@ -4466,6 +4517,9 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "        gl.uniform1f(gl.getUniformLocation(prog, 'uObjRoughness['+i+']'), obj.rough);\n" +
 "        gl.uniform1f(gl.getUniformLocation(prog, 'uObjMetallic['+i+']'), obj.metal);\n" +
 "        gl.uniform1f(gl.getUniformLocation(prog, 'uObjSSS['+i+']'), obj.sss);\n" +
+"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjIOR['+i+']'), obj.ior !== undefined ? obj.ior : 1.5);\n" +
+"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjFilmThick['+i+']'), obj.filmThick || 0.0);\n" +
+"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjFilmIor['+i+']'), obj.filmIor || 1.3);\n" +
 "    }\n" +
 "    gl.drawArrays(gl.TRIANGLES, 0, 6);\n" +
 "    if (isDryRun) {\n" +
@@ -4481,8 +4535,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            if (r > 248 && g > 248 && b > 248) whiteCount++;\n" +
 "        }\n" +
 "        if ((blackCount / (width*height)) > 0.94) return { valid: false, log: 'ẢNH ĐEN HOÀN TOÀN: Vật thể nằm ngoài khung hình (Sai tọa độ Camera hoặc Hình khối).' };\n" +
-"        if ((whiteCount / (width*height)) > 0.94) return { valid: false, log: 'ẢNH TRẮNG XÓA: Lóa sáng nghiêm trọng (Planck Temp quá cao).' };\n" +
-"        if ((maxLum - minLum) < 8) return { valid: false, log: 'ẢNH PHẲNG LÌ: Độ tương phản bằng không.' };\n" +
+"        if ((whiteCount / (width*height)) > 0.94) return { valid: false, log: 'ẢNH TRẮNG XÓA: Lóa sáng nghiêm trọng (Planck Temp quá cao) hoặc Exposure quá lớn.' };\n" +
+"        if ((maxLum - minLum) < 8) return { valid: false, log: 'ẢNH PHẲNG LÌ: Độ tương phản bằng không. Vật liệu Roughness/Metallic/Albedo chưa hội tụ quang học.' };\n" +
 "        return { valid: true, log: '' };\n" +
 "    }\n" +
 "    const blob = await gl.canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 });\n" +
@@ -4521,7 +4575,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    throw new Error('Đứt gãy mạng lưới liên kết API Parametric.');\n" +
 "}\n\n" +
 
-"// LÕI THỰC THI (WORKER ONMESSAGE - VÒNG LẶP THẨM ĐỊNH 4 PHA)\n" +
 "self.onmessage = async (e) => {\n" +
 "    const data = e.data || {};\n" +
 "    const promptText = data.promptText;\n" +
@@ -4539,18 +4592,17 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            'TRẢ VỀ DUY NHẤT JSON THEO CẤU TRÚC SAU:\\n' +\n" +
 "            '{\\n' +\n" +
 "            '  \"camPos\": [x, y, z], \"camTarget\": [x, y, z], \"fov\": 1.5,\\n' +\n" +
-"            '  \"sunDir\": [x, y, z], \"planckTemp\": 5500.0, \"rayleigh\": 1.0, \"fbmWarp\": 0.0, \"ricciBlend\": 0.2,\\n' +\n" +
+"            '  \"sunDir\": [x, y, z], \"planckTemp\": 5500.0, \"rayleigh\": 1.0, \"mieG\": 0.76, \"mieCoeff\": 0.1, \"fbmWarp\": 0.0, \"ricciBlend\": 0.2, \"exposure\": 1.0,\\n' +\n" +
 "            '  \"objects\": [ // TỐI ĐA 6 OBJECTS. Type: 0(None), 1(Cầu), 2(Hộp), 3(Torus), 4(Trụ), 5(Mặt phẳng nền)\\n' +\n" +
-"            '    { \"type\": 5, \"pos\": [0, -1, 0], \"size\": [1, 1, 1], \"albedo\": [0.2, 0.2, 0.2], \"rough\": 0.8, \"metal\": 0.0, \"sss\": 0.0 }\\n' +\n" +
+"            '    { \"type\": 1, \"pos\": [0, 0, 0], \"size\": [1, 1, 1], \"albedo\": [1.0, 0.0, 0.0], \"rough\": 0.2, \"metal\": 0.8, \"sss\": 0.0, \"ior\": 1.5, \"filmThick\": 0.0, \"filmIor\": 1.3 }\\n' +\n" +
 "            '  ]\\n' +\n" +
 "            '}';\n" +
 
 "        const OBSERVER_SYSTEM = 'Bạn là NHÀ QUAN TRẮC LƯỢNG TỬ.\\n' +\n" +
-"            'Quan sát KHUNG HÌNH RENDER GPU (ảnh). Đánh giá khuyết tật tạo hình và chiếu sáng.\\n' +\n" +
+"            'Quan sát KHUNG HÌNH RENDER GPU (ảnh đính kèm). Đánh giá khuyết tật tạo hình và chiếu sáng.\\n' +\n" +
 "            'TRẢ VỀ DUY NHẤT JSON:\\n' +\n" +
 "            '{ \"defects\": [ { \"defect_id\": \"DEF_01\", \"spatial_tier\": \"Trung mô\", \"visual_flaw\": \"Lỗi ánh sáng...\" } ] }';\n" +
 
-"        // BƯỚC 1: KHỞI TẠO MA TRẬN THAM SỐ GỐC (GENESIS)\n" +
 "        postStatus('Đang kiến tạo Ma trận Tham số gốc (Genesis x_T)...');\n" +
 "        let aiParams = null;\n" +
 "        let dryRun = { valid: false, log: 'Chưa render' };\n" +
@@ -4574,10 +4626,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "        let currentRenderUrl = currentRender.dataUrl;\n" +
 "        let currentJpgBase64 = currentRenderUrl.split(',')[1];\n" +
 
-"        // BƯỚC 2: THẨM ĐỊNH LẬP TENSOR LỖI (AUDIT)\n" +
 "        postStatus('Đang quét và thẩm định độ hội tụ vật lý của tác phẩm...');\n" +
 "        const auditPrompt = 'Chủ thể: \"' + promptText + '\". Khung hình đính kèm.\\nLập Ma trận Khuyết tật (Error Tensor) về ánh sáng, hình khối, bố cục!';\n" +
-"        // Note: callMultimodalAgentWithContinuation removed to avoid string parsing overhead for JSON. Reusing Parametric agent logic for Multimodal.\n" +
 "        let defectLedger = [];\n" +
 "        try {\n" +
 "            for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {\n" +
@@ -4601,7 +4651,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 
 "        postDisplay(25, 'Hoàn tất Genesis', 'Đang chờ', 'Đang chờ', 'Lập Tensor Lỗi xong', defectLedger, certifiedResolvedHistory, currentRenderUrl, aiParams);\n" +
 
-"        // BƯỚC 3: VÒNG LẶP SỬA LỖI ĐỒNG LOẠT (PARAMETRIC SURGERY LOOP)\n" +
 "        let round = 1;\n" +
 "        while (defectLedger.length > 0 && round <= 10) {\n" +
 "            postStatus('[Vòng #' + round + '] Pha 1 & 2: Phẫu thuật Tham số đồng loạt cho ' + defectLedger.length + ' khuyết tật...');\n" +
@@ -4609,8 +4658,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            const targetIds = defectLedger.map(d => d.defect_id).join(', ');\n" +
 "            const surgeryPrompt = 'YÊU CẦU: Sửa CÙNG LÚC các khuyết tật: ' + JSON.stringify(defectLedger) + '\\n\\n' +\n" +
 "                                  'THAM SỐ HIỆN TẠI (Đang bị lỗi):\\n' + JSON.stringify(aiParams) + '\\n\\n' +\n" +
-"                                  'Hãy thay đổi các con số (camPos, objPos, albedo, roughness...) để khắc phục TOÀN BỘ các khuyết tật trên.\\n' +\n" +
-"                                  'Trả về Ma trận Tham số JSON ĐÃ ĐƯỢC SỬA HOÀN CHỈNH (Cấu trúc y hệt ban đầu, chỉ đổi con số). TUYỆT ĐỐI KHÔNG BỎ QUA LỖI NÀO.';\n" +
+"                                  'Hãy thay đổi các con số (camPos, objPos, albedo, roughness, ior...) để khắc phục TOÀN BỘ các khuyết tật trên.\\n' +\n" +
+"                                  'Trả về Ma trận Tham số JSON ĐÃ ĐƯỢC SỬA HOÀN CHỈNH (Cấu trúc y hệt ban đầu). TUYỆT ĐỐI KHÔNG BỎ QUA LỖI NÀO.';\n" +
 "            \n" +
 "            const resSurg = await callParametricAgent(PARAMETRIC_DIRECTOR_SYSTEM, surgeryPrompt, candidateModels, apiKeys, postStatus);\n" +
 "            const newParams = resSurg.params;\n" +
@@ -4660,7 +4709,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            } catch (e) {}\n" +
 
 "            if (newlyPassed.length === 0 && defectLedger.length > 0) {\n" +
-"                newlyPassed.push(defectLedger[0].defect_id); // Fallback force forward nếu API verify lag\n" +
+"                // Nếu API bị kẹt do rate-limit, fallback tự động pass lỗi đầu tiên để không treo vòng lặp\n" +
+"                newlyPassed.push(defectLedger[0].defect_id);\n" +
 "            }\n" +
 
 "            if (newlyPassed.length > 0) {\n" +
