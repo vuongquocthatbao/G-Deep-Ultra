@@ -4274,8 +4274,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
             ]);
 
             // =========================================================================
-            // MÃ NGUỒN WEB WORKER: ĐỘNG CƠ UBER-SHADER 50 PHƯƠNG TRÌNH VÀ VÒNG LẶP 4 PHA THUẦN KHIẾT
-            // AI CHỈ ĐIỀU KHIỂN THAM SỐ (PARAMETRIC DIRECTOR) - KHÔNG BƯỚC NHẢY VỌT LOGIC
+            // PIPELINE TẠO ẢNH GIẢI TÍCH PHI-DIT: 20 TRỤ CỘT & 50 ĐẠI PHƯƠNG TRÌNH
+            // HẠ TẦNG PBR BẤT BIẾN + AI TẠC HÌNH HỌC KHÔNG GIAN ĐỘNG (SDF & MANIFOLD)
             // =========================================================================
             const imagePipelineWorkerCode = "" +
 "const SAFETY_SETTINGS = [" +
@@ -4285,346 +4285,232 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }" +
 "];\n\n" +
 
-"// ĐỘNG CƠ VẬT LÝ TUYỆT ĐỐI CHỨA 50 PHƯƠNG TRÌNH ĐƯỢC VIẾT SẴN TRONG WEBGL\n" +
-"const UNIVERSAL_UBER_SHADER = `\n" +
-"precision highp float;\n" +
-"uniform vec2 uResolution;\n" +
-"uniform float uTime;\n" +
+"// HẠ TẦNG QUANG HỌC PBR VÀ HÌNH HỌC VI PHÂN 50 CÔNG THỨC TRÊN GPU\\n" +
+"const GLSL_CORE_ENGINE_HEADER = " +
+"'precision highp float;\\n' +" +
+"'uniform vec2 uResolution;\\n' +" +
+"'uniform float uTime;\\n' +" +
+"'uniform vec3 uCamPos;\\n' +" +
+"'uniform vec3 uCamTarget;\\n' +" +
+"'uniform float uFov;\\n' +" +
+"'uniform vec3 uSunDir;\\n' +" +
+"'uniform float uSunTemp;\\n' +" +
+"'uniform float uSunIntensity;\\n\\n' +" +
 
-"uniform vec3 uCamPos;\n" +
-"uniform vec3 uCamTarget;\n" +
-"uniform float uFov;\n" +
-"uniform vec3 uSunDir;\n" +
-"uniform float uPlanckTemp;\n" +
-"uniform float uRayleigh;\n" +
-"uniform float uMieG;\n" +
-"uniform float uMieCoeff;\n" +
-"uniform float uFbmWarp;\n" +
-"uniform float uRicciBlend;\n" +
-"uniform float uExposure;\n" +
+"'struct Material {\\n' +" +
+"'    vec3 albedo;\\n' +" +
+"'    float roughness;\\n' +" +
+"'    float metallic;\\n' +" +
+"'    float sss;\\n' +" +
+"'    vec3 emission;\\n' +" +
+"'    float ior;\\n' +" +
+"'};\\n\\n' +" +
 
-"uniform int uObjType[6];\n" +
-"uniform vec3 uObjPos[6];\n" +
-"uniform vec3 uObjSize[6];\n" +
-"uniform vec3 uObjAlbedo[6];\n" +
-"uniform float uObjRoughness[6];\n" +
-"uniform float uObjMetallic[6];\n" +
-"uniform float uObjSSS[6];\n" +
-"uniform float uObjIOR[6];\n" +
-"uniform float uObjFilmThick[6];\n" +
-"uniform float uObjFilmIor[6];\n" +
+"'// --- THƯ VIỆN TOÁN HỌC, NHIỄU & NAVIER-STOKES FBM ---\\n' +" +
+"'float hash(vec3 p) { p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }\\n' +" +
+"'float noise(in vec3 x) { vec3 i = floor(x); vec3 f = fract(x); f = f*f*(3.0-2.0*f); return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)),f.x), mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)),f.x),f.y), mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)),f.x), mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)),f.x),f.y),f.z); }\\n' +" +
+"'float fbm(vec3 p) { float f=0.0; f+=0.5000*noise(p); p*=2.02; f+=0.2500*noise(p); p*=2.03; f+=0.1250*noise(p); return f; }\\n' +" +
+"'vec3 curlNoise(vec3 p) { return vec3(fbm(p.yzx), fbm(p.zxy), fbm(p.xyz)); }\\n\\n' +" +
 
-"// 50 PHƯƠNG TRÌNH VẬT LÝ THỰC NGHIỆM ĐƯỢC MÃ HÓA NATIVE TRÊN GPU\n" +
-"// 1. Tán xạ Rayleigh\n" +
-"vec3 rayleigh(vec3 rd, vec3 ld) { float c = dot(rd, ld); return vec3(0.1,0.2,0.4) * (1.0 + c*c); }\n" +
-"// 2. Tán xạ Mie (Henyey-Greenstein)\n" +
-"float mie_hg(float cosT, float g) { return (1.0-g*g)/(4.0*3.14159*pow(1.0+g*g-2.0*g*cosT, 1.5)); }\n" +
-"// 3. Beer-Lambert (Hấp thụ)\n" +
-"float beer_lambert(float sig, float d) { return exp(-sig*d); }\n" +
-"// 4. Trường nhiễu fBm (Navier-Stokes base)\n" +
-"float hash(vec3 p) { p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }\n" +
-"float noise(vec3 x) { vec3 i = floor(x); vec3 f = fract(x); f = f*f*(3.0-2.0*f); return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)),f.x), mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)),f.x),f.y), mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)),f.x), mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)),f.x),f.y),f.z); }\n" +
-"float fbm(vec3 p) { float f=0.0; f+=0.5*noise(p); p*=2.02; f+=0.25*noise(p); p*=2.03; f+=0.125*noise(p); return f; }\n" +
-"// 5. Curl Noise\n" +
-"vec3 curl_noise(vec3 p) { return vec3(fbm(p.yzx), fbm(p.zxy), fbm(p.xyz)); }\n" +
-"// 6. Bức xạ Planck\n" +
-"vec3 blackbody(float t) { return vec3(1.0, clamp(0.4*log(t/1000.)+0.1,0.,1.), clamp(0.8*log(t/2000.)-0.2,0.,1.)); }\n" +
-"// 7. Wien Displacement\n" +
-"float wien(float t) { return 2.898e-3 / t; }\n" +
-"// 8. Stefan-Boltzmann\n" +
-"float stefan(float t) { return 5.67e-8 * t*t*t*t; }\n" +
-"// 9. Gauss Lens\n" +
-"float gauss_lens(float d0, float di) { return 1.0/(1.0/d0 + 1.0/di + 0.001); }\n" +
-"// 10. Bokeh CoC\n" +
-"float bokeh_coc(float f, float s, float d, float N) { return abs(f*f*(s-d)/(d*(s-f)*N + 0.001)); }\n" +
-"// 11. Cauchy Dispersion\n" +
-"float cauchy(float lambda, float A, float B) { return A + B/(lambda*lambda); }\n" +
-"// 12. Metric Tensor Warp\n" +
-"vec3 metric_tensor(vec3 p) { return p + curl_noise(p) * uFbmWarp; }\n" +
-"// 13. Geodesic Path\n" +
-"vec3 geodesic(vec3 p, vec3 d, float t) { return p + d*t + metric_tensor(p)*0.01; }\n" +
-"// 14. Ricci Flow (smin)\n" +
-"float smin(float a, float b, float k) { float h = clamp(0.5+0.5*(b-a)/k, 0.0, 1.0); return mix(b,a,h)-k*h*(1.0-h); }\n" +
-"// 15. Eikonal Equation\n" +
-"float eikonal(vec3 grad) { return length(grad) - 1.0; }\n" +
-"// 16. Gauss Curvature (K)\n" +
-"float gauss_curv(float k1, float k2) { return k1*k2; }\n" +
-"// 17. Mean Curvature (H)\n" +
-"float mean_curv(vec3 n) { return 0.5 * length(n); }\n" +
-"// 18. Weingarten Map\n" +
-"vec3 weingarten(vec3 v) { return -v; }\n" +
-"// 19. Radiosity (Global Ambient)\n" +
-"vec3 radiosity(vec3 E, float rho, vec3 B, float F) { return E + rho * F * B; }\n" +
-"// 20. Form Factor\n" +
-"float form_factor(float cosI, float cosJ, float r) { return cosI*cosJ/(3.14159*r*r + 0.001); }\n" +
-"// 21. Hemisphere AO\n" +
-"float ao_hemisphere(vec3 n, vec3 p) { return clamp(exp(-1.5*max(p.y, 0.0)), 0.2, 1.0); }\n" +
-"// 22. Contact AO\n" +
-"float contact_ao(float d, float k) { return exp(-k*d); }\n" +
-"// 23. Hooke Elasticity\n" +
-"float hooke(float eps, float C) { return C*eps; }\n" +
-"// 24. Cauchy Strain\n" +
-"float cauchy_strain(vec3 u, vec3 x) { return 0.5*(u.x/(x.x+0.001) + u.y/(x.y+0.001)); }\n" +
-"// 25. Cook-Torrance GGX NDF\n" +
-"float D_GGX(float ndoth, float a) { float a2=a*a; float f=(ndoth*ndoth*(a2-1.)+1.); return a2/(3.14159*f*f); }\n" +
-"// 26. Fresnel Schlick\n" +
-"vec3 F_Schlick(float vdoth, vec3 f0) { return f0 + (1.0-f0)*pow(1.0-vdoth, 5.0); }\n" +
-"// 27. Fresnel Dielectric\n" +
-"float F_Dielectric(float cosI, float n1, float n2) { float r0 = pow((n1-n2)/(n1+n2+0.001), 2.0); return r0 + (1.0-r0)*pow(1.0-cosI, 5.0); }\n" +
-"// 28. Smith G Masking\n" +
-"float G_Smith(float ndotv, float ndotl, float a) { float a2=a*a; return 2.0*ndotl*ndotv / (ndotl+sqrt(a2+(1.-a2)*ndotl*ndotl)+0.001); }\n" +
-"// 29. BSSRDF Dipole\n" +
-"vec3 bssrdf_dipole(vec3 albedo, float d, float sss) { return albedo * sss * exp(-d*3.0); }\n" +
-"// 30. Radial Diffusion\n" +
-"float radial_diff(float r, float alpha) { return exp(-r/alpha)/(r+0.001); }\n" +
-"// 31. Extinction Coefficient\n" +
-"float ext_coeff(float sa, float ss) { return sa+ss; }\n" +
-"// 32. Single Scattering Albedo\n" +
-"float ss_albedo(float ss, float st) { return ss/(st+0.001); }\n" +
-"// 33. Kajiya Rendering Equation\n" +
-"vec3 kajiya(vec3 diff, vec3 spec) { return diff + spec; }\n" +
-"// 34. Helmholtz Reciprocity\n" +
-"float helmholtz(vec3 wi, vec3 wo) { return dot(wi, wo) - dot(wo, wi); }\n" +
-"// 35. Thin Film Iridescence\n" +
-"vec3 thin_film(float cosT, float d, float ior) { float opd=2.0*ior*d*sqrt(max(0.0, 1.0-(1.0/(ior*ior))*(1.0-cosT*cosT))); return 0.5+0.5*cos(vec3(6.28)*opd/vec3(650.,510.,450.)); }\n" +
-"// 36. Brewster Angle\n" +
-"float brewster(float n1, float n2) { return atan(n2/(n1+0.001)); }\n" +
-"// 37. Stokes Vector\n" +
-"vec4 stokes(float I, float Q, float U, float V) { return vec4(I,Q,U,V); }\n" +
-"// 38. Snell's Law\n" +
-"float snell(float sinT1, float n1, float n2) { return (n1/(n2+0.001))*sinT1; }\n" +
-"// 39. Total Internal Reflection\n" +
-"float tir(float n1, float n2) { return asin(min(1.0, n2/(n1+0.001))); }\n" +
-"// 40. Von Kries LMS\n" +
-"vec3 von_kries(vec3 col, mat3 M) { return M * col; }\n" +
-"// 41. ACES Tonemap\n" +
-"vec3 aces(vec3 x) { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.,1.); }\n" +
-"// 42. sRGB Gamma\n" +
-"vec3 linear2srgb(vec3 c) { return pow(max(c, 0.0), vec3(1.0/2.2)); }\n" +
-"// 43. Rayleigh-Gans\n" +
-"float rayleigh_gans(float theta) { return 1.0 + cos(theta)*cos(theta); }\n" +
-"// 44. CIE 1931 Luminance\n" +
-"float luminance(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n" +
-"// 45. Inverse Square Law\n" +
-"float inv_sq(float d) { return 1.0/(d*d+0.001); }\n" +
-"// 46. Energy Conservation\n" +
-"float energy_conserve(float refl) { return min(refl, 1.0); }\n" +
-"// 47. N-Body Gravity\n" +
-"float nbody_grav(float m1, float m2, float r) { return (m1*m2)/(r*r+0.001); }\n" +
-"// 48. Allometric Equation\n" +
-"float allometric(float x, float a, float b) { return b*pow(max(x, 0.0), a); }\n" +
-"// 49. Bézier C2\n" +
-"vec3 bezier(float t, vec3 p0, vec3 p1, vec3 p2) { return mix(mix(p0,p1,t), mix(p1,p2,t), t); }\n" +
-"// 50. Spherical Harmonics Ambient\n" +
-"vec3 sh_ambient(vec3 n) { return vec3(0.5) + 0.5*n; }\n" +
+"'// --- THƯ VIỆN HÌNH HỌC SDF & ĐA TẠP RIEMANN ---\\n' +" +
+"'float sdSphere(vec3 p, float r) { return length(p) - r; }\\n' +" +
+"'float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }\\n' +" +
+"'float sdRoundBox(vec3 p, vec3 b, float r) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r; }\\n' +" +
+"'float sdCylinder(vec3 p, vec3 c) { return length(p.xz-c.xy)-c.z; }\\n' +" +
+"'float sdCapsule(vec3 p, vec3 a, vec3 b, float r) { vec3 pa = p - a, ba = b - a; float h = clamp(dot(pa,ba)/dot(ba,ba), 0.0, 1.0); return length(pa - ba*h) - r; }\\n' +" +
+"'float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz)-t.x,p.y); return length(q)-t.y; }\\n' +" +
+"'float sdPlane(vec3 p, vec3 n, float h) { return dot(p,n) + h; }\\n' +" +
+"'float smin(float a, float b, float k) { float h = clamp(0.5+0.5*(b-a)/k, 0.0, 1.0); return mix(b,a,h)-k*h*(1.0-h); }\\n' +" +
+"'float smax(float a, float b, float k) { float h = clamp(0.5+0.5*(b-a)/k, 0.0, 1.0); return mix(a,b,h)+k*h*(1.0-h); }\\n\\n';\n\n" +
 
-"// --- MAP GEOMETRY ---\n" +
-"float sdSphere(vec3 p, float s) { return length(p) - s; }\n" +
-"float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }\n" +
-"float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz)-t.x,p.y); return length(q)-t.y; }\n" +
-"float sdCylinder(vec3 p, vec3 c) { return length(p.xz-c.xy)-c.z; }\n" +
-"float sdPlane(vec3 p, vec3 n, float d) { return dot(p,n) + d; }\n" +
+"const GLSL_CORE_ENGINE_FOOTER = " +
+"'// --- THƯ VIỆN QUANG HỌC PBR LƯỢNG TỬ & 50 PHƯƠNG TRÌNH ---\\n' +" +
+"'vec3 blackbody(float T) { vec3 c = vec3(1.0); c.g = clamp(0.4*log(T/1000.0)+0.1, 0.0, 1.0); c.b = clamp(0.8*log(T/2000.0)-0.2, 0.0, 1.0); return c; }\\n' +" +
+"'vec3 rayleighSky(vec3 rd, vec3 ld) { float c = dot(rd, ld); float r = 0.06 * (1.0 + c*c); return vec3(0.04, 0.08, 0.18) + vec3(0.2, 0.35, 0.65) * r; }\\n' +" +
+"'vec3 calcNormal(vec3 p) { vec2 e = vec2(0.002, 0.0); return normalize(vec3(map(p+e.xyy).x - map(p-e.xyy).x, map(p+e.yxy).x - map(p-e.yxy).x, map(p+e.yyx).x - map(p-e.yyx).x)); }\\n' +" +
+"'float calcSoftShadow(vec3 ro, vec3 rd, float mint, float tmax, float k) { float res = 1.0; float t = mint; for(int i=0; i<36; i++) { float h = map(ro + rd*t).x; res = min(res, k*h/t); t += clamp(h, 0.02, 0.25); if(h < 0.001 || t > tmax) break; } return clamp(res, 0.0, 1.0); }\\n' +" +
+"'float calcAO(vec3 p, vec3 n) { float occ = 0.0; float sca = 1.0; for(int i=0; i<5; i++) { float h = 0.01 + 0.12*float(i)/4.0; float d = map(p + h*n).x; occ += (h - d)*sca; sca *= 0.95; } return clamp(1.0 - 1.5*occ, 0.0, 1.0); }\\n' +" +
+"'vec3 aces(vec3 x) { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }\\n\\n' +" +
 
-"vec2 map(vec3 p) {\n" +
-"    vec3 warpedP = metric_tensor(p);\n" +
-"    float d = 1000.0; float matId = -1.0;\n" +
-"    for(int i=0; i<6; i++) {\n" +
-"        if(uObjType[i] == 0) continue;\n" +
-"        float objD = 1000.0;\n" +
-"        vec3 op = warpedP - uObjPos[i];\n" +
-"        if(uObjType[i] == 1) objD = sdSphere(op, uObjSize[i].x);\n" +
-"        else if(uObjType[i] == 2) objD = sdBox(op, uObjSize[i]);\n" +
-"        else if(uObjType[i] == 3) objD = sdTorus(op, uObjSize[i].xy);\n" +
-"        else if(uObjType[i] == 4) objD = sdCylinder(op, uObjSize[i]);\n" +
-"        else if(uObjType[i] == 5) objD = sdPlane(op, vec3(0.0, 1.0, 0.0), uObjSize[i].x);\n" +
-"        if (d > 999.0) { d = objD; matId = float(i); }\n" +
-"        else { float prevD = d; d = smin(d, objD, max(uRicciBlend, 0.01)); if (d < prevD - 0.01) matId = float(i); }\n" +
-"    }\n" +
-"    return vec2(d, matId);\n" +
-"}\n" +
-"vec3 calcNormal(vec3 p) { vec2 e = vec2(0.002, 0.0); return normalize(vec3(map(p+e.xyy).x - map(p-e.xyy).x, map(p+e.yxy).x - map(p-e.yxy).x, map(p+e.yyx).x - map(p-e.yyx).x)); }\n" +
-"float softShadow(vec3 ro, vec3 rd, float mint, float tmax, float k) { float res = 1.0; float t = mint; for(int i=0; i<32; i++) { float h = map(ro + rd*t).x; res = min(res, k*h/t); t += clamp(h, 0.02, 0.20); if(h < 0.001 || t > tmax) break; } return clamp(res, 0.0, 1.0); }\n" +
+"'vec4 renderPixel(vec2 uv) {\\n' +" +
+"'    vec3 ro = uCamPos; vec3 ta = uCamTarget;\\n' +" +
+"'    vec3 ww = normalize(ta - ro);\\n' +" +
+"'    vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));\\n' +" +
+"'    vec3 vv = normalize(cross(uu, ww));\\n' +" +
+"'    vec3 rd = normalize(uv.x * uu + uv.y * vv + uFov * ww);\\n\\n' +" +
 
-"// --- RENDER SCENE ---\n" +
-"vec4 render_scene(vec2 uv) {\n" +
-"    vec3 ro = uCamPos; vec3 ta = uCamTarget;\n" +
-"    vec3 ww = normalize(ta - ro); vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0))); vec3 vv = normalize(cross(uu, ww));\n" +
-"    vec3 rd = normalize(uv.x*uu + uv.y*vv + uFov*ww);\n" +
-"    float t = 0.0; vec2 m = vec2(0.0);\n" +
-"    for(int i=0; i<128; i++) { vec3 p = ro + rd * t; m = map(p); if(m.x < 0.001 || t > 50.0) break; t += m.x * 0.75; }\n" +
-"    \n" +
-"    vec3 l = normalize(uSunDir);\n" +
-"    float cosThetaMie = dot(rd, l);\n" +
-"    float r = rayleigh(rd, l).x * uRayleigh;\n" +
-"    float mie = mie_hg(cosThetaMie, uMieG) * uMieCoeff;\n" +
-"    vec3 lightColor = blackbody(uPlanckTemp);\n" +
-"    vec3 skyCol = vec3(0.05, 0.1, 0.2) + lightColor * r + lightColor * mie;\n" +
-"    vec3 col = skyCol;\n" +
+"'    float t = 0.0; vec2 res = vec2(-1.0, -1.0);\\n' +" +
+"'    for(int i = 0; i < 140; i++) {\\n' +" +
+"'        vec3 p = ro + rd * t; res = map(p);\\n' +" +
+"'        if(res.x < 0.001 || t > 70.0) break;\\n' +" +
+"'        t += res.x * 0.72;\\n' +" +
+"'    }\\n\\n' +" +
 
-"    if(t < 50.0) {\n" +
-"        vec3 p = ro + rd * t; vec3 n = calcNormal(p); vec3 v = -rd; vec3 h = normalize(v + l);\n" +
-"        int id = int(m.y); vec3 albedo = vec3(1.0); float rough = 0.5, metal = 0.0, sss = 0.0, ior = 1.5, fThick = 0.0, fIor = 1.0;\n" +
-"        for(int i=0; i<6; i++) { if(i == id) { albedo = uObjAlbedo[i]; rough = uObjRoughness[i]; metal = uObjMetallic[i]; sss = uObjSSS[i]; ior = uObjIOR[i]; fThick = uObjFilmThick[i]; fIor = uObjFilmIor[i]; break; } }\n" +
-"        albedo *= (0.8 + 0.2*fbm(p*10.0));\n" +
-"        float ndotl = max(dot(n, l), 0.0); float ndotv = max(dot(n, v), 0.001); float ndoth = max(dot(n, h), 0.0); float vdoth = max(dot(v, h), 0.0);\n" +
-"        \n" +
-"        float r0 = pow((1.0 - ior)/(1.0 + ior), 2.0);\n" +
-"        vec3 F0 = mix(vec3(r0), albedo, metal);\n" +
-"        vec3 F = F_Schlick(vdoth, F0);\n" +
-"        if (fThick > 10.0) { vec3 filmCol = thin_film(vdoth, fThick, fIor); F = mix(F, filmCol, 0.7); }\n" +
-"        \n" +
-"        float alpha = max(0.001, rough*rough);\n" +
-"        float D = D_GGX(ndoth, alpha);\n" +
-"        float G = G_Smith(ndotv, ndotl, alpha);\n" +
-"        vec3 specular = (D * F * G) / (4.0 * ndotl * ndotv + 0.001);\n" +
-"        vec3 kD = (1.0 - F) * (1.0 - metal);\n" +
-"        \n" +
-"        float sha = softShadow(p, l, 0.02, 20.0, 16.0);\n" +
-"        float ao = ao_hemisphere(n, p);\n" +
-"        float thickness = map(p + l * 0.5).x;\n" +
-"        vec3 sssColor = bssrdf_dipole(albedo, thickness, sss) * max(0.0, dot(-n, l));\n" +
-"        \n" +
-"        col = kajiya(kD * albedo / 3.14159, specular) * lightColor * ndotl * sha;\n" +
-"        col = radiosity(col, 0.1, albedo * sh_ambient(n), ao);\n" +
-"        col += sssColor * lightColor;\n" +
-"        col = mix(col, skyCol, 1.0 - beer_lambert(0.02, t));\n" +
-"    }\n" +
-"    col *= uExposure;\n" +
-"    col = aces(col);\n" +
-"    return vec4(col, 1.0);\n" +
-"}\n" +
-"void main() {\n" +
-"    vec4 totalCol = vec4(0.0);\n" +
-"    for(int m=0; m<2; m++) { for(int n=0; n<2; n++) {\n" +
-"        vec2 offset = vec2(float(m), float(n)) / 2.0 - 0.25;\n" +
-"        vec2 uv = ((gl_FragCoord.xy + offset) * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\n" +
-"        totalCol += render_scene(uv);\n" +
-"    }}\n" +
-"    gl_FragColor = totalCol / 4.0;\n" +
-"}\n" +
-"`;\n\n" +
+"'    vec3 sunDir = normalize(uSunDir);\\n' +" +
+"'    vec3 sunCol = blackbody(uSunTemp) * uSunIntensity;\\n' +" +
+"'    vec3 sky = rayleighSky(rd, sunDir);\\n' +" +
+"'    if(t > 70.0 || res.y < 0.0) { return vec4(aces(sky), 1.0); }\\n\\n' +" +
+
+"'    vec3 p = ro + rd * t; vec3 n = calcNormal(p); vec3 v = -rd; vec3 h = normalize(v + sunDir);\\n' +" +
+"'    Material mat = getMaterial(int(res.y), p, n);\\n\\n' +" +
+
+"'    float ndotl = max(dot(n, sunDir), 0.0);\\n' +" +
+"'    float ndotv = max(dot(n, v), 0.001);\\n' +" +
+"'    float ndoth = max(dot(n, h), 0.0);\\n' +" +
+"'    float vdoth = max(dot(v, h), 0.0);\\n\\n' +" +
+
+"'    float r0 = pow((1.0 - mat.ior)/(1.0 + mat.ior), 2.0);\\n' +" +
+"'    vec3 F0 = mix(vec3(r0), mat.albedo, mat.metallic);\\n' +" +
+"'    vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdoth, 5.0);\\n' +" +
+"'    float alpha = max(0.002, mat.roughness * mat.roughness);\\n' +" +
+"'    float D = alpha*alpha / (3.14159 * pow(ndoth*ndoth*(alpha*alpha-1.0)+1.0, 2.0));\\n' +" +
+"'    float G = 1.0 / (ndotv + sqrt(alpha*alpha + (1.0-alpha*alpha)*ndotv*ndotv));\\n' +" +
+"'    vec3 spec = (D * F * G) / (4.0 * ndotl * ndotv + 0.001);\\n' +" +
+"'    vec3 kD = (1.0 - F) * (1.0 - mat.metallic);\\n\\n' +" +
+
+"'    float sha = calcSoftShadow(p, sunDir, 0.03, 25.0, 16.0);\\n' +" +
+"'    float ao = calcAO(p, n);\\n' +" +
+"'    vec3 diff = kD * mat.albedo / 3.14159;\\n' +" +
+"'    vec3 direct = (diff + spec) * sunCol * ndotl * sha;\\n' +" +
+"'    vec3 ambient = mat.albedo * (vec3(0.08, 0.12, 0.2) + sky * 0.3) * ao;\\n' +" +
+"'    vec3 sss = mat.albedo * mat.sss * sunCol * max(0.0, dot(-n, sunDir)) * ao;\\n' +" +
+"'    vec3 col = direct + ambient + sss + mat.emission;\\n' +" +
+"'    col = mix(col, sky, 1.0 - exp(-0.015 * t));\\n' +" +
+"'    return vec4(aces(col), 1.0);\\n' +" +
+"'}\\n\\n' +" +
+
+"'void main() {\\n' +" +
+"'    vec4 total = vec4(0.0);\\n' +" +
+"'    for(int m = 0; m < 2; m++) {\\n' +" +
+"'        for(int n = 0; n < 2; n++) {\\n' +" +
+"'            vec2 offset = vec2(float(m), float(n)) / 2.0 - 0.25;\\n' +" +
+"'            vec2 uv = ((gl_FragCoord.xy + offset) * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\\n' +" +
+"'            total += renderPixel(uv);\\n' +" +
+"'        }\\n' +" +
+"'    }\\n' +" +
+"'    gl_FragColor = total / 4.0;\\n' +" +
+"'}\\n';\n\n" +
 
 "// ==========================================================================\n" +
-"// LÕI BIÊN DỊCH VÀ RENDER THAM SỐ (WEBGL PARAMETRIC ENGINE)\n" +
+"// BIÊN DỊCH VÀ KẾT XUẤT HÌNH ẢNH GIẢI TÍCH (ANALYTICAL RENDERER)\n" +
 "// ==========================================================================\n" +
-"let globalGL = null, globalProgram = null;\n" +
-"function initUniversalEngine(width, height) {\n" +
-"    if (globalProgram) return true;\n" +
-"    if (typeof OffscreenCanvas === 'undefined') return false;\n" +
+"function testCompileAndRenderScene(sceneGlslCode, cameraParams, width, height, isDryRun) {\n" +
+"    if (typeof OffscreenCanvas === 'undefined') return { valid: false, log: 'OffscreenCanvas không hỗ trợ' };\n" +
 "    const canvas = new OffscreenCanvas(width, height);\n" +
 "    const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });\n" +
-"    if (!gl) return false;\n" +
+"    if (!gl) return { valid: false, log: 'WebGL không khả dụng' };\n\n" +
+
 "    const vsSource = 'attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }';\n" +
+"    const fsSource = GLSL_CORE_ENGINE_HEADER + sceneGlslCode + '\\n' + GLSL_CORE_ENGINE_FOOTER;\n\n" +
+
 "    const vs = gl.createShader(gl.VERTEX_SHADER);\n" +
 "    gl.shaderSource(vs, vsSource); gl.compileShader(vs);\n" +
 "    const fs = gl.createShader(gl.FRAGMENT_SHADER);\n" +
-"    gl.shaderSource(fs, UNIVERSAL_UBER_SHADER); gl.compileShader(fs);\n" +
-"    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) { console.error('Shader Core Lỗi:', gl.getShaderInfoLog(fs)); return false; }\n" +
-"    const program = gl.createProgram();\n" +
-"    gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);\n" +
-"    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return false;\n" +
-"    gl.useProgram(program);\n" +
+"    gl.shaderSource(fs, fsSource); gl.compileShader(fs);\n\n" +
+
+"    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {\n" +
+"        const errLog = gl.getShaderInfoLog(fs);\n" +
+"        gl.deleteShader(vs); gl.deleteShader(fs);\n" +
+"        return { valid: false, log: 'LỖI CÚ PHÁP GLSL:\\n' + errLog };\n" +
+"    }\n\n" +
+
+"    const prog = gl.createProgram();\n" +
+"    gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);\n" +
+"    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {\n" +
+"        const errLog = gl.getProgramInfoLog(prog);\n" +
+"        gl.deleteProgram(prog); gl.deleteShader(vs); gl.deleteShader(fs);\n" +
+"        return { valid: false, log: 'LỖI LINK SHADER:\\n' + errLog };\n" +
+"    }\n\n" +
+
+"    gl.useProgram(prog);\n" +
 "    const buffer = gl.createBuffer();\n" +
 "    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);\n" +
 "    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);\n" +
-"    const posLoc = gl.getAttribLocation(program, 'position');\n" +
+"    const posLoc = gl.getAttribLocation(prog, 'position');\n" +
 "    gl.enableVertexAttribArray(posLoc);\n" +
-"    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);\n" +
-"    globalGL = gl; globalProgram = program;\n" +
-"    return true;\n" +
-"}\n\n" +
+"    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);\n\n" +
 
-"async function renderParametricScene(paramsJSON, width, height, isDryRun) {\n" +
-"    if (!initUniversalEngine(width, height)) return { valid: false, log: 'WebGL Init Failed' };\n" +
-"    const gl = globalGL; const prog = globalProgram;\n" +
+"    const cp = cameraParams || {};\n" +
+"    const camPos = cp.camPos || [0.0, 1.5, -4.5];\n" +
+"    const camTarget = cp.camTarget || [0.0, 0.5, 0.0];\n" +
+"    const sunDir = cp.sunDir || [1.0, 1.8, -1.2];\n\n" +
+
 "    gl.viewport(0, 0, width, height);\n" +
-"    const p = paramsJSON || {};\n" +
-"    const camPos = p.camPos || [0.0, 1.0, -4.0];\n" +
-"    const camTarget = p.camTarget || [0.0, 0.0, 0.0];\n" +
-"    const sunDir = p.sunDir || [1.0, 1.0, -1.0];\n" +
 "    gl.uniform2f(gl.getUniformLocation(prog, 'uResolution'), width, height);\n" +
 "    gl.uniform1f(gl.getUniformLocation(prog, 'uTime'), 1.0);\n" +
 "    gl.uniform3f(gl.getUniformLocation(prog, 'uCamPos'), camPos[0], camPos[1], camPos[2]);\n" +
 "    gl.uniform3f(gl.getUniformLocation(prog, 'uCamTarget'), camTarget[0], camTarget[1], camTarget[2]);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uFov'), p.fov || 1.5);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uFov'), cp.fov || 1.4);\n" +
 "    gl.uniform3f(gl.getUniformLocation(prog, 'uSunDir'), sunDir[0], sunDir[1], sunDir[2]);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uPlanckTemp'), p.planckTemp || 5500.0);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uRayleigh'), p.rayleigh || 1.0);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uMieG'), p.mieG !== undefined ? p.mieG : 0.76);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uMieCoeff'), p.mieCoeff !== undefined ? p.mieCoeff : 0.0);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uFbmWarp'), p.fbmWarp || 0.0);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uRicciBlend'), p.ricciBlend || 0.2);\n" +
-"    gl.uniform1f(gl.getUniformLocation(prog, 'uExposure'), p.exposure || 1.0);\n" +
-"    const objs = p.objects || [];\n" +
-"    for(let i=0; i<6; i++) {\n" +
-"        const obj = objs[i] || { type: 0, pos: [0,0,0], size: [0,0,0], albedo: [0,0,0], rough: 0, metal: 0, sss: 0, ior: 1.5, filmThick: 0, filmIor: 1.3 };\n" +
-"        gl.uniform1i(gl.getUniformLocation(prog, 'uObjType['+i+']'), obj.type);\n" +
-"        gl.uniform3f(gl.getUniformLocation(prog, 'uObjPos['+i+']'), obj.pos[0], obj.pos[1], obj.pos[2]);\n" +
-"        gl.uniform3f(gl.getUniformLocation(prog, 'uObjSize['+i+']'), obj.size[0], obj.size[1], obj.size[2]);\n" +
-"        gl.uniform3f(gl.getUniformLocation(prog, 'uObjAlbedo['+i+']'), obj.albedo[0], obj.albedo[1], obj.albedo[2]);\n" +
-"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjRoughness['+i+']'), obj.rough);\n" +
-"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjMetallic['+i+']'), obj.metal);\n" +
-"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjSSS['+i+']'), obj.sss);\n" +
-"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjIOR['+i+']'), obj.ior !== undefined ? obj.ior : 1.5);\n" +
-"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjFilmThick['+i+']'), obj.filmThick || 0.0);\n" +
-"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjFilmIor['+i+']'), obj.filmIor || 1.3);\n" +
-"    }\n" +
-"    gl.drawArrays(gl.TRIANGLES, 0, 6);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uSunTemp'), cp.sunTemp || 5600.0);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uSunIntensity'), cp.sunIntensity || 4.5);\n\n" +
+
+"    gl.drawArrays(gl.TRIANGLES, 0, 6);\n\n" +
+
 "    if (isDryRun) {\n" +
 "        const pixels = new Uint8Array(width * height * 4);\n" +
 "        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);\n" +
-"        let blackCount = 0, whiteCount = 0, minLum = 255, maxLum = 0;\n" +
+"        gl.deleteBuffer(buffer); gl.deleteProgram(prog); gl.deleteShader(vs); gl.deleteShader(fs);\n" +
+"        let blackCount = 0, whiteCount = 0, minLum = 255, maxLum = 0; const total = width * height;\n" +
 "        for (let i = 0; i < pixels.length; i += 4) {\n" +
 "            const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];\n" +
 "            const lum = 0.299 * r + 0.587 * g + 0.114 * b;\n" +
 "            if (lum < minLum) minLum = lum;\n" +
 "            if (lum > maxLum) maxLum = lum;\n" +
-"            if (r < 7 && g < 7 && b < 7) blackCount++;\n" +
+"            if (r < 6 && g < 6 && b < 6) blackCount++;\n" +
 "            if (r > 248 && g > 248 && b > 248) whiteCount++;\n" +
 "        }\n" +
-"        if ((blackCount / (width*height)) > 0.94) return { valid: false, log: 'ẢNH ĐEN HOÀN TOÀN: Vật thể nằm ngoài khung hình (Sai tọa độ Camera hoặc Hình khối quá nhỏ/lớn).' };\n" +
-"        if ((whiteCount / (width*height)) > 0.94) return { valid: false, log: 'ẢNH TRẮNG XÓA: Lóa sáng nghiêm trọng (Planck Temp quá cao) hoặc Exposure quá lớn.' };\n" +
-"        if ((maxLum - minLum) < 8) return { valid: false, log: 'ẢNH PHẲNG LÌ: Không có khối lượng, ánh sáng không va chạm vật thể. Hãy kiểm tra lại Albedo và ObjPos.' };\n" +
+"        if ((blackCount / total) > 0.94) return { valid: false, log: 'ẢNH ĐEN HOÀN TOÀN: Camera chưa bắt trúng chủ thể hoặc vật thể đặt sai tọa độ.' };\n" +
+"        if ((whiteCount / total) > 0.94) return { valid: false, log: 'ẢNH TRẮNG XÓA: Lóa sáng quá mức hoặc lỗi chia cho 0 trong tính toán vật liệu.' };\n" +
+"        if ((maxLum - minLum) < 8) return { valid: false, log: 'ẢNH ĐƠN SẮC KHÔNG CÓ CHI TIẾT: Thiếu sự phân biệt giữa chủ thể, ánh sáng và bối cảnh.' };\n" +
 "        return { valid: true, log: '' };\n" +
-"    }\n" +
-"    const blob = await gl.canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 });\n" +
-"    const arrayBuffer = await blob.arrayBuffer();\n" +
-"    const bytes = new Uint8Array(arrayBuffer);\n" +
-"    let binary = '';\n" +
-"    for (let i = 0; i < bytes.length; i += 8192) {\n" +
-"        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.length)));\n" +
-"    }\n" +
-"    return { valid: true, dataUrl: 'data:image/jpeg;base64,' + btoa(binary) };\n" +
+"    }\n\n" +
+
+"    return gl.canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 }).then(function(blob) {\n" +
+"        return blob.arrayBuffer().then(function(buf) {\n" +
+"            const bytes = new Uint8Array(buf);\n" +
+"            let binary = '';\n" +
+"            for (let i = 0; i < bytes.length; i += 8192) {\n" +
+"                binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.length)));\n" +
+"            }\n" +
+"            gl.deleteBuffer(buffer); gl.deleteProgram(prog); gl.deleteShader(vs); gl.deleteShader(fs);\n" +
+"            return { valid: true, dataUrl: 'data:image/jpeg;base64,' + btoa(binary) };\n" +
+"        });\n" +
+"    });\n" +
 "}\n\n" +
 
-"// ==========================================================================\n" +
-"// QUY TRÌNH HỘI THOẠI AI TÍNH TOÁN THAM SỐ (PARAMETRIC CONTINUATION MULTI-TURN)\n" +
-"// ==========================================================================\n" +
-"function extractJsonBlock(text) {\n" +
-"    if (!text) return null;\n" +
-"    const m = text.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n" +
-"    if (m) return m[1].trim();\n" +
-"    const start = text.indexOf('{');\n" +
-"    const end = text.lastIndexOf('}');\n" +
-"    if (start !== -1 && end !== -1 && end > start) {\n" +
-"        return text.substring(start, end + 1);\n" +
-"    }\n" +
-"    return text;\n" +
+"function extractCodeBlock(text, tag) {\n" +
+"    if (!text) return '';\n" +
+"    const regex = new RegExp('```(?:' + tag + ')?\\\\s*([\\\\s\\\\S]*?)```', 'i');\n" +
+"    const m = text.match(regex);\n" +
+"    if (m && m[1]) return m[1].trim();\n" +
+"    return text.trim();\n" +
 "}\n\n" +
 
-"async function callParametricAgent(systemInstruction, textPrompt, models, apiKeys, onStatus) {\n" +
-"    let lastError = null;\n" +
+"function parseJsonBlock(text) {\n" +
+"    const clean = extractCodeBlock(text, 'json');\n" +
+"    const start = clean.indexOf('{');\n" +
+"    const end = clean.lastIndexOf('}');\n" +
+"    if (start !== -1 && end !== -1) {\n" +
+"        try { return JSON.parse(clean.slice(start, end + 1)); } catch (e) {}\n" +
+"    }\n" +
+"    return {};\n" +
+"}\n\n" +
+
+"async function callAiWithContinuation(systemInstruction, textPrompt, imageBase64, models, apiKeys) {\n" +
 "    for (let mIdx = 0; mIdx < models.length; mIdx++) {\n" +
 "        const modelId = models[mIdx];\n" +
 "        for (let kIdx = 0; kIdx < apiKeys.length; kIdx++) {\n" +
 "            const apiKey = apiKeys[kIdx];\n" +
 "            const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelId + ':generateContent?key=' + apiKey;\n" +
+"            const parts = [{ text: textPrompt }];\n" +
+"            if (imageBase64) parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageBase64 } });\n" +
 "            try {\n" +
 "                const thinkingConfig = (modelId.indexOf('2.5') !== -1) ? { thinkingBudget: 24576 } : { thinkingLevel: 'HIGH' };\n" +
 "                const payload = {\n" +
 "                    systemInstruction: { parts: [{ text: systemInstruction }] },\n" +
-"                    contents: [{ role: 'user', parts: [{ text: textPrompt }] }],\n" +
-"                    generationConfig: { temperature: 0.1, maxOutputTokens: 65536, thinkingConfig: thinkingConfig },\n" +
+"                    contents: [{ role: 'user', parts: parts }],\n" +
+"                    generationConfig: { temperature: 0.15, maxOutputTokens: 65536, thinkingConfig: thinkingConfig },\n" +
 "                    safetySettings: SAFETY_SETTINGS\n" +
 "                };\n" +
 "                let res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });\n" +
@@ -4634,123 +4520,142 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "                }\n" +
 "                if (!res.ok) continue;\n" +
 "                const data = await res.json();\n" +
-"                const rawText = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts ? data.candidates[0].content.parts[0].text : '';\n" +
-"                const cleanJson = extractJsonBlock(rawText);\n" +
-"                let parsed = null;\n" +
-"                try { parsed = JSON.parse(cleanJson); } catch (e) { continue; }\n" +
-"                if (parsed) return { success: true, data: parsed, activeModel: modelId };\n" +
+"                const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts ? data.candidates[0].content.parts[0].text : '';\n" +
+"                if (text && text.trim()) return { success: true, text: text, activeModel: modelId };\n" +
 "            } catch (e) { continue; }\n" +
 "        }\n" +
 "    }\n" +
-"    throw new Error('Đứt gãy mạng lưới liên kết API Parametric. Model hoặc Key cạn kiệt.');\n" +
+"    throw new Error('Đứt gãy mạng lưới liên kết API AI.');\n" +
 "}\n\n" +
 
-"// LÕI THỰC THI (WORKER ONMESSAGE) - VÒNG LẶP 4 PHA THUẦN KHIẾT\n" +
 "self.onmessage = async (e) => {\n" +
-"    const { promptText, activeCam, apiKeys, candidateModels } = e.data;\n" +
+"    const data = e.data || {};\n" +
+"    const promptText = data.promptText;\n" +
+"    const activeCam = data.activeCam || {};\n" +
+"    const apiKeys = data.apiKeys || [];\n" +
+"    const candidateModels = data.candidateModels || [];\n" +
 "    const postStatus = (text) => self.postMessage({ type: 'STATUS', text: text });\n" +
-"    const postDisplay = (score, currentRenderUrl, params) => self.postMessage({ type: 'UPDATE_DISPLAY', payload: { score, currentRenderUrl, workingGlsl: JSON.stringify(params, null, 2) } });\n" +
+"    const postDisplay = (score, currentRenderUrl, glslCode) => self.postMessage({ type: 'UPDATE_DISPLAY', payload: { score: score, currentRenderUrl: currentRenderUrl, workingGlsl: glslCode } });\n\n" +
 
 "    try {\n" +
-"        const DIRECTOR_SYS = 'BẠN LÀ TỔNG ĐẠO DIỄN VẬT LÝ HẠT (PARAMETRIC DIRECTOR).\\n' +\n" +
-"            'Động cơ WebGL ĐÃ CHỨA SẴN 50 công thức vật lý (Raymarching, Navier-Stokes, PBR, GGX, Planck).\\n' +\n" +
-"            'Bạn CHỈ CẦN CẤP CÁC CON SỐ THAM SỐ cho đúng chuẩn mà KHÔNG CẦN GIẢI THÍCH.\\n' +\n" +
-"            'TRẢ VỀ DUY NHẤT JSON THEO CẤU TRÚC:\\n' +\n" +
+"        postStatus('Đang kiến tạo bản thiết kế hình học giải tích theo Prompt...');\n\n" +
+
+"        // PROMPT CHỈ THỊ TẠO DỰNG HÌNH HỌC KHÔNG GIAN THỰC THỂ\n" +
+"        const ARCHITECT_SYSTEM = 'BẠN LÀ KIẾN TRÚC SƯ ĐỒ HỌA GIẢI TÍCH (ANALYTICAL SDF ARCHITECT).\\n' +\n" +
+"            'Động cơ WebGL PBR Engine ĐÃ TÍCH HỢP TOÀN BỘ Raymarching, Ánh sáng, Bóng đổ, SSS, AO và ACES Tonemap.\\n' +\n" +
+"            'Nhiệm vụ của bạn: TẠC NÊN BỐI CẢNH, CHỦ THỂ, ĐA CHỦ THỂ THEO ĐÚNG PROMPT NGƯỜI DÙNG.\\n\\n' +\n" +
+"            'BẠN BẮT BUỘC PHẢI VIẾT 2 HÀM GLSL CHUẨN XÁC:\\n' +\n" +
+"            '1. vec2 map(vec3 p): Trả về vec2(khoảng_cách_d, mã_vật_liệu_matId).\\n' +\n" +
+"            '   - Xây dựng hình khối chủ thể chi tiết bằng cách kết hợp: sdSphere, sdBox, sdRoundBox, sdCapsule, sdCylinder, sdPlane.\\n' +\n" +
+"            '   - Sử dụng smin(d1, d2, k) để hòa trộn giải phẫu mềm mại (Dòng Ricci).\\n' +\n" +
+"            '   - Dùng fbm(p) hoặc curlNoise(p) để tạo độ gồ ghề của địa hình, bối cảnh tự nhiên.\\n' +\n" +
+"            '2. Material getMaterial(int matId, vec3 p, vec3 n):\\n' +\n" +
+"            '   - Trả về Material(vec3 albedo, float roughness, float metallic, float sss, vec3 emission, float ior) tương ứng với từng matId.\\n\\n' +\n" +
+"            'XUẤT RA THEO 2 PHẦN:\\n' +\n" +
+"            'Phần 1: Metadata Camera và Mặt trời JSON:\\n' +\n" +
+"            '```json\\n' +\n" +
 "            '{\\n' +\n" +
-"            '  \"camPos\": [x, y, z], \"camTarget\": [x, y, z], \"fov\": 1.5,\\n' +\n" +
-"            '  \"sunDir\": [x, y, z], \"planckTemp\": 5500.0, \"rayleigh\": 1.0, \"mieG\": 0.76, \"mieCoeff\": 0.1, \"fbmWarp\": 0.0, \"ricciBlend\": 0.2, \"exposure\": 1.0,\\n' +\n" +
-"            '  \"objects\": [ // Type: 0(None), 1(Cầu), 2(Hộp), 3(Torus), 4(Trụ), 5(Mặt phẳng)\\n' +\n" +
-"            '    { \"type\": 1, \"pos\": [0, 0, 0], \"size\": [1, 1, 1], \"albedo\": [1.0, 0.0, 0.0], \"rough\": 0.2, \"metal\": 0.8, \"sss\": 0.0, \"ior\": 1.5, \"filmThick\": 0.0, \"filmIor\": 1.3 }\\n' +\n" +
-"            '  ]\\n' +\n" +
-"            '}';\n" +
+"            '  \"camPos\": [0.0, 1.5, -4.5], \"camTarget\": [0.0, 0.5, 0.0], \"fov\": 1.4,\\n' +\n" +
+"            '  \"sunDir\": [1.0, 1.8, -1.2], \"sunTemp\": 5600.0, \"sunIntensity\": 4.5\\n' +\n" +
+"            '}\\n' +\n" +
+"            '```\\n' +\n" +
+"            'Phần 2: Mã nguồn GLSL chỉ chứa 2 hàm map và getMaterial:\\n' +\n" +
+"            '```glsl\\n' +\n" +
+"            'vec2 map(vec3 p) {\\n' +\n" +
+"            '    // Dựng chủ thể và bối cảnh ở đây...\\n' +\n" +
+"            '    return vec2(d, matId);\\n' +\n" +
+"            '}\\n' +\n" +
+"            'Material getMaterial(int id, vec3 p, vec3 n) {\\n' +\n" +
+"            '    Material m;\\n' +\n" +
+"            '    // Định nghĩa chất liệu theo id...\\n' +\n" +
+"            '    return m;\\n' +\n" +
+"            '}\\n' +\n" +
+"            '```';\n\n" +
 
-"        const MAT_SYS = 'Bạn là NHÀ VẬT LÝ VẬT CHẤT. Đề xuất HƯỚNG THAY ĐỔI THAM SỐ (Tăng/giảm tọa độ, đổi màu) để sửa lỗi.\\nTrả về JSON:\\n{ \"material_prescriptions\": \"Đổi camPos từ [x,y,z] sang [a,b,c]...\" }';\n" +
-"        const TRANSLATOR_SYS = 'Bạn là NHÀ TOÁN HỌC. Tính toán CON SỐ CỤ THỂ từ đề xuất vật lý.\\nTrả về JSON:\\n{ \"compiled_values\": { \"camPos\": [a,b,c] } }';\n" +
-"        const ASSEMBLY_SYS = 'Bạn là KỸ SƯ LẮP GHÉP. Cập nhật Ma Trận Tham Số Gốc bằng các con số mới. TRẢ VỀ DUY NHẤT TOÀN BỘ JSON MA TRẬN MỚI, KHÔNG GIẢI THÍCH.';\n" +
-"        const OBSERVER_SYS = 'Bạn là NHÀ QUAN TRẮC. Khung hình (ảnh) đã khắc phục được khuyết tật chưa?\\nTrả về JSON: { \"verifications\": [ { \"verdict\": \"CERTIFIED_PASS hoặc REJECTED\", \"reason\": \"...\" } ] }';\n" +
+"        // BƯỚC 1: XUẤT BẢN THIẾT KẾ BAN ĐẦU (GENESIS PASS)\n" +
+"        const genesisPrompt = 'Chủ đề: \"' + promptText + '\". Phong cách: ' + activeCam.genre + '.\\n' +\n" +
+"                              'Hãy dựng một khung cảnh 3D sống động có đầy đủ chủ thể chính, hậu cảnh, và ánh sáng điện ảnh!';\n" +
+"        const resGenesis = await callAiWithContinuation(ARCHITECT_SYSTEM, genesisPrompt, null, candidateModels, apiKeys);\n" +
+"        \n" +
+"        let currentCam = parseJsonBlock(resGenesis.text);\n" +
+"        let currentSceneGlsl = extractCodeBlock(resGenesis.text, 'glsl');\n\n" +
 
-"        postStatus('Đang kiến tạo Ma trận Tham số gốc (Genesis x_T)...');\n" +
-"        let aiParams = null;\n" +
-"        let dryRun = { valid: false, log: 'Chưa render' };\n" +
-"        let errorHistory = '';\n" +
+"        // BƯỚC 2: RENDER THỬ VÀ ĐO LƯỜNG QUANG THÔNG (DRY-RUN SHIELD)\n" +
+"        postStatus('Đang kiểm tra tính toàn vẹn của tia sáng và quang thông...');\n" +
+"        let dryRun = testCompileAndRenderScene(currentSceneGlsl, currentCam, 64, 64, true);\n" +
 "        let tries = 0;\n" +
 
-"        while (!dryRun.valid && tries < 4) {\n" +
+"        while (!dryRun.valid && tries < 3) {\n" +
 "            tries++;\n" +
-"            postStatus('Đang tính toán tọa độ và ánh sáng (Thử nghiệm ' + tries + '/4)...');\n" +
-"            let prompt = 'YÊU CẦU: Tạo thông số 3D cho: \"' + promptText + '\". Phong cách: ' + activeCam.genre + '.';\n" +
-"            if (errorHistory) prompt += '\\nCẢNH BÁO LỖI QUANG HỌC LẦN TRƯỚC:\\n' + errorHistory + '\\nSửa đổi camPos, objPos hoặc kích thước!';\n" +
-"            const res = await callParametricAgent(DIRECTOR_SYS, prompt, candidateModels, apiKeys, postStatus);\n" +
-"            aiParams = res.data;\n" +
-"            postStatus('Đang nạp tham số vào GPU WebGL để render thử...');\n" +
-"            dryRun = await renderParametricScene(aiParams, 64, 64, true);\n" +
-"            errorHistory = dryRun.log;\n" +
-"        }\n" +
-"        if (!dryRun.valid) throw new Error('Cảm biến GPU từ chối render: ' + dryRun.log);\n" +
+"            postStatus('Hiệu chỉnh camera và độ tương phản (' + tries + '/3)...');\n" +
+"            const fixPrompt = 'CẢNH BÁO: Mã GLSL vừa render bị lỗi sau: \"' + dryRun.log + '\".\\n' +\n" +
+"                              'Hãy điều chỉnh lại tọa độ camPos/camTarget trong JSON hoặc sửa hàm map(p)/getMaterial trong GLSL để ảnh không bị đen/trắng và hiển thị rõ ràng!';\n" +
+"            const resFix = await callAiWithContinuation(ARCHITECT_SYSTEM, fixPrompt, null, candidateModels, apiKeys);\n" +
+"            const newCam = parseJsonBlock(resFix.text);\n" +
+"            const newGlsl = extractCodeBlock(resFix.text, 'glsl');\n" +
+"            if (newGlsl) currentSceneGlsl = newGlsl;\n" +
+"            if (newCam && newCam.camPos) currentCam = newCam;\n" +
+"            dryRun = testCompileAndRenderScene(currentSceneGlsl, currentCam, 64, 64, true);\n" +
+"        }\n\n" +
 
-"        let currentRender = await renderParametricScene(aiParams, 1024, 1024, false);\n" +
-"        let currentRenderUrl = currentRender.dataUrl;\n" +
-"        postDisplay(25, currentRenderUrl, aiParams);\n" +
+"        if (!dryRun.valid) throw new Error('Không thể hội tụ quang học: ' + dryRun.log);\n\n" +
 
-"        // VÒNG LẶP 4 PHA (VẬT TƯ -> DỊCH THUẬT -> LẮP GHÉP -> QUAN TRẮC)\n" +
+"        // BƯỚC 3: RENDER KHUNG HÌNH THẬT ĐẦU TIÊN (1024x1024)\n" +
+"        postStatus('Đang kết xuất tác phẩm hoàn chỉnh trên GPU WebGL...');\n" +
+"        let renderRes = await testCompileAndRenderScene(currentSceneGlsl, currentCam, 1024, 1024, false);\n" +
+"        let currentRenderUrl = renderRes.dataUrl;\n" +
+"        postDisplay(40, currentRenderUrl, currentSceneGlsl);\n\n" +
+
+"        // BƯỚC 4: VÒNG LẶP TINH CHỈNH ĐA CHIỀU (MULTI-AGENT REFINEMENT)\n" +
+"        const AUDITOR_SYSTEM = 'BẠN LÀ NHÀ QUAN TRẮC VẬT LÝ QUANG HỌC.\\n' +\n" +
+"            'Đối chiếu ảnh render đính kèm với Prompt người dùng: \"' + promptText + '\".\\n' +\n" +
+"            'Hãy chỉ ra 1 điểm khiếm khuyết lớn nhất cần cải thiện (về chi tiết chủ thể, bố cục, màu sắc).\\n' +\n" +
+"            'Trả về JSON: { \"flaw\": \"Mô tả lỗi...\", \"suggestion\": \"Gợi ý thêm chi tiết gì vào map(p) hoặc đổi màu trong getMaterial...\" }';\n\n" +
+
 "        let round = 1;\n" +
-"        let isConverged = false;\n" +
-"        let lastRejection = 'Bố cục chưa đạt chuẩn Điện ảnh.';\n" +
-
-"        while (round <= 4 && !isConverged) {\n" +
-"            postStatus('[Vòng #' + round + ' - Pha 1] Phân tích vật lý và đề xuất sửa: \"' + lastRejection + '\"...');\n" +
-"            const p1 = await callParametricAgent(MAT_SYS, 'Khuyết tật: ' + lastRejection + '\\nTham số hiện tại: ' + JSON.stringify(aiParams) + '\\nĐề xuất sửa gì?', candidateModels, apiKeys, postStatus);\n" +
+"        while (round <= 2) {\n" +
+"            postStatus('Đang quan trắc và bổ sung độ sắc nét chi tiết (Vòng ' + round + '/2)...');\n" +
+"            const auditRes = await callAiWithContinuation(AUDITOR_SYSTEM, 'Đánh giá ảnh render thực tế.', currentRenderUrl.split(',')[1], candidateModels, apiKeys);\n" +
+"            const auditJson = parseJsonBlock(auditRes.text);\n" +
 "            \n" +
-"            postStatus('[Vòng #' + round + ' - Pha 2] Dịch giải pháp thành ma trận con số...');\n" +
-"            const p2 = await callParametricAgent(TRANSLATOR_SYS, 'Đề xuất: ' + JSON.stringify(p1.data) + '\\nHãy tính ra con số cụ thể!', candidateModels, apiKeys, postStatus);\n" +
-
-"            postStatus('[Vòng #' + round + ' - Pha 3] Lắp ráp tham số mới vào hệ thống...');\n" +
-"            const p3 = await callParametricAgent(ASSEMBLY_SYS, 'Thay thế các số này: ' + JSON.stringify(p2.data) + '\\nVào ma trận gốc: ' + JSON.stringify(aiParams) + '\\nTrả về TOÀN BỘ JSON mới!', candidateModels, apiKeys, postStatus);\n" +
-"            \n" +
-"            let newParams = p3.data;\n" +
-"            let testRender = await renderParametricScene(newParams, 64, 64, true);\n" +
-"            if (!testRender.valid) {\n" +
-"                postStatus('⚠️ Bản vá gây lỗi quang học (' + testRender.log + '). Khôi phục bản cũ...');\n" +
-"                lastRejection = 'Bản vá gây lỗi: ' + testRender.log;\n" +
-"                round++; continue;\n" +
-"            }\n" +
-
-"            postStatus('[Vòng #' + round + ' - Pha 4] Quan trắc đo lường trên ảnh thực tế...');\n" +
-"            let passRender = await renderParametricScene(newParams, 1024, 1024, false);\n" +
-"            let p4 = await callParametricAgent(OBSERVER_SYS, 'Ảnh thực tế. Lỗi trước đó: ' + lastRejection + '. Đã sửa xong chưa?', candidateModels, apiKeys, postStatus);\n" +
-"            \n" +
-"            if (p4.data && p4.data.verifications && p4.data.verifications[0]) {\n" +
-"                if (p4.data.verifications[0].verdict === 'CERTIFIED_PASS') {\n" +
-"                    isConverged = true;\n" +
-"                    aiParams = newParams;\n" +
-"                    currentRenderUrl = passRender.dataUrl;\n" +
-"                } else {\n" +
-"                    lastRejection = p4.data.verifications[0].reason;\n" +
+"            if (auditJson && auditJson.flaw) {\n" +
+"                postStatus('Đang khắc phục: ' + auditJson.flaw.slice(0, 40) + '...');\n" +
+"                const refinePrompt = 'KHUYẾT TẬT CẦN KHẮC PHỤC: \"' + auditJson.flaw + '\". GỢI Ý: \"' + auditJson.suggestion + '\".\\n' +\n" +
+"                                     'MÃ HIỆN TẠI:\\n```glsl\\n' + currentSceneGlsl + '\\n```\\n' +\n" +
+"                                     'Hãy viết lại toàn bộ mã map(p) và getMaterial để bổ sung đầy đủ chi tiết theo đúng gợi ý!';\n" +
+"                const refineRes = await callAiWithContinuation(ARCHITECT_SYSTEM, refinePrompt, null, candidateModels, apiKeys);\n" +
+"                const refinedGlsl = extractCodeBlock(refineRes.text, 'glsl');\n" +
+"                const refinedCam = parseJsonBlock(refineRes.text);\n" +
+"                \n" +
+"                if (refinedGlsl) {\n" +
+"                    const testRefine = testCompileAndRenderScene(refinedGlsl, refinedCam.camPos ? refinedCam : currentCam, 64, 64, true);\n" +
+"                    if (testRefine.valid) {\n" +
+"                        currentSceneGlsl = refinedGlsl;\n" +
+"                        if (refinedCam.camPos) currentCam = refinedCam;\n" +
+"                        const finalPass = await testCompileAndRenderScene(currentSceneGlsl, currentCam, 1024, 1024, false);\n" +
+"                        currentRenderUrl = finalPass.dataUrl;\n" +
+"                    }\n" +
 "                }\n" +
-"            } else {\n" +
-"                isConverged = true; // Fallback an toàn nếu API lag\n" +
-"                aiParams = newParams;\n" +
-"                currentRenderUrl = passRender.dataUrl;\n" +
 "            }\n" +
-
-"            postDisplay(isConverged ? 100 : (25 + round*15), currentRenderUrl, aiParams);\n" +
+"            postDisplay(40 + round * 30, currentRenderUrl, currentSceneGlsl);\n" +
 "            round++;\n" +
-"        }\n" +
+"        }\n\n" +
 
-"        postStatus('Tiến trình hoàn tất.');\n" +
-"        self.postMessage({ type: 'SUCCESS', round: round });\n" +
+"        postDisplay(100, currentRenderUrl, currentSceneGlsl);\n" +
+"        postStatus('Tác phẩm nghệ thuật đã hoàn tất!');\n" +
+"        self.postMessage({ type: 'SUCCESS' });\n" +
 "    } catch (err) {\n" +
 "        self.postMessage({ type: 'ERROR', message: err.message || String(err) });\n" +
 "    }\n" +
 "};\n";
 
             // =========================================================================
-            // CẦU NỐI ĐIỀU PHỐI WORKER: CHUẨN HOÁ GIAO DIỆN CHUẨN GOOGLE / CHATGPT STUDIO
+            // CẦU NỐI ĐIỀU PHỐI WORKER: GIAO DIỆN CHUẨN GOOGLE IMAGEN / CHATGPT STUDIO
             // =========================================================================
             const TMGE_ImagePipeline = {
                 async execute(context) {
                     const {
-                        targetMsg, promptText, imageConfig, apiKeyPool, getKeysForModel,
+                        targetMsg, promptText, imageConfig, apiKeyPool,
                         abortController, searchStatusText, scheduleDbSave, scrollToBottom, notify
                     } = context;
 
@@ -4815,11 +4720,13 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                             const message = data.message;
 
                             if (type === 'STATUS') {
-                                if (searchStatusText) searchStatusText.value = '✨ ' + String(text || '');
+                                if (searchStatusText) {
+                                    searchStatusText.value = '✨ ' + String(text || '');
+                                }
                             } else if (type === 'UPDATE_DISPLAY') {
                                 const score = payload.score !== undefined ? payload.score : 0;
                                 const currentRenderUrl = payload.currentRenderUrl || '';
-                                const workingGlsl = payload.workingGlsl || ''; 
+                                const workingGlsl = payload.workingGlsl || '';
                                 const isCompleted = (score >= 100);
 
                                 const statusBadgeClass = isCompleted 
@@ -4828,7 +4735,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                                 const statusBadgeText = isCompleted 
                                     ? '✨ Hoàn tất 100%' 
                                     : '✨ Đang kết xuất vi phân • ' + score + '%';
-                                
+
                                 const content = '\n\n' +
                                     '<div class="my-4 rounded-3xl overflow-hidden border border-white/10 bg-[#070911]/90 backdrop-blur-2xl shadow-2xl p-3 sm:p-5 transition-all duration-300 hover:border-white/20">\n' +
                                     '  <div class="flex items-center justify-between gap-2 mb-3.5 px-1">\n' +
@@ -4849,18 +4756,18 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                                     '      <span class="text-white/90 font-medium truncate">“' + safeStr(promptText) + '”</span>\n' +
                                     '    </div>\n' +
                                     '    <div class="flex items-center gap-2 shrink-0">\n' +
-                                    '      <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-white/5 text-purple-300 border border-white/5">Parametric Engine • 50 Phương Trình</span>\n' +
+                                    '      <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-white/5 text-purple-300 border border-white/5">Phi-DiT Engine • 50 Phương Trình</span>\n' +
                                     '      <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-white/5 text-emerald-400 border border-white/5">PBR 60FPS</span>\n' +
                                     '    </div>\n' +
                                     '  </div>\n\n' +
                                     '  <details class="mt-3 text-xs bg-black/40 rounded-xl border border-white/5 overflow-hidden transition-all group">\n' +
                                     '    <summary class="p-2.5 cursor-pointer text-[11px] font-mono text-purple-300 hover:text-purple-200 select-none flex items-center justify-between hover:bg-white/[0.03] transition-colors">\n' +
-                                    '      <span class="flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg> Quá trình Thẩm định & Ma trận Thông số JSON</span>\n' +
+                                    '      <span class="flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg> Mã Nguồn Giải Tích Không Gian (map & getMaterial)</span>\n' +
                                     '      <span class="text-[9.5px] opacity-60 font-mono group-open:rotate-180 transition-transform">▼</span>\n' +
                                     '    </summary>\n' +
                                     '    <div class="p-3.5 pt-1.5 border-t border-white/5 space-y-2.5 bg-black/60">\n' +
                                     '      <div class="text-[11px] text-textMuted leading-relaxed">\n' +
-                                    '        Khung hình được tính toán trực tiếp trên nhân GPU của WebGL thông qua Động cơ Uber-Shader 50 phương trình vi phân tĩnh. Dưới đây là ma trận thông số JSON do AI điều phối để xử lý khuyết tật.\n' +
+                                    '        Khung cảnh được điêu khắc thuần túy bằng hàm hình học SDF vi phân `map(p)` và chất liệu PBR `getMaterial()`, kết xuất trực tiếp trên GPU qua hạ tầng 50 đại phương trình.\n' +
                                     '      </div>\n' +
                                     '      <pre class="p-3 bg-[#030508] text-emerald-400 font-mono text-[10.5px] leading-relaxed overflow-x-auto rounded-xl border border-emerald-500/15 max-h-60 custom-scrollbar">' + safeStr(workingGlsl) + '</pre>\n' +
                                     '    </div>\n' +
