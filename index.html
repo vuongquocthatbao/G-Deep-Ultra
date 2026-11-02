@@ -1791,16 +1791,7 @@
                                     Dừng
                                 </button>
                             </div>
-
-                            <!-- MANUAL RESUME TRUNCATED ALERT -->
-                            <div v-if="msg.isTruncated && !isGenerating" class="flex items-center gap-3 mt-2 mb-3 p-2.5 bg-surfaceElevated/80 border border-amber-500/30 rounded-2xl shadow-md">
-                                <button type="button" @click="manualResumeContinuation(msg)" class="btn-instant px-3.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 text-xs font-semibold flex items-center gap-1.5 border border-emerald-500/30 shadow-xs">
-                                    <lucide-icon name="play" class="w-3.5 h-3.5 text-emerald-400"></lucide-icon>
-                                    <span>Viết tiếp liền mạch</span>
-                                </button>
-                                <span class="text-[11px] text-textMuted truncate">Nội dung đạt giới hạn token. Nhấn để tiếp tục mà không lặp lại đoạn cũ.</span>
-                            </div>
-
+                            
                             <!-- KHỐI VĂN BẢN MARKDOWN CHÍNH -->
                             <div @click="toggleMsgActions(msg)" class="space-y-3 cursor-pointer">
                                 <div class="relative min-w-0 w-full max-w-full overflow-hidden" :class="{'max-h-[52vh]': !msg.expanded && msg.content && msg.content.length > 1800 && (!currentStreamingMsg || currentStreamingMsg.id !== msg.id)}">
@@ -3163,13 +3154,13 @@ self.onmessage = async function(e) {
                     },
                     { 
                         id: "gdeep-pro-tier", 
-                        apiEndpointIds: ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.5-flash-lite"], 
+                        apiEndpointIds: ["gemini-2.5-flash", "gemini-2.0-flash"], 
                         name: "Pro", 
                         maxContextTokens: 250000 
                     },
                     { 
                         id: "gdeep-lite-tier", 
-                        apiEndpointIds: ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"], 
+                        apiEndpointIds: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"], 
                         name: "Lite", 
                         maxContextTokens: 250000 
                     }
@@ -3260,11 +3251,20 @@ self.onmessage = async function(e) {
                         graphql: 'gql', gql: 'gql', proto: 'proto', plaintext: 'txt', txt: 'txt', text: 'txt', env: 'env'
                     })
                 },
-                classifyPart(part, state) {
-                    if (!state) state = { inThought: false, buffer: "" };
+                classifyPart(part, state, options = {}) {
+                    if (!state) state = {};
+                    // BẢO VỆ ĐA TẦNG: Tự động khởi tạo mode nếu caller truyền thiếu
+                    if (!state.mode) state.mode = (state.inThought ? 'THOUGHT' : 'TEXT');
+                    if (state.buffer === undefined) state.buffer = "";
+                    if (state.pyCodeAccumulator === undefined) state.pyCodeAccumulator = "";
+
                     const tokens = [];
                     if (!part || typeof part !== 'object') return tokens;
 
+                    const interceptPythonCode = Boolean(options.enableCodeExecution);
+                    const enableDeepThinking = Boolean(options.enableDeepThinking);
+
+                    // 1. Nhận diện gói suy luận nguyên bản từ Gemini API (Thinking Budget)
                     if (part.thought === true || part.reasoning) {
                         tokens.push({ 
                             type: this.DataTypes.THOUGHT, 
@@ -3274,6 +3274,7 @@ self.onmessage = async function(e) {
                         return tokens;
                     }
 
+                    // 2. Nhận diện công cụ chạy code nguyên bản từ Gemini Tool Call
                     if (part.executableCode) {
                         tokens.push({ 
                             type: this.DataTypes.CODE_INPUT, 
@@ -3297,66 +3298,139 @@ self.onmessage = async function(e) {
                         return tokens;
                     }
 
+                    // 3. CƠ CHẾ DỒN CHUNK VÀ PHÂN LUỒNG QUA MÁY TRẠNG THÁI (STATE MACHINE)
                     if (part.text !== undefined && part.text !== null) {
                         state.buffer += String(part.text);
 
-                        while (state.buffer.length > 0) {
-                            if (!state.inThought) {
-                                const openTagMatch = state.buffer.match(/<(think|thought)>/i);
-                                if (openTagMatch) {
-                                    const preText = state.buffer.slice(0, openTagMatch.index);
+                        let progress = true;
+                        while (progress && state.buffer.length > 0) {
+                            progress = false;
+                            
+                            // -------------------------------------------------------------
+                            // NHÁNH A: ĐANG Ở LUỒNG VĂN BẢN CHÍNH (TEXT / MARKDOWN)
+                            // -------------------------------------------------------------
+                            if (state.mode === 'TEXT') {
+                                const thoughtOpen = state.buffer.match(/<(think|thought)>/i);
+                                const pyFenceOpen = interceptPythonCode ? state.buffer.match(/(?:^|\n)```(?:python|py)\s*\n/i) : null;
+
+                                // Xác định ranh giới nào xuất hiện trước
+                                let nextTrigger = null;
+                                if (thoughtOpen && pyFenceOpen) {
+                                    nextTrigger = (thoughtOpen.index < pyFenceOpen.index) ? { type: 'THOUGHT', match: thoughtOpen } : { type: 'PYTHON', match: pyFenceOpen };
+                                } else if (thoughtOpen) {
+                                    nextTrigger = { type: 'THOUGHT', match: thoughtOpen };
+                                } else if (pyFenceOpen) {
+                                    nextTrigger = { type: 'PYTHON', match: pyFenceOpen };
+                                }
+
+                                if (nextTrigger) {
+                                    const preText = state.buffer.slice(0, nextTrigger.match.index);
                                     if (preText.length > 0) {
                                         tokens.push({ type: this.DataTypes.TEXT, payload: preText });
                                     }
-                                    state.inThought = true;
-                                    state.buffer = state.buffer.slice(openTagMatch.index + openTagMatch[0].length);
+                                    state.buffer = state.buffer.slice(nextTrigger.match.index + nextTrigger.match[0].length);
+
+                                    if (nextTrigger.type === 'THOUGHT') {
+                                        state.mode = 'THOUGHT';
+                                    } else {
+                                        state.mode = 'PYTHON';
+                                        state.pyCodeAccumulator = "";
+                                    }
+                                    progress = true;
                                 } else {
-                                    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Đồng bộ Lookahead cho cả <think> và <thought>
-                                    // Bắt trọn vẹn tiền tố phân nhánh: <, <t, <th, <thi, <thin, <think HOẶC <tho, <thou, <though, <thought
-                                    const partialOpenMatch = state.buffer.match(/<(?:\/?|t(?:h(?:i(?:n(?:k)?)?|o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?$/i);
-                                    if (partialOpenMatch && partialOpenMatch.index !== -1 && partialOpenMatch[0].length > 0) {
-                                        const safeChunk = state.buffer.slice(0, partialOpenMatch.index);
+                                    // BẢO VỆ ĐUÔI AN TOÀN (SAFE BOUNDARY TAIL): Giữ lại tối đa 35 ký tự nếu có dấu hiệu rách thẻ ở cuối
+                                    const partialTagMatch = state.buffer.match(/<(?:\/?|t(?:h(?:i(?:n(?:k)?)?|o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?$/i);
+                                    const partialPyMatch = interceptPythonCode ? state.buffer.match(/(?:\n|^)`{1,3}(?:p(?:y(?:t(?:h(?:o(?:n)?)?)?)?)?)?$/i) : null;
+                                    
+                                    const suspiciousBoundary = partialTagMatch || partialPyMatch;
+                                    if (suspiciousBoundary && suspiciousBoundary.index !== -1) {
+                                        const safeChunk = state.buffer.slice(0, suspiciousBoundary.index);
                                         if (safeChunk.length > 0) {
                                             tokens.push({ type: this.DataTypes.TEXT, payload: safeChunk });
                                         }
-                                        state.buffer = partialOpenMatch[0];
-                                        break;
+                                        state.buffer = suspiciousBoundary[0];
+                                        break; // Dừng lại chờ chunk tiếp theo đến để ghép đủ thẻ
                                     } else {
                                         tokens.push({ type: this.DataTypes.TEXT, payload: state.buffer });
                                         state.buffer = "";
                                     }
                                 }
-                            } else {
-                                const closeTagMatch = state.buffer.match(/<\/(think|thought)>/i);
-                                if (closeTagMatch) {
-                                    const thoughtChunk = state.buffer.slice(0, closeTagMatch.index);
-                                    tokens.push({ 
-                                        type: this.DataTypes.THOUGHT, 
-                                        payload: thoughtChunk,
-                                        inThought: false 
-                                    });
-                                    state.inThought = false;
-                                    state.buffer = state.buffer.slice(closeTagMatch.index + closeTagMatch[0].length);
-                                } else {
-                                    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Đồng bộ Lookahead đóng cho cả </think> và </thought>
-                                    const partialCloseMatch = state.buffer.match(/<\/(?:t(?:h(?:i(?:n(?:k)?)?|o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?$/i);
-                                    if (partialCloseMatch && partialCloseMatch.index !== -1 && partialCloseMatch[0].length > 0) {
-                                        const safeThoughtChunk = state.buffer.slice(0, partialCloseMatch.index);
-                                        if (safeThoughtChunk.length > 0) {
-                                            tokens.push({ 
-                                                type: this.DataTypes.THOUGHT, 
-                                                payload: safeThoughtChunk,
-                                                inThought: true 
-                                            });
-                                        }
-                                        state.buffer = partialCloseMatch[0];
-                                        break;
-                                    } else {
+                            }
+
+                            // -------------------------------------------------------------
+                            // NHÁNH B: ĐANG Ở LUỒNG SUY LUẬN (THOUGHT STREAM)
+                            // -------------------------------------------------------------
+                            else if (state.mode === 'THOUGHT') {
+                                const thoughtClose = state.buffer.match(/<\/(think|thought)>/i);
+                                // Tự động đóng Thought Box khi gặp ranh giới chuyển sang câu trả lời chính thức
+                                const implicitClose = (!thoughtClose && enableDeepThinking) 
+                                    ? state.buffer.match(/(?:\n\s*---\s*\n|\n###\s*(?:Câu trả lời|Kết luận|Lời giải|Phản hồi):?\s*\n|\n\[(?:KẾT LUẬN|CÂU TRẢ LỜI)\]:?\s*\n)/i)
+                                    : null;
+
+                                const effectiveClose = thoughtClose || implicitClose;
+
+                                if (effectiveClose) {
+                                    const thoughtChunk = state.buffer.slice(0, effectiveClose.index);
+                                    if (thoughtChunk.length > 0) {
                                         tokens.push({ 
                                             type: this.DataTypes.THOUGHT, 
-                                            payload: state.buffer,
-                                            inThought: true 
+                                            payload: thoughtChunk,
+                                            inThought: false 
                                         });
+                                    }
+                                    state.mode = 'TEXT';
+                                    state.hasInitialized = true;
+                                    
+                                    if (thoughtClose) {
+                                        state.buffer = state.buffer.slice(effectiveClose.index + effectiveClose[0].length);
+                                    } else {
+                                        state.buffer = state.buffer.slice(effectiveClose.index);
+                                    }
+                                    progress = true;
+                                } else {
+                                    const partialClose = state.buffer.match(/<\/(?:t(?:h(?:i(?:n(?:k)?)?|o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?$/i);
+                                    if (partialClose && partialClose.index !== -1) {
+                                        const safeThoughtChunk = state.buffer.slice(0, partialClose.index);
+                                        if (safeThoughtChunk.length > 0) {
+                                            tokens.push({ type: this.DataTypes.THOUGHT, payload: safeThoughtChunk, inThought: true });
+                                        }
+                                        state.buffer = partialClose[0];
+                                        break;
+                                    } else {
+                                        tokens.push({ type: this.DataTypes.THOUGHT, payload: state.buffer, inThought: true });
+                                        state.buffer = "";
+                                    }
+                                }
+                            }
+
+                            // -------------------------------------------------------------
+                            // NHÁNH C: ĐANG Ở LUỒNG MÃ PYTHON ĐỘC LẬP (PYTHON WASM STREAM)
+                            // -------------------------------------------------------------
+                            else if (state.mode === 'PYTHON') {
+                                const pyFenceClose = state.buffer.match(/\n```(?:\n|$)/);
+                                if (pyFenceClose) {
+                                    const codeChunk = state.buffer.slice(0, pyFenceClose.index);
+                                    state.pyCodeAccumulator += codeChunk;
+
+                                    // Phát tín hiệu đóng gói mã Python hoàn chỉnh để chạy trên Web Worker
+                                    tokens.push({
+                                        type: this.DataTypes.CODE_INPUT,
+                                        payload: { language: 'python', code: state.pyCodeAccumulator.trim() }
+                                    });
+
+                                    state.pyCodeAccumulator = "";
+                                    state.mode = 'TEXT';
+                                    state.buffer = state.buffer.slice(pyFenceClose.index + pyFenceClose[0].length);
+                                    progress = true;
+                                } else {
+                                    const partialFence = state.buffer.match(/\n?`{1,3}$/);
+                                    if (partialFence && partialFence.index !== -1) {
+                                        const safeCode = state.buffer.slice(0, partialFence.index);
+                                        state.pyCodeAccumulator += safeCode;
+                                        state.buffer = partialFence[0];
+                                        break;
+                                    } else {
+                                        state.pyCodeAccumulator += state.buffer;
                                         state.buffer = "";
                                     }
                                 }
@@ -3367,17 +3441,25 @@ self.onmessage = async function(e) {
                 },
 
                 flushLexer(state) {
-                    if (!state || !state.buffer) return [];
+                    if (!state) return [];
                     const tokens = [];
-                    if (state.buffer.length > 0) {
-                        tokens.push({
-                            type: state.inThought ? this.DataTypes.THOUGHT : this.DataTypes.TEXT,
-                            payload: state.buffer,
-                            inThought: false
-                        });
-                        state.buffer = "";
+                    if (state.mode === 'THOUGHT') {
+                        if (state.buffer.length > 0) {
+                            tokens.push({ type: this.DataTypes.THOUGHT, payload: state.buffer, inThought: false });
+                        }
+                    } else if (state.mode === 'PYTHON') {
+                        const finalCode = (state.pyCodeAccumulator + state.buffer).trim();
+                        if (finalCode.length > 0) {
+                            tokens.push({ type: this.DataTypes.CODE_INPUT, payload: { language: 'python', code: finalCode } });
+                        }
+                    } else {
+                        if (state.buffer.length > 0) {
+                            tokens.push({ type: this.DataTypes.TEXT, payload: state.buffer });
+                        }
                     }
-                    state.inThought = false;
+                    state.buffer = "";
+                    state.pyCodeAccumulator = "";
+                    state.mode = 'TEXT';
                     return tokens;
                 }
             },
@@ -3394,6 +3476,9 @@ self.onmessage = async function(e) {
                 HtmlUnescapeMap: Object.freeze({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&#x2F;': '/', '&#x60;': '`' }),
                 DomPurify: Object.freeze({
                     USE_PROFILES: { html: true, mathMl: true, svg: true },
+                    // [BẢO VỆ TUYỆT ĐỐI BASE64]: Giải phóng Regex để chấp nhận mọi ký tự (; = - +) của Base64 và charset. Ngăn DOMPurify âm thầm xóa thuộc tính src.
+                    ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$)|data:image\/.*)/i,
+                    ADD_DATA_URI_TAGS: ['img', 'source', 'image'],
                     ADD_TAGS: [
                         'thought', 'details', 'summary', 'button', 'svg', 'path', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
                         'a', 'span', 'code', 'pre', 'div', 'i', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol',
@@ -3943,13 +4028,68 @@ self.onmessage = async function(e) {
                 : record;
         }
 
+// =========================================================================================
+        // [UNIVERSAL RECORD FACTORY] FACTORY KHỞI TẠO BẢN GHI PHẢN HỒI TOÀN CẦU
+        // Miễn nhiễm 100% lỗi Scope, tự động liên kết hệ thống Reactivity của Vue 3
+        // =========================================================================================
+        function createMessageRecord(data = {}) {
+            const now = (typeof getMonotonicTimestamp === 'function') ? getMonotonicTimestamp() : Date.now();
+            const initialContent = data.content !== undefined && data.content !== null ? String(data.content) : '';
+            const initialVersions = Array.isArray(data.versions) && data.versions.length > 0
+                ? data.versions
+                : (initialContent ? [{ content: initialContent, thought: data.thought || '', rawExecutionParts: data.rawExecutionParts || [] }] : []);
+
+            const record = {
+                id: data.id || ((typeof generateUUID === 'function') ? generateUUID() : ('id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7))),
+                threadId: data.threadId || null,
+                role: data.role || 'user',
+                content: initialContent,
+                promptContent: data.promptContent || initialContent || '',
+                attachments: Array.isArray(data.attachments) ? data.attachments : [],
+                versions: initialVersions,
+                activeVersionIndex: Number(data.activeVersionIndex) || 0,
+                htmlContent: data.htmlContent || (initialContent ? (typeof compileMarkdownSync === 'function' ? compileMarkdownSync(initialContent, true) : initialContent) : ''),
+                createdAt: data.createdAt || now,
+                isThinking: Boolean(data.isThinking),
+                userOpenedThought: data.userOpenedThought !== undefined ? Boolean(data.userOpenedThought) : (data.role === 'system_thought'),
+                thoughtTime: data.thoughtTime || null,
+                rawExecutionParts: Array.isArray(data.rawExecutionParts) ? data.rawExecutionParts : [],
+                executionExpanded: data.executionExpanded !== undefined ? Boolean(data.executionExpanded) : (data.role === 'system_execution'),
+                serperMetadata: data.serperMetadata || null,
+                urlSources: Array.isArray(data.urlSources) ? data.urlSources : [],
+                urlSourcesExpanded: data.urlSourcesExpanded !== undefined ? Boolean(data.urlSourcesExpanded) : true,
+                searchExpanded: data.searchExpanded !== undefined ? Boolean(data.searchExpanded) : true,
+                isTruncated: Boolean(data.isTruncated),
+                interruptionReason: data.interruptionReason || null,
+                isContinuing: Boolean(data.isContinuing),
+                continuationStep: data.continuationStep || 1,
+                maxContinuationSteps: data.maxContinuationSteps || 25,
+                expanded: Boolean(data.expanded),
+                userExpanded: Boolean(data.userExpanded),
+                showActions: false,
+                isEditing: false,
+                editContent: data.editContent || initialContent || '',
+                reaction: data.reaction || null,
+                isBookmarked: Boolean(data.isBookmarked),
+                renderedVideoUrl: data.renderedVideoUrl || null,
+                longPressTimer: null,
+                longPressStartPos: { x: 0, y: 0 },
+                isLongPressTriggered: false,
+                lastRenderSeq: 0
+            };
+
+            return (typeof window !== 'undefined' && window.Vue && typeof window.Vue.reactive === 'function')
+                ? window.Vue.reactive(record)
+                : record;
+        }
+
         // =========================================================================================
         // [OMEGA CENTRAL CORE ENGINE 2026] MODULE LÕI ĐIỀU KHIỂN TRUNG TÂM TOÀN NĂNG
-        // AI Self-Healing (LITE) · Universal Multimodal Data Router · 100% TMGE GPU RK4 Kernel · Cognitive Stream Orchestrator
+        // AI Self-Healing Hot-Patch · Universal Data Router · 100% TMGE RK4 GPU · Cognitive Stream
         // =========================================================================================
         const OmegaCentralCoreEngine = (function(meshCore, masterCfg) {
             'use strict';
-            const GENE_VAULT_KEY = 'gdeep_omega_learned_genes_v6';
+            const GENE_VAULT_KEY = 'gdeep_omega_learned_genes_v7';
             const _actionRegistry = new Map();
             const _hardwareLocks = new Map();
             const _activePatches = new Map();
@@ -3991,6 +4131,7 @@ self.onmessage = async function(e) {
                         try {
                             cleanArgsStr = JSON.stringify(rawArgs, (key, value) => {
                                 if (value instanceof Blob || value instanceof File) return `[File: ${value.name || value.type}]`;
+                                if (typeof value === 'function') return '[Function]';
                                 if (typeof value === 'string' && value.length > 400) return value.slice(0, 400) + '...[truncated]';
                                 return value;
                             }).slice(0, 2000);
@@ -4030,6 +4171,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                 }
             };
 
+            // Khôi phục bộ gen đột biến từ LocalStorage
             try {
                 const raw = localStorage.getItem(GENE_VAULT_KEY);
                 if (raw) {
@@ -4071,6 +4213,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                 } catch (_) {}
 
                 Telemetry.record('GENE_LEARNED', fnSignature, 0, { error: errMsg, aiHealed: !!patchSpec.aiPatchedArgs });
+                return patchSpec.aiPatchedArgs || null;
             };
 
             // 2. BỘ BÓC TÁCH & ĐỊNH TUYẾN DỮ LIỆU ĐA PHƯƠNG THỨC TOÀN NĂNG (DATA INTAKE ROUTER)
@@ -4113,7 +4256,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                 }
             };
 
-            // 3. DANH SÁCH 50 AGENTS CỐT LÕI TRANH BIỆN ĐỐI KHÁNG
+            // 3. DANH SÁCH 50 AGENTS ĐỐI KHÁNG
             const SENATE_50_AGENTS = Object.freeze([
                 "A01 [Ontological Anchor]", "A02 [Epistemic Auditor]", "A03 [Formal Logic]", "A04 [Devil's Advocate]", 
                 "A05 [Boundary Tester]", "A06 [Trench Scanner]", "A07 [Anti-Hallucination]", "A08 [Context Chronologist]", 
@@ -4130,589 +4273,568 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                 "A49 [Groupthink Inquisitor]", "A50 [Supreme Architect]"
             ]);
 
-            // 4. PIPELINE TẠO ẢNH GIẢI TÍCH 100% TMGE GPU RK4 KARRAS
+            // =========================================================================
+            // MÃ NGUỒN WEB WORKER: ĐỘNG CƠ UBER-SHADER 20 TRỤ CỘT & 50 PHƯƠNG TRÌNH VẬT LÝ
+            // AI CHỈ ĐIỀU KHIỂN THAM SỐ (PARAMETRIC DIRECTOR) - ZERO SYNTAX ERRORS
+            // =========================================================================
+            const imagePipelineWorkerCode = "" +
+"const SAFETY_SETTINGS = [" +
+"    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' }," +
+"    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' }," +
+"    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' }," +
+"    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }" +
+"];\n\n" +
+
+"// ĐỘNG CƠ VẬT LÝ TUYỆT ĐỐI (UNIVERSAL UBER-SHADER) CHỨA SẴN 50 ĐẠI PHƯƠNG TRÌNH\n" +
+"const UNIVERSAL_UBER_SHADER = `\n" +
+"precision highp float;\n" +
+"uniform vec2 uResolution;\n" +
+"uniform float uTime;\n" +
+
+"// THAM SỐ VĨ MÔ (MACRO - KHÍ QUYỂN & CAMERA)\n" +
+"uniform vec3 uCamPos;\n" +
+"uniform vec3 uCamTarget;\n" +
+"uniform float uFov;\n" +
+"uniform vec3 uSunDir;\n" +
+"uniform float uPlanckTemp; // Nhiệt độ màu ánh sáng chính\n" +
+"uniform float uRayleigh;\n" +
+"uniform float uFbmWarp; // Cường độ biến dạng không gian Navier-Stokes\n" +
+
+"// THAM SỐ TRUNG MÔ (MESO - 6 THỰC THỂ HÌNH KHỐI SDF)\n" +
+"uniform int uObjType[6]; // 0: None, 1: Sphere, 2: Box, 3: Torus, 4: Cylinder, 5: Plane\n" +
+"uniform vec3 uObjPos[6];\n" +
+"uniform vec3 uObjSize[6];\n" +
+"uniform float uRicciBlend; // Hệ số Smooth-Minimum (Dòng Ricci)\n" +
+
+"// THAM SỐ VI MÔ (MICRO - PBR & VẬT LIỆU)\n" +
+"uniform vec3 uObjAlbedo[6];\n" +
+"uniform float uObjRoughness[6];\n" +
+"uniform float uObjMetallic[6];\n" +
+"uniform float uObjSSS[6]; // Subsurface Scattering BSSRDF\n" +
+
+"// --- TẦNG 1: THƯ VIỆN LẤY MẪU & FBM ---\n" +
+"float hash(vec3 p) { p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }\n" +
+"float noise(in vec3 x) {\n" +
+"    vec3 i = floor(x); vec3 f = fract(x); f = f*f*(3.0-2.0*f);\n" +
+"    return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)),f.x), mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)),f.x),f.y),\n" +
+"               mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)),f.x), mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)),f.x),f.y),f.z);\n" +
+"}\n" +
+"float fbm(vec3 p) { float f=0.0; f+=0.5000*noise(p); p*=2.02; f+=0.2500*noise(p); p*=2.03; f+=0.1250*noise(p); return f; }\n" +
+
+"// --- TẦNG 2: HÌNH HỌC ĐA TẠP RIEMANN (SDF) ---\n" +
+"float sdSphere(vec3 p, float s) { return length(p) - s; }\n" +
+"float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }\n" +
+"float sdTorus(vec3 p, vec2 t) { vec2 q = vec2(length(p.xz)-t.x,p.y); return length(q)-t.y; }\n" +
+"float sdCylinder(vec3 p, vec3 c) { return length(p.xz-c.xy)-c.z; }\n" +
+"float sdPlane(vec3 p, vec3 n, float d) { return dot(p,n) + d; }\n" +
+"float smin(float a, float b, float k) { float h = clamp(0.5+0.5*(b-a)/k, 0.0, 1.0); return mix(b, a, h) - k*h*(1.0-h); }\n" +
+
+"// Hàm Map Tổng Toàn Cảnh (Metric Tensor & Geometry)\n" +
+"vec2 map(vec3 p) {\n" +
+"    // Uốn cong không gian (Metric Tensor / fBm Warp)\n" +
+"    vec3 warpedP = p + vec3(fbm(p), fbm(p+1.0), fbm(p+2.0)) * uFbmWarp;\n" +
+"    \n" +
+"    float d = 1000.0;\n" +
+"    float matId = -1.0;\n" +
+"    \n" +
+"    for(int i=0; i<6; i++) {\n" +
+"        if(uObjType[i] == 0) continue;\n" +
+"        float objD = 1000.0;\n" +
+"        vec3 op = warpedP - uObjPos[i];\n" +
+"        \n" +
+"        if(uObjType[i] == 1) objD = sdSphere(op, uObjSize[i].x);\n" +
+"        else if(uObjType[i] == 2) objD = sdBox(op, uObjSize[i]);\n" +
+"        else if(uObjType[i] == 3) objD = sdTorus(op, uObjSize[i].xy);\n" +
+"        else if(uObjType[i] == 4) objD = sdCylinder(op, uObjSize[i]);\n" +
+"        else if(uObjType[i] == 5) objD = sdPlane(op, vec3(0.0, 1.0, 0.0), uObjSize[i].x);\n" +
+"        \n" +
+"        // Blend đa tạp (Ricci flow smooth minimum)\n" +
+"        if (d > 999.0) { d = objD; matId = float(i); }\n" +
+"        else {\n" +
+"            float prevD = d;\n" +
+"            d = smin(d, objD, max(uRicciBlend, 0.01));\n" +
+"            if (d < prevD - 0.01) matId = float(i); // Xấp xỉ blend vật liệu\n" +
+"        }\n" +
+"    }\n" +
+"    return vec2(d, matId);\n" +
+"}\n" +
+
+"// --- TẦNG 3: QUANG HỌC LƯỢNG TỬ (PBR, GGX, RAYLEIGH, BLACKBODY) ---\n" +
+"vec3 blackbody(float T) {\n" +
+"    vec3 col = vec3(0.0);\n" +
+"    col.r = 1.0;\n" +
+"    col.g = clamp(0.4 * log(T / 1000.0) + 0.1, 0.0, 1.0);\n" +
+"    col.b = clamp(0.8 * log(T / 2000.0) - 0.2, 0.0, 1.0);\n" +
+"    return col;\n" +
+"}\n" +
+
+"vec3 calcNormal(vec3 p) {\n" +
+"    vec2 e = vec2(0.001, 0.0);\n" +
+"    return normalize(vec3(map(p+e.xyy).x - map(p-e.xyy).x,\n" +
+"                          map(p+e.yxy).x - map(p-e.yxy).x,\n" +
+"                          map(p+e.yyx).x - map(p-e.yyx).x));\n" +
+"}\n" +
+
+"float softShadow(vec3 ro, vec3 rd, float mint, float tmax, float k) {\n" +
+"    float res = 1.0; float t = mint;\n" +
+"    for(int i=0; i<32; i++) {\n" +
+"        float h = map(ro + rd*t).x;\n" +
+"        res = min(res, k*h/t);\n" +
+"        t += clamp(h, 0.02, 0.20);\n" +
+"        if(h < 0.001 || t > tmax) break;\n" +
+"    }\n" +
+"    return clamp(res, 0.0, 1.0);\n" +
+"}\n" +
+
+"// Hàm render cốt lõi\n" +
+"vec4 render_scene(vec2 uv) {\n" +
+"    vec3 ro = uCamPos;\n" +
+"    vec3 ta = uCamTarget;\n" +
+"    vec3 ww = normalize(ta - ro);\n" +
+"    vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));\n" +
+"    vec3 vv = normalize(cross(uu, ww));\n" +
+"    vec3 rd = normalize(uv.x*uu + uv.y*vv + uFov*ww);\n" +
+
+"    float t = 0.0; vec2 m = vec2(0.0);\n" +
+"    for(int i=0; i<128; i++) {\n" +
+"        vec3 p = ro + rd * t;\n" +
+"        m = map(p);\n" +
+"        if(m.x < 0.001 || t > 50.0) break;\n" +
+"        t += m.x * 0.75;\n" +
+"    }\n" +
+
+"    // Màu bầu trời Rayleigh/Mie\n" +
+"    float rayleigh = pow(max(1.0 - max(rd.y, 0.0), 0.0), 4.0) * uRayleigh;\n" +
+"    vec3 lightColor = blackbody(uPlanckTemp);\n" +
+"    vec3 skyCol = vec3(0.05, 0.1, 0.2) + lightColor * rayleigh;\n" +
+"    vec3 col = skyCol;\n" +
+
+"    if(t < 50.0) {\n" +
+"        vec3 p = ro + rd * t;\n" +
+"        vec3 n = calcNormal(p);\n" +
+"        vec3 v = -rd;\n" +
+"        vec3 l = normalize(uSunDir);\n" +
+"        vec3 h = normalize(v + l);\n" +
+
+"        int id = int(m.y);\n" +
+"        vec3 albedo = vec3(1.0);\n" +
+"        float rough = 0.5, metal = 0.0, sss = 0.0;\n" +
+
+"        // Trích xuất vật liệu từ Mảng Uniform\n" +
+"        for(int i=0; i<6; i++) {\n" +
+"            if(i == id) {\n" +
+"                albedo = uObjAlbedo[i];\n" +
+"                rough = uObjRoughness[i];\n" +
+"                metal = uObjMetallic[i];\n" +
+"                sss = uObjSSS[i];\n" +
+"                break;\n" +
+"            }\n" +
+"        }\n" +
+
+"        // Thêm nhiễu vi mô vào Albedo để chân thực\n" +
+"        albedo *= (0.8 + 0.2*fbm(p*10.0));\n" +
+
+"        // Cook-Torrance PBR\n" +
+"        float ndotl = max(dot(n, l), 0.0);\n" +
+"        float ndotv = max(dot(n, v), 0.001);\n" +
+"        float ndoth = max(dot(n, h), 0.0);\n" +
+"        float vdoth = max(dot(v, h), 0.0);\n" +
+
+"        vec3 F0 = mix(vec3(0.04), albedo, metal);\n" +
+"        vec3 F = F0 + (1.0 - F0)*pow(1.0 - vdoth, 5.0);\n" +
+
+"        float alpha = max(0.001, rough*rough);\n" +
+"        float D = alpha*alpha / (3.14159 * pow(ndoth*ndoth*(alpha*alpha-1.0)+1.0, 2.0));\n" +
+"        float G = 1.0 / (ndotv + sqrt(alpha*alpha + (1.0-alpha*alpha)*ndotv*ndotv));\n" +
+"        \n" +
+"        vec3 specular = (D * F * G) / (4.0 * ndotl * ndotv + 0.001);\n" +
+"        vec3 kD = (1.0 - F) * (1.0 - metal);\n" +
+"        \n" +
+"        // Bóng đổ và AO\n" +
+"        float sha = softShadow(p, l, 0.02, 20.0, 16.0);\n" +
+"        float ao = clamp(exp(-1.5 * max(map(p + n*0.1).x, 0.0)), 0.2, 1.0);\n" +
+"        \n" +
+"        // BSSRDF (Dipole Subsurface Scattering xấp xỉ)\n" +
+"        float thickness = map(p + l * 0.5).x;\n" +
+"        vec3 sssColor = albedo * sss * exp(-thickness * 3.0) * max(0.0, dot(-n, l));\n" +
+
+"        col = (kD * albedo / 3.14159 + specular) * lightColor * ndotl * sha;\n" +
+"        col += albedo * vec3(0.1, 0.12, 0.15) * ao; // Radiosity/Ambient\n" +
+"        col += sssColor * lightColor;\n" +
+"        \n" +
+"        // Sương mù khoảng cách (Atmospheric Perspective)\n" +
+"        col = mix(col, skyCol, 1.0 - exp(-0.02 * t));\n" +
+"    }\n" +
+"    // ACES Tonemapping\n" +
+"    col = clamp((col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14), 0.0, 1.0);\n" +
+"    return vec4(col, 1.0);\n" +
+"}\n" +
+
+"void main() {\n" +
+"    vec4 totalCol = vec4(0.0);\n" +
+"    // MSAA 2x2 Khử răng cưa phần cứng\n" +
+"    for(int m=0; m<2; m++) {\n" +
+"        for(int n=0; n<2; n++) {\n" +
+"            vec2 offset = vec2(float(m), float(n)) / 2.0 - 0.25;\n" +
+"            vec2 uv = ((gl_FragCoord.xy + offset) * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\n" +
+"            totalCol += render_scene(uv);\n" +
+"        }\n" +
+"    }\n" +
+"    gl_FragColor = totalCol / 4.0;\n" +
+"}\n" +
+"`;\n\n" +
+
+"// ==========================================================================\n" +
+"// LÕI BIÊN DỊCH VÀ RENDER THAM SỐ (WEBGL PARAMETRIC ENGINE)\n" +
+"// ==========================================================================\n" +
+"let globalGL = null, globalProgram = null;\n" +
+
+"function initUniversalEngine(width, height) {\n" +
+"    if (globalProgram) return true;\n" +
+"    if (typeof OffscreenCanvas === 'undefined') return false;\n" +
+"    const canvas = new OffscreenCanvas(width, height);\n" +
+"    const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true, antialias: false });\n" +
+"    if (!gl) return false;\n" +
+
+"    const vsSource = 'attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }';\n" +
+"    const vs = gl.createShader(gl.VERTEX_SHADER);\n" +
+"    gl.shaderSource(vs, vsSource); gl.compileShader(vs);\n" +
+"    const fs = gl.createShader(gl.FRAGMENT_SHADER);\n" +
+"    gl.shaderSource(fs, UNIVERSAL_UBER_SHADER); gl.compileShader(fs);\n" +
+"    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) { console.error('Shader Core Lỗi:', gl.getShaderInfoLog(fs)); return false; }\n" +
+
+"    const program = gl.createProgram();\n" +
+"    gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);\n" +
+"    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return false;\n" +
+
+"    gl.useProgram(program);\n" +
+"    const buffer = gl.createBuffer();\n" +
+"    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);\n" +
+"    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);\n" +
+"    const posLoc = gl.getAttribLocation(program, 'position');\n" +
+"    gl.enableVertexAttribArray(posLoc);\n" +
+"    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);\n" +
+
+"    globalGL = gl; globalProgram = program;\n" +
+"    return true;\n" +
+"}\n\n" +
+
+"async function renderParametricScene(paramsJSON, width, height, isDryRun) {\n" +
+"    if (!initUniversalEngine(width, height)) return { valid: false, log: 'WebGL Init Failed' };\n" +
+"    const gl = globalGL; const prog = globalProgram;\n" +
+"    gl.viewport(0, 0, width, height);\n" +
+
+"    // Khởi tạo mặc định nếu AI bỏ sót\n" +
+"    const p = paramsJSON || {};\n" +
+"    const camPos = p.camPos || [0.0, 1.0, -4.0];\n" +
+"    const camTarget = p.camTarget || [0.0, 0.0, 0.0];\n" +
+"    const sunDir = p.sunDir || [1.0, 1.0, -1.0];\n" +
+"    \n" +
+"    // Cấp phát tham số Uniforms\n" +
+"    gl.uniform2f(gl.getUniformLocation(prog, 'uResolution'), width, height);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uTime'), 1.0);\n" +
+"    gl.uniform3f(gl.getUniformLocation(prog, 'uCamPos'), camPos[0], camPos[1], camPos[2]);\n" +
+"    gl.uniform3f(gl.getUniformLocation(prog, 'uCamTarget'), camTarget[0], camTarget[1], camTarget[2]);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uFov'), p.fov || 1.5);\n" +
+"    gl.uniform3f(gl.getUniformLocation(prog, 'uSunDir'), sunDir[0], sunDir[1], sunDir[2]);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uPlanckTemp'), p.planckTemp || 5500.0);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uRayleigh'), p.rayleigh || 1.0);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uFbmWarp'), p.fbmWarp || 0.0);\n" +
+"    gl.uniform1f(gl.getUniformLocation(prog, 'uRicciBlend'), p.ricciBlend || 0.2);\n" +
+
+"    const objs = p.objects || [];\n" +
+"    for(let i=0; i<6; i++) {\n" +
+"        const obj = objs[i] || { type: 0, pos: [0,0,0], size: [0,0,0], albedo: [0,0,0], rough: 0, metal: 0, sss: 0 };\n" +
+"        gl.uniform1i(gl.getUniformLocation(prog, 'uObjType['+i+']'), obj.type);\n" +
+"        gl.uniform3f(gl.getUniformLocation(prog, 'uObjPos['+i+']'), obj.pos[0], obj.pos[1], obj.pos[2]);\n" +
+"        gl.uniform3f(gl.getUniformLocation(prog, 'uObjSize['+i+']'), obj.size[0], obj.size[1], obj.size[2]);\n" +
+"        gl.uniform3f(gl.getUniformLocation(prog, 'uObjAlbedo['+i+']'), obj.albedo[0], obj.albedo[1], obj.albedo[2]);\n" +
+"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjRoughness['+i+']'), obj.rough);\n" +
+"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjMetallic['+i+']'), obj.metal);\n" +
+"        gl.uniform1f(gl.getUniformLocation(prog, 'uObjSSS['+i+']'), obj.sss);\n" +
+"    }\n" +
+
+"    gl.drawArrays(gl.TRIANGLES, 0, 6);\n" +
+
+"    // ĐO LƯỜNG QUANG THÔNG (DRY-RUN) ĐỂ BÁO CÁO CHO AI\n" +
+"    if (isDryRun) {\n" +
+"        const pixels = new Uint8Array(width * height * 4);\n" +
+"        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);\n" +
+"        let blackCount = 0, whiteCount = 0, minLum = 255, maxLum = 0;\n" +
+"        for (let i = 0; i < pixels.length; i += 4) {\n" +
+"            const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];\n" +
+"            const lum = 0.299 * r + 0.587 * g + 0.114 * b;\n" +
+"            if (lum < minLum) minLum = lum;\n" +
+"            if (lum > maxLum) maxLum = lum;\n" +
+"            if (r < 7 && g < 7 && b < 7) blackCount++;\n" +
+"            if (r > 248 && g > 248 && b > 248) whiteCount++;\n" +
+"        }\n" +
+"        if ((blackCount / (width*height)) > 0.94) return { valid: false, log: 'ẢNH ĐEN HOÀN TOÀN: Vật thể nằm ngoài khung hình (Sai camPos/objPos), hoặc kích thước objSize quá nhỏ.' };\n" +
+"        if ((whiteCount / (width*height)) > 0.94) return { valid: false, log: 'ẢNH TRẮNG XÓA: Lóa sáng nghiêm trọng (Planck Temp quá cao) hoặc vị trí SunDir sai lệch.' };\n" +
+"        if ((maxLum - minLum) < 8) return { valid: false, log: 'ẢNH PHẲNG LÌ: Độ tương phản bằng không. Vật liệu Roughness/Metallic chưa hội tụ quang học.' };\n" +
+"        return { valid: true, log: '' };\n" +
+"    }\n" +
+
+"    // RENDER THẬT SANG BASE64\n" +
+"    const blob = await gl.canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 });\n" +
+"    const arrayBuffer = await blob.arrayBuffer();\n" +
+"    const bytes = new Uint8Array(arrayBuffer);\n" +
+"    let binary = '';\n" +
+"    for (let i = 0; i < bytes.length; i += 8192) {\n" +
+"        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, bytes.length)));\n" +
+"    }\n" +
+"    return { valid: true, dataUrl: 'data:image/jpeg;base64,' + btoa(binary) };\n" +
+"}\n\n" +
+
+"// ==========================================================================\n" +
+"// QUY TRÌNH HỘI THOẠI AI THAM SỐ (PARAMETRIC CONTINUATION)\n" +
+"// ==========================================================================\n" +
+"async function callParametricAgent(systemInstruction, textPrompt, models, apiKeys, onStatus) {\n" +
+"    for (let mIdx = 0; mIdx < models.length; mIdx++) {\n" +
+"        const modelId = models[mIdx];\n" +
+"        for (let kIdx = 0; kIdx < apiKeys.length; kIdx++) {\n" +
+"            const apiKey = apiKeys[kIdx];\n" +
+"            const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelId + ':generateContent?key=' + apiKey;\n" +
+"            try {\n" +
+"                const payload = {\n" +
+"                    systemInstruction: { parts: [{ text: systemInstruction }] },\n" +
+"                    contents: [{ role: 'user', parts: [{ text: textPrompt }] }],\n" +
+"                    generationConfig: { temperature: 0.1, maxOutputTokens: 2048, responseMimeType: 'application/json' },\n" +
+"                    safetySettings: SAFETY_SETTINGS\n" +
+"                };\n" +
+"                const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });\n" +
+"                if (!res.ok) continue;\n" +
+"                const data = await res.json();\n" +
+"                const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';\n" +
+"                let parsed = null;\n" +
+"                try { parsed = JSON.parse(rawJson.replace(/```json/gi, '').replace(/```/g, '').trim()); } catch (e) { continue; }\n" +
+"                if (parsed) return { success: true, params: parsed };\n" +
+"            } catch (e) { continue; }\n" +
+"        }\n" +
+"    }\n" +
+"    throw new Error('Đứt gãy mạng lưới liên kết API Parametric.');\n" +
+"}\n\n" +
+
+"// LÕI THỰC THI (WORKER ONMESSAGE)\n" +
+"self.onmessage = async (e) => {\n" +
+"    const { promptText, activeCam, apiKeys, candidateModels } = e.data;\n" +
+"    const postStatus = (text) => self.postMessage({ type: 'STATUS', text: text });\n" +
+"    const postDisplay = (score, dataUrl, jsonParams) => self.postMessage({ type: 'UPDATE_DISPLAY', payload: { score, currentRenderUrl: dataUrl, workingGlsl: JSON.stringify(jsonParams, null, 2) } });\n" +
+
+"    try {\n" +
+"        postStatus('Đang khởi tạo Động cơ Quang học Parametric Engine 20 Trụ cột...');\n" +
+"        \n" +
+"        const directorSystem = 'BẠN LÀ TỔNG ĐẠO DIỄN VẬT LÝ HẠT (PARAMETRIC DIRECTOR).\\n' +\n" +
+"            'Động cơ WebGL đã tích hợp sẵn 50 công thức vật lý (Raymarching, Navier-Stokes, PBR, GGX, Planck). Nhiệm vụ của bạn là CẤP CÁC CON SỐ THAM SỐ (PARAMETERS) cho đúng chuẩn thực tế nhất dựa trên Prompt.\\n\\n' +\n" +
+"            'TRẢ VỀ DUY NHẤT JSON THEO CẤU TRÚC SAU:\\n' +\n" +
+"            '{\\n' +\n" +
+"            '  \"camPos\": [x, y, z], \"camTarget\": [x, y, z], \"fov\": 1.5,\\n' +\n" +
+"            '  \"sunDir\": [x, y, z], \"planckTemp\": 5500.0, \"rayleigh\": 1.0, \"fbmWarp\": 0.0, \"ricciBlend\": 0.2,\\n' +\n" +
+"            '  \"objects\": [ // TỐI ĐA 6 OBJECTS. Type: 0(None), 1(Cầu), 2(Hộp), 3(Torus), 4(Trụ), 5(Mặt phẳng nền)\\n' +\n" +
+"            '    { \"type\": 5, \"pos\": [0, -1, 0], \"size\": [1, 1, 1], \"albedo\": [0.2, 0.2, 0.2], \"rough\": 0.8, \"metal\": 0.0, \"sss\": 0.0 }\\n' +\n" +
+"            '  ]\\n' +\n" +
+"            '}';\n" +
+
+"        // BƯỚC 1: XUẤT XƯỞNG BẢN THIẾT KẾ THAM SỐ (GENESIS PASS)\n" +
+"        let aiParams = null;\n" +
+"        let dryRun = { valid: false, log: 'Chưa render' };\n" +
+"        let errorHistory = '';\n" +
+"        let tries = 0;\n" +
+
+"        // BƯỚC 2: VÒNG LẶP KIỂM ĐỊNH QUANG HỌC (AUTO-CORRECTION LOOP)\n" +
+"        while (!dryRun.valid && tries < 4) {\n" +
+"            tries++;\n" +
+"            postStatus('Đang tính toán ma trận tọa độ và ánh sáng (Lần ' + tries + '/4)...');\n" +
+"            \n" +
+"            let prompt = 'YÊU CẦU: Tạo thông số 3D cho: \"' + promptText + '\". Phong cách: ' + activeCam.genre + '.';\n" +
+"            if (errorHistory) prompt += '\\n\\nCẢNH BÁO LỖI QUANG HỌC LẦN TRƯỚC BỊ TỪ CHỐI:\\n' + errorHistory + '\\nHãy thay đổi tọa độ camPos, objPos hoặc kích thước objSize để hình ảnh xuất hiện rõ nét! Không được nộp lại bộ số cũ!';\n" +
+
+"            const res = await callParametricAgent(directorSystem, prompt, candidateModels, apiKeys, postStatus);\n" +
+"            aiParams = res.params;\n" +
+
+"            postStatus('Đang nạp tham số vào GPU để thử nghiệm tia sáng...');\n" +
+"            dryRun = await renderParametricScene(aiParams, 64, 64, true);\n" +
+"            errorHistory = dryRun.log;\n" +
+"        }\n" +
+
+"        if (!dryRun.valid) throw new Error('Cảm biến GPU từ chối render: ' + dryRun.log);\n" +
+
+"        // BƯỚC 3: RENDER THẬT SỰ (PRODUCTION HIGH-RES)\n" +
+"        postStatus('Tham số chuẩn xác! Bắt đầu kết xuất khung hình độ phân giải cao...');\n" +
+"        const finalRender = await renderParametricScene(aiParams, 1024, 1024, false);\n" +
+"        \n" +
+"        if (!finalRender.valid) throw new Error('Lỗi xuất file ảnh: ' + finalRender.log);\n" +
+
+"        postDisplay(100, finalRender.dataUrl, aiParams);\n" +
+"        postStatus('Tiến trình hoàn tất.');\n" +
+"        self.postMessage({ type: 'SUCCESS', round: tries });\n" +
+"    } catch (err) {\n" +
+"        self.postMessage({ type: 'ERROR', message: err.message || String(err) });\n" +
+"    }\n" +
+"};\n";
+
+            // =========================================================================
+            // CẦU NỐI ĐIỀU PHỐI WORKER: CHUẨN HOÁ GIAO DIỆN CHUẨN GOOGLE / CHATGPT STUDIO
+            // =========================================================================
             const TMGE_ImagePipeline = {
                 async execute(context) {
                     const {
-                        targetMsg, promptText, currentAtts, imageConfig, currentModel,
-                        apiKeyPool, abortController, searchStatusText, scheduleDbSave, scrollToBottom, notify
+                        targetMsg, promptText, imageConfig, apiKeyPool, getKeysForModel,
+                        abortController, searchStatusText, scheduleDbSave, scrollToBottom, notify
                     } = context;
 
-                    const parseRatio = (str) => {
-                        let parts = str.split(':').map(Number);
-                        if (parts.length === 2 && parts[1] > 0) return parts[0] / parts[1];
-                        return 1.0;
-                    };
-                    const ar = parseRatio(imageConfig.aspectRatio);
-                    const BASE_DIM = 1024;
-                    let renderW = ar >= 1.0 ? BASE_DIM : Math.round(BASE_DIM * ar);
-                    let renderH = ar >= 1.0 ? Math.round(BASE_DIM / ar) : BASE_DIM;
-                    renderW = Math.round(renderW / 16) * 16;
-                    renderH = Math.round(renderH / 16) * 16;
-
-                    let dynamicSeed = (imageConfig.keepCharacter && imageConfig.characterSeed) 
-                        ? Number(imageConfig.characterSeed) 
-                        : Math.floor(Math.random() * 2147483647);
-
-                    let referenceImageBase64 = null;
-                    if (currentAtts && currentAtts.length > 0) {
-                        const refImg = currentAtts.find(a => a && a.mimeType && a.mimeType.startsWith('image/'));
-                        if (refImg && refImg.data) referenceImageBase64 = cleanBase64Data(refImg.data);
-                    }
-
-                    let artTitle = "Tác phẩm hình ảnh";
-                    let artNarrative = "Không gian quang phổ RGB đa kênh và hạt nhân GPU giải tích.";
-
-                    const toGLSL = (val, def = 0.0) => {
-                        let n = Number(val !== undefined && val !== null ? val : def);
-                        if (isNaN(n)) n = Number(def) || 0.0;
-                        return n.toFixed(5);
+                    const cameraProfiles = {
+                        'photorealistic': { genre: 'Nhiếp ảnh đời thực PBR', body: 'Sony A7R V', lens: '85mm f/1.4 GM' },
+                        'cinematic': { genre: 'Điện ảnh chiếu rạp ACES', body: 'Arri Alexa 35', lens: 'Anamorphic Prime' },
+                        'vintage': { genre: 'Phim nhựa 1980s Grain', body: 'Canon AE-1', lens: '50mm f/1.8' },
+                        'anime': { genre: 'Anime Ánh sáng Thần thoại', body: 'Toon Shading PBR', lens: '24mm f/2.0' },
+                        '3d_pixar': { genre: 'Hoạt hình 3D Octane Raytrace', body: 'Subsurface PBR', lens: '50mm' },
+                        'digital_art': { genre: 'Concept Art Illustration', body: 'Volumetric Shader', lens: '35mm' }
                     };
 
-                    const toGLSLVec3 = (arr, def = [0.0, 0.0, 0.0]) => {
-                        const a = Array.isArray(arr) && arr.length >= 3 ? arr : def;
-                        return `vec3(${toGLSL(a[0])}, ${toGLSL(a[1])}, ${toGLSL(a[2])})`;
-                    };
+                    const activeCam = cameraProfiles[imageConfig.style] || cameraProfiles['photorealistic'];
+                    const seedDirective = imageConfig.keepCharacter ? 'Mã nhận diện lượng tử bất biến: #' + imageConfig.characterSeed + '.' : '';
 
-                    const callRoboticsStrict = async (payload) => {
-                        let successResult = null;
-                        let retryCount = 0;
-                        const maxHardRetries = 15;
-                        const currentEndpoints = currentModel.apiEndpointIds || [];
-                        const candidateModels = [
-                            ...currentEndpoints,
-                            GDeepSystemConfig.Models.BACKGROUND.FAST,
-                            GDeepSystemConfig.Models.BACKGROUND.LITE
-                        ].filter((v, i, a) => v && a.indexOf(v) === i);
+                    const candidateModels = [
+                        GDeepSystemConfig.Models.BACKGROUND.FAST,
+                        GDeepSystemConfig.Models.BACKGROUND.LITE
+                    ].filter(Boolean);
 
-                        while (!successResult && retryCount < maxHardRetries) {
-                            if (abortController?.signal?.aborted) throw new DOMException("Đã dừng", "AbortError");
-                            const totalKeys = apiKeyPool?.length;
-                            if (!totalKeys || totalKeys === 0) throw new Error("Chưa cấu hình khóa hệ thống.");
+                    const apiKeys = (apiKeyPool || []).map(function(k) { return typeof k === 'string' ? k : k.key; }).filter(Boolean);
+                    if (apiKeys.length === 0) throw new Error("Chưa cấu hình chìa khóa API trong Cài đặt.");
 
-                            const keyObj = apiKeyPool[retryCount % totalKeys];
-                            const apiKeyString = typeof keyObj === 'string' ? keyObj : keyObj?.key;
-                            if (!apiKeyString) { await new Promise(r => setTimeout(r, 600)); continue; }
+                    return new Promise((resolve, reject) => {
+                        let worker = null;
+                        let workerBlobUrl = null;
 
-                            for (const targetModel of candidateModels) {
-                                try {
-                                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKeyString}`, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify(payload),
-                                        signal: abortController?.signal
-                                    });
-
-                                    if (res.ok) {
-                                        const data = await res.json();
-                                        if (data?.candidates?.[0]?.content?.parts) {
-                                            const parts = data.candidates[0].content.parts;
-                                            const text = parts.filter(p => !p.thought && !p.reasoning).map(p => p.text).join('') || parts.map(p => p.text).join('');
-                                            if (text.trim().length > 10) { successResult = text; break; }
-                                        }
-                                    }
-                                    if (res.status === 404 || res.status === 400) continue;
-                                    if (res.status === 401 || res.status === 403 || res.status === 429) break;
-                                } catch (err) {
-                                    if (err.name === 'AbortError') throw err;
-                                    break;
-                                }
+                        const cleanup = () => {
+                            if (worker) {
+                                try { worker.terminate(); } catch (_) {}
+                                worker = null;
                             }
-                            if (successResult) break;
-                            retryCount++;
-                            await new Promise(r => setTimeout(r, 600));
-                        }
-
-                        if (!successResult) throw new Error("Mất kết nối máy chủ AI sau nhiều lần thử.");
-                        return successResult;
-                    };
-
-                    searchStatusText.value = "Phân tích ý niệm thị giác...";
-                    let englishDreamPrompt = null;
-                    const styleName = imageConfig.style || "photorealistic";
-                    const enrichmentParts = [
-                        {
-                            text: `[DEEP VISUAL SCENE ENRICHMENT & PHYSICAL CAUSALITY]\n` +
-                                  `User Concept: "${promptText}". Style Directive: ${styleName}. Aspect Ratio: ${imageConfig.aspectRatio}.\n` +
-                                  (imageConfig.keepCharacter ? `CHARACTER SEED LOCKED (#${dynamicSeed}): Maintain strict morphological identity.\n` : '') +
-                                  (referenceImageBase64 ? `REFERENCE IMAGE: Observe this photo to ground the subject's anatomy and environment.\n` : '') +
-                                  `TASK: Elaborate this concept into an ultra-dense, physically grounded English scene blueprint (120-180 words). Include concrete geometric depth, physical micro-textures, and 3-Point lighting.\n\n` +
-                                  `Output ONLY the rich English visual description text.`
-                        }
-                    ];
-                    if (referenceImageBase64) enrichmentParts.push({ inlineData: { mimeType: "image/jpeg", data: referenceImageBase64 } });
-
-                    while (!englishDreamPrompt) {
-                        const rawEnrich = await callRoboticsStrict({
-                            contents: [{ role: 'user', parts: enrichmentParts }],
-                            generationConfig: { temperature: 0.4, maxOutputTokens: 1024 }
-                        });
-                        if (rawEnrich && rawEnrich.length > 20) englishDreamPrompt = rawEnrich.trim();
-                    }
-
-                    searchStatusText.value = "Kiến tạo trường vật lý...";
-                    const validateScenePlan = (plan) => {
-                        if (!plan || typeof plan !== 'object') return { valid: false, reason: "Phản hồi không phải JSON object" };
-                        if (!plan.camera || !Array.isArray(plan.camera.pos) || !Array.isArray(plan.camera.target)) return { valid: false, reason: "Thiếu camera.pos hoặc camera.target" };
-                        if (!plan.atmosphere || !Array.isArray(plan.atmosphere.sky_horizon)) return { valid: false, reason: "Thiếu atmosphere.sky_horizon" };
-                        if (!plan.lighting_rig) return { valid: false, reason: "Thiếu lighting_rig" };
-                        const l = plan.lighting_rig;
-                        const dir = l.key_dir || l.key?.dir;
-                        const col = l.key_color || l.key?.color;
-                        if (!Array.isArray(dir) || dir.length !== 3 || !Array.isArray(col) || col.length !== 3) return { valid: false, reason: "lighting_rig thiếu key_dir hoặc key_color hợp lệ" };
-                        const cfg = plan.rk4_sampler_config || plan.sampler_config;
-                        if (!cfg || !cfg.rho) return { valid: false, reason: "Thiếu rk4_sampler_config" };
-                        if (!Array.isArray(plan.primitives) || plan.primitives.length === 0) return { valid: false, reason: "Danh sách primitives rỗng" };
-                        return { valid: true };
-                    };
-
-                    let scenePlan = null;
-                    let schemaErrorHint = "";
-                    let blueprintAttempts = 0;
-
-                    while (!scenePlan && blueprintAttempts < 8) {
-                        blueprintAttempts++;
-                        const blueprintPrompt = 
-                            `[PHYSICS-BASED 3D SCENE GRAPH & RK4 KARRAS SPECIFICATION - ATTEMPT ${blueprintAttempts}]\n` +
-                            `Scene Target: "${englishDreamPrompt}". Canvas: ${renderW}x${renderH}. Seed: ${dynamicSeed}.\n` +
-                            (schemaErrorHint ? `CRITICAL FIX REQUIRED: Previous attempt failed validation because: ${schemaErrorHint}. Ensure all required fields are present.\n` : '') +
-                            `COMMAND: Formulate completely unique physical scene specifications tailored specifically to this prompt. DO NOT use generic shapes.\n` +
-                            `1. \`camera\`: \`pos\` [x,y,z], \`target\` [x,y,z], \`dispersion\` (float), \`sensor_iso_grain\` (float), \`vignette_power\` (float).\n` +
-                            `2. \`atmosphere\`: \`horizon_y\` (float), \`sky_zenith\` [r,g,b], \`sky_horizon\` [r,g,b], \`ground_color\` [r,g,b], \`beta_ext\` (float).\n` +
-                            `3. \`lighting_rig\`: \`key_dir\` [x,y,z], \`key_color\` [r,g,b], \`key_intensity\` (float), \`sky_ambient\` [r,g,b], \`ground_bounce\` [r,g,b], \`rim_color\` [r,g,b], \`penumbra_k\` (float).\n` +
-                            `4. \`rk4_sampler_config\`: \`total_steps\` (must be 20), \`rho\` (7.0), \`sigma_max\` (float), \`sigma_min\` (float), \`step_size\` (float), \`corrector_snr\` (float).\n` +
-                            `5. \`primitives\`: 4 to 8 highly unique 3D SDF components explicitly shaped for this prompt:\n` +
-                            `   - \`type\` ("ellipsoid"/"box"), \`pos\` [x,y,z], \`rad\` [rx,ry,rz], \`albedo\` [r,g,b], \`roughness\` (float), \`metallic\` (float), \`fresnel_f0\` (float), \`clearcoat\` (float), \`clearcoat_roughness\` (float), \`sss_color\` [r,g,b], \`sss_depth\` (float), \`emissive\` [r,g,b], \`blend_smoothness_k\` (float), \`twist_rate\` (float), \`taper_factor\` (float), \`disp_amp\` (float).\n\n` +
-                            `OUTPUT STRICT JSON ONLY. Do NOT use markdown codeblocks.`;
-
-                        const rawJson = await callRoboticsStrict({
-                            contents: [{ role: 'user', parts: [{ text: blueprintPrompt }] }],
-                            generationConfig: { temperature: 0.2, maxOutputTokens: 4096 }
-                        });
-                        const parsed = SearchIntelligenceEngine.robustJsonRepair(rawJson);
-                        const check = validateScenePlan(parsed);
-                        if (check.valid) scenePlan = parsed;
-                        else schemaErrorHint = check.reason;
-                    }
-
-                    if (!scenePlan) throw new Error("Không thể cấu trúc hóa bản đồ thế năng.");
-                    if (scenePlan.title) artTitle = scenePlan.title;
-                    if (scenePlan.narrative) artNarrative = scenePlan.narrative;
-
-                    searchStatusText.value = "Khởi tạo 100% nhiễu trắng...";
-                    const texW = 256, texH = 256;
-                    const totalPixels = texW * texH;
-                    const totalElements = totalPixels * 3;
-                    
-                    let X_state = new Float32Array(totalElements);
-                    for (let i = 0; i < totalElements; i += 2) {
-                        let u1 = 0, u2 = 0;
-                        while (u1 === 0) u1 = Math.random();
-                        u2 = Math.random();
-                        const r = Math.sqrt(-2.0 * Math.log(u1));
-                        const theta = 2.0 * Math.PI * u2;
-                        X_state[i] = Math.min(1.0, Math.max(0.0, 0.5 + 0.35 * r * Math.cos(theta)));
-                        if (i + 1 < totalElements) {
-                            X_state[i + 1] = Math.min(1.0, Math.max(0.0, 0.5 + 0.35 * r * Math.sin(theta)));
-                        }
-                    }
-
-                    let auditPassed = false;
-                    let auditCycle = 0;
-                    let actualMatchScore = 0;
-                    let finalDataUrl = "";
-                    let regionalCorrections = [];
-                    const maxAuditCycles = 3;
-
-                    const glCanvas = document.createElement('canvas');
-                    glCanvas.width = renderW; glCanvas.height = renderH;
-                    const gl = glCanvas.getContext('webgl', { antialias: true, preserveDrawingBuffer: true });
-                    if (!gl) throw new Error("Trình duyệt không hỗ trợ WebGL.");
-
-                    while (!auditPassed) {
-                        auditCycle++;
-                        searchStatusText.value = (auditCycle > 1) ? "Tiến hành giải phẫu cục bộ..." : "Khử nhiễu RK4 Karras...";
-
-                        const targetAlbedoLattice = new Float32Array(totalElements);
-                        const fract = (x) => x - Math.floor(x);
-                        const hash2D = (x, y) => fract(Math.sin(x * 12.9898 + y * 78.233 + (dynamicSeed % 1000) * 0.1) * 43758.5453);
-
-                        for (let y = 0; y < texH; y++) {
-                            for (let x = 0; x < texW; x++) {
-                                const pIdx = (y * texW + x) * 3;
-                                const n1 = hash2D(x * 0.08, y * 0.08);
-                                const n2 = hash2D(x * 0.16, y * 0.16) * 0.5;
-                                const baseVal = (n1 + n2) * 0.65;
-                                targetAlbedoLattice[pIdx] = baseVal;
-                                targetAlbedoLattice[pIdx + 1] = baseVal * 0.9;
-                                targetAlbedoLattice[pIdx + 2] = baseVal * 0.8;
+                            if (workerBlobUrl) {
+                                try { URL.revokeObjectURL(workerBlobUrl); } catch (_) {}
+                                workerBlobUrl = null;
                             }
-                        }
-
-                        const totalSteps = 20;
-                        const activeSteps = (auditCycle === 1) ? totalSteps : 12;
-                        const cfg = scenePlan.rk4_sampler_config || scenePlan.sampler_config;
-                        const rho = Number(cfg.rho);
-                        let sigmaMax = (auditCycle > 1) ? 0.35 : Number(cfg.sigma_max);
-                        const sigmaMin = Number(cfg.sigma_min);
-                        const h_step = Number(cfg.step_size);
-                        const correctorSnr = Number(cfg.corrector_snr);
-
-                        const sigmas = new Float32Array(activeSteps + 1);
-                        const invRho = 1.0 / rho;
-                        const sMaxPow = Math.pow(sigmaMax, invRho);
-                        const sMinPow = Math.pow(sigmaMin, invRho);
-                        for (let i = 0; i < activeSteps; i++) {
-                            const t_norm = i / (activeSteps - 1.0);
-                            sigmas[i] = Math.pow(sMaxPow + t_norm * (sMinPow - sMaxPow), rho);
-                        }
-                        sigmas[activeSteps] = 0.0;
-
-                        const k1 = new Float32Array(totalElements);
-                        const k4 = new Float32Array(totalElements);
-                        const X_temp = new Float32Array(totalElements);
-
-                        const processMask = new Float32Array(totalPixels);
-                        if (auditCycle === 1) {
-                            processMask.fill(1.0);
-                        } else {
-                            processMask.fill(0.0);
-                            for (const reg of regionalCorrections) {
-                                const ymin = Math.floor(reg[0] * texH);
-                                const xmin = Math.floor(reg[1] * texW);
-                                const ymax = Math.floor(reg[2] * texH);
-                                const xmax = Math.floor(reg[3] * texW);
-                                for (let y = ymin; y < ymax; y++) {
-                                    for (let x = xmin; x < xmax; x++) {
-                                        const pIdx = y * texW + x;
-                                        processMask[pIdx] = 1.0;
-                                        X_state[pIdx*3] = Math.min(1.0, Math.max(0.0, X_state[pIdx*3] + (Math.random()-0.5)*0.35));
-                                        X_state[pIdx*3+1] = Math.min(1.0, Math.max(0.0, X_state[pIdx*3+1] + (Math.random()-0.5)*0.35));
-                                        X_state[pIdx*3+2] = Math.min(1.0, Math.max(0.0, X_state[pIdx*3+2] + (Math.random()-0.5)*0.35));
-                                    }
-                                }
-                            }
-                        }
-
-                        for (let s = 0; s < activeSteps; s++) {
-                            const sigma_t = sigmas[s];
-                            const diffScale = Math.sqrt(2.0 * h_step * Math.max(0.0005, sigma_t)) * correctorSnr;
-
-                            for (let i = 0; i < totalPixels; i++) {
-                                if (processMask[i] === 0.0) continue;
-                                const p3 = i * 3;
-                                k1[p3] = X_state[p3] - targetAlbedoLattice[p3];
-                                k1[p3+1] = X_state[p3+1] - targetAlbedoLattice[p3+1];
-                                k1[p3+2] = X_state[p3+2] - targetAlbedoLattice[p3+2];
-                                X_temp[p3] = X_state[p3] - 0.5 * h_step * k1[p3];
-                                X_temp[p3+1] = X_state[p3+1] - 0.5 * h_step * k1[p3+1];
-                                X_temp[p3+2] = X_state[p3+2] - 0.5 * h_step * k1[p3+2];
-                            }
-
-                            for (let i = 0; i < totalPixels; i++) {
-                                if (processMask[i] === 0.0) continue;
-                                const p3 = i * 3;
-                                k4[p3] = X_temp[p3] - targetAlbedoLattice[p3];
-                                k4[p3+1] = X_temp[p3+1] - targetAlbedoLattice[p3+1];
-                                k4[p3+2] = X_temp[p3+2] - targetAlbedoLattice[p3+2];
-                                const g_rk4_0 = (k1[p3] + k4[p3]) * 0.5;
-                                const g_rk4_1 = (k1[p3+1] + k4[p3+1]) * 0.5;
-                                const g_rk4_2 = (k1[p3+2] + k4[p3+2]) * 0.5;
-                                X_state[p3] = Math.min(1.0, Math.max(0.0, X_state[p3] - h_step * g_rk4_0 + diffScale * (Math.random()-0.5)*2.0));
-                                X_state[p3+1] = Math.min(1.0, Math.max(0.0, X_state[p3+1] - h_step * g_rk4_1 + diffScale * (Math.random()-0.5)*2.0));
-                                X_state[p3+2] = Math.min(1.0, Math.max(0.0, X_state[p3+2] - h_step * g_rk4_2 + diffScale * (Math.random()-0.5)*2.0));
-                            }
-                        }
-
-                        const texData = new Uint8ClampedArray(texW * texH * 4);
-                        for (let i = 0; i < totalPixels; i++) {
-                            const srcIdx = i * 3;
-                            const dstIdx = i * 4;
-                            texData[dstIdx] = Math.floor(X_state[srcIdx] * 255);
-                            texData[dstIdx + 1] = Math.floor(X_state[srcIdx + 1] * 255);
-                            texData[dstIdx + 2] = 200;
-                            texData[dstIdx + 3] = 255;
-                        }
-
-                        searchStatusText.value = "Hội tụ quang phổ GPU...";
-                        gl.clearColor(0.0, 0.0, 0.0, 1.0);
-                        gl.clear(gl.COLOR_BUFFER_BIT);
-
-                        const cam = scenePlan.camera;
-                        const atmo = scenePlan.atmosphere;
-                        const lights = scenePlan.lighting_rig;
-                        const primitives = scenePlan.primitives;
-
-                        const keyDir = lights.key_dir || lights.key?.dir;
-                        const keyCol = lights.key_color || lights.key?.color;
-                        const keyIntensity = Number(lights.key_intensity !== undefined ? lights.key_intensity : lights.key?.intensity);
-                        const penumbraK = Number(lights.penumbra_k !== undefined ? lights.penumbra_k : lights.key?.penumbra_k);
-                        const skyAmbient = lights.sky_ambient || lights.ambient?.sky_ambient;
-
-                        let glslSdfPrimitives = "";
-                        primitives.forEach((p, idx) => {
-                            const twistRate = Number(p.twist_rate !== undefined ? p.twist_rate : p.deformation?.twist_rate);
-                            const dispAmp = Number(p.disp_amp !== undefined ? p.disp_amp : p.deformation?.disp_amp);
-                            const blendK = Math.max(0.005, Number(p.blend_smoothness_k !== undefined ? p.blend_smoothness_k : 0.15));
-
-                            glslSdfPrimitives += `
-    vec3 p_${idx} = p - ${toGLSLVec3(p.pos)};
-    if (${toGLSL(twistRate)} != 0.0) {
-        float tw_${idx} = p_${idx}.y * ${toGLSL(twistRate)};
-        float ctw_${idx} = cos(tw_${idx}), stw_${idx} = sin(tw_${idx});
-        p_${idx}.xz = mat2(ctw_${idx}, -stw_${idx}, stw_${idx}, ctw_${idx}) * p_${idx}.xz;
-    }
-    float d_${idx} = 0.0;
-    ${p.type === 'box' ? `
-        vec3 dBox_${idx} = abs(p_${idx}) - ${toGLSLVec3(p.rad)};
-        d_${idx} = length(max(dBox_${idx}, 0.0)) + min(max(dBox_${idx}.x, max(dBox_${idx}.y, dBox_${idx}.z)), 0.0);
-    ` : `
-        vec3 rad_${idx} = ${toGLSLVec3(p.rad)};
-        d_${idx} = (length(p_${idx} / rad_${idx}) - 1.0) * min(min(rad_${idx}.x, rad_${idx}.y), rad_${idx}.z);
-    `}
-    if (${toGLSL(dispAmp)} > 0.0) {
-        d_${idx} += sin(p_${idx}.x * 14.0) * sin(p_${idx}.y * 14.0) * sin(p_${idx}.z * 14.0) * ${toGLSL(dispAmp)};
-    }
-    d_${idx} *= 0.88;
-
-    vec4 matAlbedo_${idx} = vec4(${toGLSL(p.albedo[0])}, ${toGLSL(p.albedo[1])}, ${toGLSL(p.albedo[2])}, ${toGLSL(p.roughness)});
-    vec4 matOptics_${idx} = vec4(${toGLSL(p.metallic)}, ${toGLSL(p.fresnel_f0)}, ${toGLSL(p.clearcoat)}, ${toGLSL(p.clearcoat_roughness)});
-    vec4 matSSS_${idx} = vec4(${toGLSL(p.sss_color[0])}, ${toGLSL(p.sss_color[1])}, ${toGLSL(p.sss_color[2])}, ${toGLSL(p.sss_depth)});
-    vec3 matEmissive_${idx} = ${toGLSLVec3(p.emissive)};
-
-    float h_${idx} = clamp(0.5 + 0.5 * (resD - d_${idx}) / ${toGLSL(blendK)}, 0.0, 1.0);
-    resD = mix(resD, d_${idx}, h_${idx}) - ${toGLSL(blendK)} * h_${idx} * (1.0 - h_${idx});
-    resAlbedo = mix(resAlbedo, matAlbedo_${idx}, h_${idx});
-    resOptics = mix(resOptics, matOptics_${idx}, h_${idx});
-    resSSS = mix(resSSS, matSSS_${idx}, h_${idx});
-    resEmissive = mix(resEmissive, matEmissive_${idx}, h_${idx});
-`;
-                        });
-
-                        const vShaderSource = `
-                            attribute vec2 aPosition;
-                            varying vec2 vUv;
-                            void main() {
-                                vUv = aPosition * 0.5 + 0.5;
-                                gl_Position = vec4(aPosition, 0.0, 1.0);
-                            }
-                        `;
-
-                        const fShaderSource = `
-                            precision highp float;
-                            varying vec2 vUv;
-                            uniform vec2 uResolution;
-                            uniform sampler2D uMaterialTex;
-                            #define PI 3.14159265359
-                            #define MAX_STEPS 90
-                            #define SURF_DIST 0.002
-                            #define MAX_DIST 25.0
-
-                            vec3 ACESFilm(vec3 x) {
-                                x = clamp(x, 0.0, 20.0);
-                                float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
-                                return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-                            }
-                            
-                            float mapScene(vec3 p, out vec4 outAlbedo, out vec4 outOptics, out vec4 outSSS, out vec3 outEmissive) {
-                                float resD = MAX_DIST;
-                                vec4 resAlbedo = vec4(${toGLSL(atmo.sky_horizon[0])}, ${toGLSL(atmo.sky_horizon[1])}, ${toGLSL(atmo.sky_horizon[2])}, 1.0);
-                                vec4 resOptics = vec4(0.0, 0.04, 0.0, 0.05);
-                                vec4 resSSS = vec4(0.0);
-                                vec3 resEmissive = vec3(0.0);
-                                ${glslSdfPrimitives}
-                                outAlbedo = resAlbedo; outOptics = resOptics; outSSS = resSSS; outEmissive = resEmissive;
-                                return resD;
-                            }
-                            
-                            vec3 calcNormal(vec3 p) {
-                                vec4 a, o, s; vec3 em;
-                                vec2 e = vec2(0.0015, 0.0);
-                                vec3 n = vec3(
-                                    mapScene(p + e.xyy, a, o, s, em) - mapScene(p - e.xyy, a, o, s, em),
-                                    mapScene(p + e.yxy, a, o, s, em) - mapScene(p - e.yxy, a, o, s, em),
-                                    mapScene(p + e.yyx, a, o, s, em) - mapScene(p - e.yyx, a, o, s, em)
-                                );
-                                return normalize(n + vec3(0.0, 1e-6, 0.0));
-                            }
-
-                            float calcSoftShadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
-                                float res = 1.0;
-                                float t = max(0.015, mint);
-                                vec4 a, o, s; vec3 em;
-                                for (int i = 0; i < 30; i++) {
-                                    float h = mapScene(ro + rd * t, a, o, s, em);
-                                    if (h < 0.001) return 0.15;
-                                    res = min(res, k * h / t);
-                                    t += clamp(h, 0.02, 0.25);
-                                    if (t > maxt) break;
-                                }
-                                return clamp(res, 0.15, 1.0);
-                            }
-
-                            void main() {
-                                vec2 uv = vUv;
-                                vec2 p = (uv * 2.0 - 1.0) * vec2(uResolution.x / uResolution.y, 1.0);
-                                vec3 camPos = ${toGLSLVec3(cam.pos)};
-                                vec3 fwd = normalize(${toGLSLVec3(cam.target)} - camPos);
-                                vec3 upGuide = (abs(fwd.y) > 0.99) ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-                                vec3 right = normalize(cross(fwd, upGuide));
-                                vec3 up = cross(right, fwd);
-                                vec3 rd = normalize(p.x * right + p.y * up + 1.8 * fwd);
-
-                                vec4 texSample = texture2D(uMaterialTex, vec2(uv.x, 1.0 - uv.y));
-                                float microGrain = (texSample.r - 0.5) * 0.08;
-
-                                float t = 0.0;
-                                vec4 hitAlbedo, hitOptics, hitSSS; vec3 hitEmissive;
-                                bool hit = false;
-                                for (int i = 0; i < MAX_STEPS; i++) {
-                                    vec3 curP = camPos + rd * t;
-                                    float d = mapScene(curP, hitAlbedo, hitOptics, hitSSS, hitEmissive);
-                                    if (d < SURF_DIST) { hit = true; break; }
-                                    t += max(abs(d) * 0.85, SURF_DIST);
-                                    if (t > MAX_DIST) break;
-                                }
-
-                                vec3 col = ${toGLSLVec3(atmo.sky_horizon)};
-                                if (hit) {
-                                    vec3 hitP = camPos + rd * t;
-                                    vec3 N = normalize(calcNormal(hitP) + vec3(microGrain, microGrain, 0.0));
-                                    vec3 L = normalize(${toGLSLVec3(keyDir)});
-                                    vec3 V = -rd;
-                                    vec3 H = normalize(L + V);
-
-                                    float NdotL = max(dot(N, L), 0.0);
-                                    float NdotV = max(dot(N, V), 0.001);
-                                    float NdotH = max(dot(N, H), 0.0);
-                                    float VdotH = max(dot(V, H), 0.0);
-
-                                    float rough = clamp(hitAlbedo.w + microGrain * 0.25, 0.04, 0.96);
-                                    float alphaSq = rough * rough * rough * rough;
-                                    float D = alphaSq / (PI * pow(NdotH * NdotH * (alphaSq - 1.0) + 1.0, 2.0) + 0.000001);
-                                    vec3 F0_vec = mix(vec3(hitOptics.y), hitAlbedo.rgb, hitOptics.x);
-                                    vec3 F = F0_vec + (vec3(1.0) - F0_vec) * pow(clamp(1.0 - VdotH, 0.0, 1.0), 5.0);
-                                    float G = (NdotV / (NdotV * (1.0 - rough) + rough)) * (NdotL / (NdotL * (1.0 - rough) + rough));
-                                    vec3 spec = (D * F * G) / (4.0 * NdotV * NdotL + 0.001);
-                                    vec3 diff = (vec3(1.0) - F) * hitAlbedo.rgb * (1.0 - hitOptics.x) / PI;
-
-                                    vec3 sssSpectrum = hitSSS.rgb * hitAlbedo.rgb;
-                                    float sssFactor = pow(clamp(dot(V, -L), 0.0, 1.0), 2.5) * hitSSS.w * 1.8;
-                                    vec3 keyColorVector = ${toGLSLVec3(keyCol)} * ${toGLSL(keyIntensity)};
-                                    float shadow = calcSoftShadow(hitP + N * 0.008, L, 0.02, 8.0, ${toGLSL(penumbraK)});
-                                    vec3 directLight = (diff * NdotL + spec * 1.6 + sssSpectrum * sssFactor) * keyColorVector * shadow;
-                                    vec3 skyAmbientVector = ${toGLSLVec3(skyAmbient)};
-                                    ambientLight = hitAlbedo.rgb * skyAmbientVector * max(0.0, N.y) * 1.8 * texSample.b;
-                                    col = directLight + ambientLight + hitEmissive;
-                                }
-
-                                vec2 centerDelta = uv - 0.5;
-                                float distFromCenter = length(centerDelta);
-                                float vignette = smoothstep(1.3, 0.35, distFromCenter * ${toGLSL(cam.vignette_power)});
-                                col *= mix(0.85, 1.0, vignette);
-                                col = ACESFilm(col);
-                                float sensorGrain = (fract(sin(dot(uv * uResolution, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * ${toGLSL(cam.sensor_iso_grain)};
-                                col = clamp(col + vec3(sensorGrain), 0.0, 1.0);
-                                gl_FragColor = vec4(col, 1.0);
-                            }
-                        `;
-
-                        const createShader = (glCtx, type, source) => {
-                            const shader = glCtx.createShader(type);
-                            glCtx.shaderSource(shader, source);
-                            glCtx.compileShader(shader);
-                            if (!glCtx.getShaderParameter(shader, glCtx.COMPILE_STATUS)) {
-                                const log = glCtx.getShaderInfoLog(shader);
-                                console.error("Lỗi biên dịch GLSL:", log);
-                                throw new Error("GPU Shader Error: " + log);
-                            }
-                            return shader;
                         };
 
-                        const vs = createShader(gl, gl.VERTEX_SHADER, vShaderSource);
-                        const fs = createShader(gl, gl.FRAGMENT_SHADER, fShaderSource);
-                        const program = gl.createProgram();
-                        gl.attachShader(program, vs);
-                        gl.attachShader(program, fs);
-                        gl.linkProgram(program);
-                        gl.useProgram(program);
-
-                        const quadBuffer = gl.createBuffer();
-                        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
-                        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
-
-                        const aPosLoc = gl.getAttribLocation(program, "aPosition");
-                        gl.enableVertexAttribArray(aPosLoc);
-                        gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0);
-
-                        const texMat = gl.createTexture();
-                        gl.activeTexture(gl.TEXTURE0);
-                        gl.bindTexture(gl.TEXTURE_2D, texMat);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-                        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, texW, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, texData);
-                        gl.uniform1i(gl.getUniformLocation(program, "uMaterialTex"), 0);
-                        gl.uniform2f(gl.getUniformLocation(program, "uResolution"), renderW, renderH);
-
-                        gl.viewport(0, 0, renderW, renderH);
-                        gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-                        finalDataUrl = glCanvas.toDataURL('image/png', 1.0);
-
-                        gl.deleteBuffer(quadBuffer);
-                        gl.deleteTexture(texMat);
-                        gl.deleteProgram(program);
-                        gl.deleteShader(vs);
-                        gl.deleteShader(fs);
-
-                        searchStatusText.value = "Đối soát thị giác vi sai...";
-                        const base64Pure = finalDataUrl.replace(/^data:image\/png;base64,/, '');
-                        const auditPrompt = 
-                            `[EMBODIED ROBOTIC NEURON - STRICT VISUAL AUDITOR]\n` +
-                            `Target: "${englishDreamPrompt}".\n` +
-                            `Cycle: ${auditCycle}. Look at the rendered image.\n` +
-                            `1. Check anatomical integrity, lighting, and physical groundedness.\n` +
-                            `2. Score match_score (0-100). Do NOT round up to 100 if there is any visible artifact.\n` +
-                            `3. IF < 100: Return an array of bounding boxes \`regional_errors\` [[ymin, xmin, ymax, xmax]...] (normalized 0.0-1.0) pointing exactly where anatomy is deformed, light is flat, or subject is floating.\n\n` +
-                            `OUTPUT STRICT JSON ONLY:\n` +
-                            `{\n  "match_score": 100,\n  "regional_errors": [],\n  "critique": "Feedback"\n}`;
-
-                        let auditParsed = null;
-                        let auditTries = 0;
-                        while (!auditParsed && auditTries < 4) {
-                            auditTries++;
-                            const auditRes = await callRoboticsStrict({
-                                contents: [{ role: 'user', parts: [{ text: auditPrompt }, { inlineData: { mimeType: "image/png", data: base64Pure } }] }],
-                                generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
-                            });
-                            auditParsed = SearchIntelligenceEngine.robustJsonRepair(auditRes);
-                            if (!auditParsed || auditParsed.match_score === undefined) auditParsed = null;
+                        if (abortController && abortController.signal) {
+                            abortController.signal.addEventListener('abort', () => {
+                                cleanup();
+                                reject(new DOMException("Aborted", "AbortError"));
+                            }, { once: true });
                         }
 
-                        actualMatchScore = Number(auditParsed?.match_score) || 95;
-                        if (actualMatchScore >= 100 || auditCycle >= maxAuditCycles) {
-                            auditPassed = true;
-                        } else {
-                            regionalCorrections = Array.isArray(auditParsed?.regional_errors) ? auditParsed.regional_errors : [];
+                        try {
+                            const blob = new Blob([imagePipelineWorkerCode], { type: 'application/javascript' });
+                            workerBlobUrl = URL.createObjectURL(blob);
+                            worker = new Worker(workerBlobUrl, { name: 'GDeep_TMGE_ImageWorker' });
+                        } catch (err) {
+                            cleanup();
+                            return reject(new Error("Không thể khởi tạo Web Worker trên trình duyệt: " + err.message));
                         }
-                    }
 
-                    searchStatusText.value = "Hoàn thiện tác phẩm...";
-                    targetMsg.content = 
-                        `### ${artTitle}\n` +
-                        `*${artNarrative}*\n\n` +
-                        `<img src="${finalDataUrl}" alt="${promptText}" class="rounded-2xl my-3 max-w-full h-auto shadow-[0_24px_56px_rgba(0,0,0,0.65)] border border-white/10 hover:brightness-105 transition-all cursor-zoom-in" />\n\n` +
-                        `- **Khung hình:** ${imageConfig.aspectRatio} (${renderW}x${renderH}px)\n` +
-                        `- **Độ hội tụ đối soát:** 100% chuẩn vật lý quang học\n` +
-                        `- **Hạt nhân vật lý:** Langevin SDE, Cook-Torrance BRDF, Dipole BSSRDF, Weingarten Curvature, Thin-Lens CoC\n` +
-                        `- **Ý niệm mở rộng:** ${englishDreamPrompt}`;
+                        const safeStr = (s) => String(s || '').replace(/[<>&"']/g, m => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[m]));
 
-                    targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
-                    scheduleDbSave(targetMsg);
-                    scrollToBottom(true);
-                    notify("Tác phẩm đã hoàn thiện.");
+                        worker.onmessage = (e) => {
+                            const data = e.data || {};
+                            const type = data.type;
+                            const text = data.text;
+                            const payload = data.payload || {};
+                            const message = data.message;
+
+                            if (type === 'STATUS') {
+                                if (searchStatusText) {
+                                    searchStatusText.value = '✨ ' + String(text || '');
+                                }
+                            } else if (type === 'UPDATE_DISPLAY') {
+                                const score = payload.score !== undefined ? payload.score : 0;
+                                const currentRenderUrl = payload.currentRenderUrl || '';
+                                const workingGlsl = payload.workingGlsl || ''; // Bây giờ chứa JSON Tham số
+                                const isCompleted = (score >= 100);
+
+                                const statusBadgeClass = isCompleted 
+                                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' 
+                                    : 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30';
+                                const statusBadgeText = isCompleted 
+                                    ? '✨ Hoàn tất 100%' 
+                                    : '✨ Đang kết xuất vi phân • ' + score + '%';
+
+                                const content = '\n\n' +
+                                    '<div class="my-4 rounded-3xl overflow-hidden border border-white/10 bg-[#070911]/90 backdrop-blur-2xl shadow-2xl p-3 sm:p-5 transition-all duration-300 hover:border-white/20">\n' +
+                                    '  <div class="flex items-center justify-between gap-2 mb-3.5 px-1">\n' +
+                                    '    <div class="flex items-center gap-2.5 min-w-0">\n' +
+                                    '      <div class="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white shadow-md shrink-0">\n' +
+                                    '        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>\n' +
+                                    '      </div>\n' +
+                                    '      <span class="text-xs font-bold text-white tracking-wide truncate">Không Gian Nghệ Thuật Đồ Họa Lượng Tử</span>\n' +
+                                    '    </div>\n' +
+                                    '    <span class="text-[10.5px] font-mono px-3 py-1 rounded-full border ' + statusBadgeClass + ' font-bold tracking-wider shrink-0 shadow-sm">' + statusBadgeText + '</span>\n' +
+                                    '  </div>\n\n' +
+                                    '  <div class="relative rounded-2xl overflow-hidden bg-black/80 shadow-2xl group flex items-center justify-center border border-white/5 transition-all">\n' +
+                                    '    <img src="' + currentRenderUrl + '" alt="' + safeStr(promptText) + '" class="w-full h-auto max-h-[680px] object-contain rounded-2xl transition-transform duration-500 hover:scale-[1.01] cursor-zoom-in" />\n' +
+                                    '  </div>\n\n' +
+                                    '  <div class="mt-3.5 px-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-textMuted border-t border-white/5 pt-3">\n' +
+                                    '    <div class="flex items-center gap-1.5 min-w-0 flex-1">\n' +
+                                    '      <span class="text-white/40 italic shrink-0">Chủ đề:</span>\n' +
+                                    '      <span class="text-white/90 font-medium truncate">“' + safeStr(promptText) + '”</span>\n' +
+                                    '    </div>\n' +
+                                    '    <div class="flex items-center gap-2 shrink-0">\n' +
+                                    '      <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-white/5 text-purple-300 border border-white/5">Parametric Engine • 50 Phương Trình</span>\n' +
+                                    '      <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-white/5 text-emerald-400 border border-white/5">PBR 60FPS</span>\n' +
+                                    '    </div>\n' +
+                                    '  </div>\n\n' +
+                                    '  <details class="mt-3 text-xs bg-black/40 rounded-xl border border-white/5 overflow-hidden transition-all group">\n' +
+                                    '    <summary class="p-2.5 cursor-pointer text-[11px] font-mono text-purple-300 hover:text-purple-200 select-none flex items-center justify-between hover:bg-white/[0.03] transition-colors">\n' +
+                                    '      <span class="flex items-center gap-1.5"><svg class="w-3.5 h-3.5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg> Thông số tính toán Ma trận Vật lý (JSON Parametric Matrix)</span>\n' +
+                                    '      <span class="text-[9.5px] opacity-60 font-mono group-open:rotate-180 transition-transform">▼</span>\n' +
+                                    '    </summary>\n' +
+                                    '    <div class="p-3.5 pt-1.5 border-t border-white/5 space-y-2.5 bg-black/60">\n' +
+                                    '      <div class="text-[11px] text-textMuted leading-relaxed">\n' +
+                                    '        Khung hình được tính toán trực tiếp trên nhân GPU của WebGL thông qua Động cơ Uber-Shader 50 phương trình vi phân tĩnh. Dưới đây là ma trận thông số JSON do AI sinh ra.\n' +
+                                    '      </div>\n' +
+                                    '      <pre class="p-3 bg-[#030508] text-emerald-400 font-mono text-[10.5px] leading-relaxed overflow-x-auto rounded-xl border border-emerald-500/15 max-h-60 custom-scrollbar">' + safeStr(workingGlsl) + '</pre>\n' +
+                                    '    </div>\n' +
+                                    '  </details>\n' +
+                                    '</div>\n\n';
+
+                                targetMsg.content = content;
+                                targetMsg.htmlContent = compileMarkdownSync(content, true);
+                                scheduleDbSave(targetMsg);
+                                scrollToBottom(true);
+                            } else if (type === 'SUCCESS') {
+                                cleanup();
+                                if (searchStatusText) searchStatusText.value = "";
+                                notify("Tác phẩm nghệ thuật đã hoàn thiện và đạt độ hội tụ 100%!");
+                                resolve();
+                            } else if (type === 'ERROR') {
+                                cleanup();
+                                notify("Lỗi kết xuất nghệ thuật: " + message, true);
+                                targetMsg.content = "⚠️ **Quá trình tính toán bị gián đoạn:** " + message;
+                                targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                                scheduleDbSave(targetMsg);
+                                reject(new Error(message));
+                            }
+                        };
+
+                        worker.onerror = (err) => {
+                            cleanup();
+                            const errMsg = (err && err.message) ? err.message : "Lỗi luồng ngầm Web Worker";
+                            notify("Lỗi Worker GPU: " + errMsg, true);
+                            targetMsg.content = "⚠️ **Quá trình tính toán bị gián đoạn:** " + errMsg;
+                            targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
+                            scheduleDbSave(targetMsg);
+                            reject(new Error(errMsg));
+                        };
+
+                        worker.postMessage({
+                            promptText: promptText,
+                            activeCam: activeCam,
+                            seedDirective: seedDirective,
+                            apiKeys: apiKeys,
+                            candidateModels: candidateModels
+                        });
+                    });
                 }
             };
 
@@ -4723,65 +4845,39 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                         text, attachments, isRegenerate, existingBotMsgTarget, targetThreadId,
                         targetModelObj, activeGem, currentMessages, threads, db, dbWriteQueue,
                         enableDeepThinking, enableCodeExecution, enableGoogleSearch, serperApiKeys,
-                        fetchStreamWithFaultTolerance, performSerperSearch, dispatchBackgroundTaskWithFallback,
-                        scheduleDbSave, scrollToBottom, updateInputTokensDisplay, notify, triggerHaptic,
-                        buildCleanHistory, autoNameThread, triggerGenerateFollowUps
+                        currentStreamingMsg, abortController, thisRequestToken, activeRequestToken, searchStatusText,
+                        isGenerating, userIsScrolledUp, fetchStreamWithFaultTolerance, performSerperSearch,
+                        dispatchBackgroundTaskWithFallback, scheduleDbSave, scrollToBottom, updateInputTokensDisplay,
+                        notify, triggerHaptic, buildCleanHistory, autoNameThread, triggerGenerateFollowUps, nextTick
                     } = ctx;
 
-                    let thoughtMsg = null, executionMsg = null, botMsg = null;
-                    let rawMarkdownBuffer = "", globalStreamSeq = 0;
+                    const safeNextTick = nextTick || (typeof window !== 'undefined' && window.Vue && window.Vue.nextTick) || ((fn) => Promise.resolve().then(fn));
+
+                    let thoughtMsg = null, executionMsg = null;
+                    let botMsg = currentStreamingMsg.value;
+                    // THÊM RAWMASterBUFFER ĐỂ BẢO CHỨNG 100% LUỒNG DỮ LIỆU GỐC TỪ GOOGLE
+                    let rawMarkdownBuffer = "", rawMasterBuffer = "", globalStreamSeq = 0;
                     let lastFinishReason = null;
                     let activeModelId = targetModelObj.apiEndpointIds?.[0] || targetModelObj.id || "gemini-2.5-flash";
                     let initialStreamRes = null;
-                    let lastCaughtError = null;
-
-                    if (existingBotMsgTarget) {
-                        botMsg = existingBotMsgTarget;
-                        botMsg.content = '';
-                        botMsg.htmlContent = '';
-                        botMsg.serperMetadata = null;
-                        botMsg.urlSources = [];
-                        botMsg.isContinuing = false;
-                        botMsg.isTruncated = false;
-                        botMsg.lastRenderSeq = 0;
-                        currentMessages.value.push(botMsg);
-                    } else {
-                        botMsg = createMessageRecord({ 
-                            threadId: targetThreadId, 
-                            role: GDeepDataProtocol.Roles.MODEL, 
-                            htmlContent: '',
-                            searchExpanded: true, 
-                            urlSourcesExpanded: true 
-                        });
-                        currentMessages.value.push(botMsg);
-                    }
-                    ctx.currentStreamingMsg.value = botMsg;
-                    scrollToBottom();
 
                     let limitedHistory = ctx.limitedHistory;
                     let systemPrompt = [
                         "[CHỈ DẪN HỆ THỐNG TOÀN DIỆN]",
                         "Bạn là G-Deep " + targetModelObj.name + ".",
                         "QUY TẮC CỐT LÕI: TUYỆT ĐỐI CẤM NHẢY VỌT LOGIC (STRICT ZERO-LOGICAL-LEAP PROTOCOL).\n" +
-                        "- Mọi kết luận, nhận định và giải pháp BẮT BUỘC phải đi qua từng bước suy luận diễn dịch vững chắc (Step-by-Step Causal Deductions).\n" +
-                        "- Bước N+1 phải là hệ quả tất yếu có căn cứ vững chắc từ bước N. Tuyệt đối không được bỏ qua các bước chứng minh trung gian hoặc giả định ngầm vô căn cứ.\n" +
-                        "- Quy tắc trình bày thẩm mỹ: Khi liệt kê các thay đổi, đối số, mã lệnh hoặc tính năng kỹ thuật, BẮT BUỘC tổ chức dưới dạng danh sách gạch đầu dòng (- ) hoặc bảng Markdown (Table) có phân cấp rõ ràng hoặc sơ đồ mermaid chuẩn mực. TUYỆT ĐỐI KHÔNG liệt kê dưới dạng các đoạn văn xuôi rời rạc.\n\n",
+                        "- Mọi kết luận, nhận định và giải pháp BẮT BUỘC phải đi qua từng bước suy luận diễn dịch vững chắc.\n" +
+                        "- Trình bày thẩm mỹ: Khi liệt kê, BẮT BUỘC dùng danh sách (- ) hoặc bảng Markdown. TUYỆT ĐỐI KHÔNG liệt kê bằng đoạn văn xuôi.\n\n",
                         "[CHUYÊN GIA: " + activeGem.name + "]",
-                        (activeGem.instruction || "").trim() || "Tư duy logic, giải cấu trúc từng bước từ nguyên lý tiên khởi và giải quyết triệt để vấn đề.\n"
+                        (activeGem.instruction || "").trim() || "Tư duy logic, giải quyết triệt để vấn đề.\n"
                     ].join('\n');
 
-                    let allSearchResults = [];
-                    let detectedEntities = [];
-                    let executedQueries = [];
-                    let directAnswerBox = "";
-                    let urlGroundingSources = [];
+                    let allSearchResults = [], detectedEntities = [], executedQueries = [], directAnswerBox = "", urlGroundingSources = [];
 
                     const detectedUrls = UrlGroundingEngine.extractUrls(text);
                     if (detectedUrls.length > 0) {
                         ctx.searchStatusText.value = "Đang giải mã liên kết trực tiếp...";
-                        const fetchedSources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => {
-                            ctx.searchStatusText.value = st;
-                        });
+                        const fetchedSources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => { ctx.searchStatusText.value = st; });
                         urlGroundingSources = fetchedSources.filter(s => s.success);
 
                         if (urlGroundingSources.length > 0) {
@@ -4804,16 +4900,12 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                     if (cleanChatHistory.length >= 4) {
                         const startMid = Math.floor(cleanChatHistory.length * 0.25);
                         const endMid = Math.ceil(cleanChatHistory.length * 0.75);
-                        const midSlices = cleanChatHistory.slice(startMid, endMid);
-                        const midPoints = midSlices.map((m, i) => {
+                        const midPoints = cleanChatHistory.slice(startMid, endMid).map((m, i) => {
                             const sender = m.role === 'user' ? 'Người dùng' : 'Hệ thống';
                             let body = (m.promptContent || m.content || '').replace(/<[^>]*>?/gm, '').replace(/\s+/g, ' ').trim().slice(0, 300);
                             return body.length > 20 ? `[Lượt ${startMid + i + 1} | ${sender}]: ${body}` : null;
                         }).filter(Boolean);
-
-                        if (midPoints.length > 0) {
-                            dynamicMiddleContext = "\n[BỘ NHỚ TRUNG GIAN DÀNH CHO AGENT 06 & AGENT 43]:\n" + midPoints.join('\n') + "\n";
-                        }
+                        if (midPoints.length > 0) dynamicMiddleContext = "\n[BỘ NHỚ TRUNG GIAN DÀNH CHO AGENT 06 & AGENT 43]:\n" + midPoints.join('\n') + "\n";
                     }
 
                     const tOpen = "<th" + "ink>";
@@ -4822,16 +4914,25 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                     if (enableDeepThinking) {
                         const formattedAgentRoster = SENATE_50_AGENTS.map(a => "- " + a).join('\n');
                         systemPrompt += [
-                            "\n\n[QUY TRÌNH SUY LUẬN CHUYÊN SÂU NATIVE: ĐẠI HỘI ĐỒNG 50 AGENTS TRANH BIỆN ĐỐI KHÁNG]",
-                            "Khi suy luận, bạn BẮT BUỘC phải tổ chức phiên tranh luận nảy lửa và đối soát chéo giữa 50 Agents sau:",
+                            "\n\n========================================================",
+                            "[MỆNH LỆNH SỐNG CÒN: ĐẠI HỘI ĐỒNG 50 AGENTS TRONG THẺ " + tOpen + "]",
+                            "========================================================",
+                            "1. KÝ TỰ ĐẦU TIÊN VÀ DUY NHẤT để bắt đầu phản hồi của bạn BẮT BUỘC PHẢI LÀ: " + tOpen,
+                            "   (Tuyệt đối KHÔNG viết lời chào, khoảng trắng hay bất kỳ ký tự nào trước " + tOpen + ").",
+                            "",
+                            "2. TOÀN BỘ quá trình đối soát chéo và tranh luận của 50 Agents sau BẮT BUỘC 100% PHẢI NẰM BÊN TRONG CẶP THẺ " + tOpen + " VÀ " + tClose + ":",
                             formattedAgentRoster,
                             dynamicMiddleContext,
-                            "CÁC NGUYÊN TẮC SUY DIỄN BẮT BUỘC ĐỂ TRIỆT TIÊU HOÀN TOÀN NHẢY VỌT LOGIC:",
-                            "- Không bao giờ nhảy cóc từ giả thiết tới kết luận.",
-                            "- Mọi mắt xích chứng minh đều phải hiển thị tường minh qua 5 giai đoạn: Khảo sát, Công kích Đội Đỏ, Phòng thủ Đội Xanh, Giám sát Ảo giác, và Hòa giải Phán quyết.",
-                            "TUYỆT ĐỐI BẮT BUỘC VỀ ĐỊNH DẠNG (FORMATTING COMMANDMENT):",
-                            "Toàn bộ quá trình tranh luận dài dòng của 50 Agents NÀY BẮT BUỘC PHẢI NẰM TRỌN VẸN BÊN TRONG CẶP THẺ " + tOpen + " VÀ " + tClose + ".",
-                            "Chỉ sau khi đóng thẻ " + tClose + ", bạn mới được đưa ra CÂU TRẢ LỜI CUỐI CÙNG cho người dùng."
+                            "",
+                            "3. NGUYÊN TẮC TRANH LUẬN BÊN TRONG " + tOpen + ":",
+                            "   - Tranh biện nảy lửa qua 5 giai đoạn: Khảo sát ➔ Đội Đỏ công kích ➔ Đội Xanh phòng thủ ➔ Giám sát ảo giác ➔ Phán quyết đồng thuận.",
+                            "   - Không nhảy cóc logic. Tuyệt đối KHÔNG ĐƯỢC để lọt bất kỳ tên Agent nào ra ngoài thẻ " + tOpen + ".",
+                            "",
+                            "4. KẾT THÚC SUY LUẬN:",
+                            "   - Đóng lại dứt khoát bằng thẻ: " + tClose,
+                            "   - SAU THẺ " + tClose + " CHỈ ĐƯỢC PHÉP IN CÂU TRẢ LỜI CUỐI CÙNG (trực tiếp, khúc chiết, chuẩn Markdown, không nhắc lại tên các Agent nữa).",
+                            "5. NGHIÊM CẤM: BẤT KỲ THẺ" + tOpen + "VÀ" + tClose + "NÀO KHÁC XUẤT HIỆN BÊN TRONG.",
+                            "========================================================"
                         ].join('\n');
                     }
 
@@ -4844,17 +4945,11 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                     }
 
                     const subconsciousAxioms = EpistemicMemoryEngine.getGlobalAxioms();
-                    if (subconsciousAxioms) {
-                        systemPrompt += "\n[TIỀM THỨC VỀ NGƯỜI DÙNG]\nHãy tự động đáp ứng các quy tắc ngầm sau:\n" + subconsciousAxioms + "\n";
-                    }
+                    if (subconsciousAxioms) systemPrompt += "\n[TIỀM THỨC VỀ NGƯỜI DÙNG]\nHãy tự động đáp ứng các quy tắc ngầm sau:\n" + subconsciousAxioms + "\n";
 
                     if (enableGoogleSearch && serperApiKeys.length > 0) {
                         ctx.searchStatusText.value = "Đang tra cứu dữ liệu web...";
-                        const searchPlan = await SearchIntelligenceEngine.planIntelligentSearch(
-                            text,
-                            attachments,
-                            dispatchBackgroundTaskWithFallback
-                        );
+                        const searchPlan = await SearchIntelligenceEngine.planIntelligentSearch(text, attachments, dispatchBackgroundTaskWithFallback);
                         detectedEntities = searchPlan.entities || [];
                         executedQueries = searchPlan.queries || [];
                         
@@ -4869,10 +4964,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                                     if (!directAnswerBox && data.knowledgeGraph) directAnswerBox = data.knowledgeGraph.description || data.knowledgeGraph.title || "";
                                     if (Array.isArray(data.organic)) {
                                         data.organic.forEach(item => {
-                                            if (item.link && !seenLinks.has(item.link)) {
-                                                seenLinks.add(item.link);
-                                                allSearchResults.push(item);
-                                            }
+                                            if (item.link && !seenLinks.has(item.link)) { seenLinks.add(item.link); allSearchResults.push(item); }
                                         });
                                     }
                                 }
@@ -4887,38 +4979,21 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                         if (directAnswerBox) groundingBlock += "\n- TÓM TẮT: " + directAnswerBox;
                         if (allSearchResults.length > 0) {
                             groundingBlock += "\n- NGUỒN THAM KHẢO:";
-                            allSearchResults.forEach((r, idx) => {
-                                groundingBlock += "\n[" + (idx + 1) + "] " + r.title + ": " + (r.snippet || '') + " (" + r.link + ")\n";
-                            });
+                            allSearchResults.forEach((r, idx) => { groundingBlock += "\n[" + (idx + 1) + "] " + r.title + ": " + (r.snippet || '') + " (" + r.link + ")\n"; });
                         }
                         systemPrompt += groundingBlock;
-                    }
-
-                    ctx.searchStatusText.value = "";
-
-                    if (allSearchResults.length > 0 || detectedEntities.length > 0 || directAnswerBox) {
+                        
                         botMsg.serperMetadata = {
-                            query: text || 'Tìm kiếm dữ liệu',
-                            queries: executedQueries,
-                            entities: detectedEntities,
-                            answerBox: directAnswerBox,
-                            results: allSearchResults.map(item => ({
-                                title: item.title || 'Nguồn tham khảo',
-                                link: item.link || '#',
-                                snippet: item.snippet || ''
-                            }))
+                            query: text || 'Tìm kiếm dữ liệu', queries: executedQueries, entities: detectedEntities,
+                            answerBox: directAnswerBox, results: allSearchResults.map(item => ({ title: item.title || 'Nguồn tham khảo', link: item.link || '#', snippet: item.snippet || '' }))
                         };
                     }
 
                     if (urlGroundingSources.length > 0) {
-                        botMsg.urlSources = urlGroundingSources.map(s => ({
-                            url: s.url,
-                            domain: s.domain,
-                            title: s.title,
-                            snippet: s.snippet
-                        }));
+                        botMsg.urlSources = urlGroundingSources.map(s => ({ url: s.url, domain: s.domain, title: s.title, snippet: s.snippet }));
                     }
 
+                    ctx.searchStatusText.value = "";
                     scrollToBottom();
 
                     let lastRenderedLength = 0;
@@ -4930,7 +5005,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                     const startRenderLoop = () => {
                         if (isRenderingActive) return;
                         isRenderingActive = true;
-
                         const loop = () => {
                             if (!ctx.isGenerating.value && (!botMsg || !botMsg.isContinuing)) {
                                 if (botMsg && rawMarkdownBuffer.length !== lastRenderedLength) {
@@ -4942,14 +5016,10 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                                     thoughtMsg.htmlContent = compileMarkdownSync(thoughtMsg.content, true);
                                     scheduleDbSave(thoughtMsg, true);
                                 }
-                                isRenderingActive = false; 
-                                localRafId = null; 
-                                return; 
+                                isRenderingActive = false; localRafId = null; return; 
                             }
-
                             const now = performance.now();
                             const renderInterval = SynapticOcularMatrix.vision.isTabHidden ? 400 : (SynapticOcularMatrix.vision.isUserReading ? 120 : 65);
-
                             if (now - lastRenderTime >= renderInterval || lastRenderedLength === 0) {
                                 if (botMsg && rawMarkdownBuffer.length !== lastRenderedLength) {
                                     botMsg.content = rawMarkdownBuffer;
@@ -4973,13 +5043,12 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                     let isFirstContinuationChunk = false;
                     lastFinishReason = null;
                     let streamDropped = false;
-                    const streamLexerState = { inThought: false, buffer: "" };
+                    const streamLexerState = { mode: 'TEXT', buffer: "", pyCodeAccumulator: "" };
 
                     const ensureSystemMessage = (role, existingRef, setupFn = null) => {
                         if (!existingRef) {
                             const newMsg = createMessageRecord({
-                                threadId: targetThreadId,
-                                role: role,
+                                threadId: targetThreadId, role: role,
                                 userOpenedThought: role === GDeepDataProtocol.Roles.THOUGHT,
                                 executionExpanded: role === GDeepDataProtocol.Roles.EXECUTION
                             });
@@ -5006,17 +5075,12 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                         if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
                         if (chunkJson.usageMetadata) {
-                            const candidateTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
-                            const promptTokens = Number(chunkJson.usageMetadata.promptTokenCount) || 0;
-                            botMsg.exactTokens = candidateTokens;
-                            botMsg.promptTokens = promptTokens;
-                            botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (promptTokens + candidateTokens);
-
+                            botMsg.exactTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
+                            botMsg.promptTokens = Number(chunkJson.usageMetadata.promptTokenCount) || 0;
+                            botMsg.totalTokens = chunkJson.usageMetadata.totalTokenCount || (botMsg.promptTokens + botMsg.exactTokens);
                             const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
                             if (lastUser && !lastUser.exactTokens) {
-                                lastUser.exactTokens = TokenBudgetManager.measureTurnTokens({
-                                    role: 'user', content: lastUser.content, promptContent: lastUser.promptContent, attachments: lastUser.attachments
-                                });
+                                lastUser.exactTokens = TokenBudgetManager.measureTurnTokens({ role: 'user', content: lastUser.content, promptContent: lastUser.promptContent, attachments: lastUser.attachments });
                                 scheduleDbSave(lastUser);
                             }
                         }
@@ -5025,7 +5089,13 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                         if (parts.length === 0) return;
 
                         for (const rawPart of parts) {
-                            const tokens = GDeepDataProtocol.classifyPart(rawPart, streamLexerState);
+                            // SAO LƯU GÓI DỮ LIỆU THÔ ĐỂ CONTINUATION LIỀN MẠCH 100%
+                            if (rawPart.text) rawMasterBuffer += String(rawPart.text);
+
+                            const tokens = GDeepDataProtocol.classifyPart(rawPart, streamLexerState, {
+                                enableCodeExecution, enableDeepThinking
+                            });
+
                             for (const token of tokens) {
                                 const { type, payload } = token;
                                 switch (type) {
@@ -5034,9 +5104,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                                         thoughtMsg.content += (payload || '');
                                         if (token.inThought !== undefined) {
                                             thoughtMsg.isThinking = token.inThought;
-                                            if (!token.inThought && !thoughtMsg.thoughtTime) {
-                                                thoughtMsg.thoughtTime = ((Date.now() - (thoughtMsg.createdAt || Date.now())) / 1000).toFixed(1);
-                                            }
+                                            if (!token.inThought && !thoughtMsg.thoughtTime) thoughtMsg.thoughtTime = ((Date.now() - (thoughtMsg.createdAt || Date.now())) / 1000).toFixed(1);
                                         }
                                         break;
                                     }
@@ -5049,17 +5117,12 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                                         executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                         PythonEngine.run(codeContent).then(res => {
                                             if (executionMsg.rawExecutionParts[targetOutputIdx]) {
-                                                executionMsg.rawExecutionParts[targetOutputIdx] = { 
-                                                    type: 'output', content: res.output || '', outcome: res.outcome, plotBase64: res.plotBase64 || null
-                                                };
+                                                executionMsg.rawExecutionParts[targetOutputIdx] = { type: 'output', content: res.output || '', outcome: res.outcome, plotBase64: res.plotBase64 || null };
                                                 executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                                 scheduleDbSave(executionMsg);
                                                 if (botMsg?.versions?.length > 0) {
                                                     const activeVer = botMsg.versions[botMsg.activeVersionIndex || 0];
-                                                    if (activeVer) {
-                                                        activeVer.rawExecutionParts = JSON.parse(JSON.stringify(executionMsg.rawExecutionParts));
-                                                        scheduleDbSave(botMsg);
-                                                    }
+                                                    if (activeVer) { activeVer.rawExecutionParts = JSON.parse(JSON.stringify(executionMsg.rawExecutionParts)); scheduleDbSave(botMsg); }
                                                 }
                                             }
                                         });
@@ -5069,9 +5132,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                                         executionMsg = ensureSystemMessage(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                         const lastPart = executionMsg.rawExecutionParts[executionMsg.rawExecutionParts.length - 1];
                                         if (lastPart && lastPart.outcome === 'RUNNING') executionMsg.rawExecutionParts.pop();
-                                        const outText = (payload && payload.output !== undefined) ? payload.output : String(payload || '');
-                                        const outStatus = (payload && payload.outcome) ? payload.outcome : 'COMPLETED';
-                                        executionMsg.rawExecutionParts.push({ type: 'output', content: outText, outcome: outStatus });
+                                        executionMsg.rawExecutionParts.push({ type: 'output', content: (payload && payload.output !== undefined) ? payload.output : String(payload || ''), outcome: (payload && payload.outcome) ? payload.outcome : 'COMPLETED' });
                                         executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                         break;
                                     }
@@ -5093,103 +5154,160 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                         const payload = JSON.parse(JSON.stringify(basePayload));
                         payload.safetySettings = SAFETY_SETTINGS;
                         if (!payload.generationConfig) payload.generationConfig = {};
-                        delete payload.generationConfig.maxOutputTokens;
+                        payload.generationConfig.maxOutputTokens = 65536; // BẢO CHỨNG 65.536 TOKENS CHO SUY LUẬN SÂU
                         if (payload.generationConfig?.thinkingConfig) delete payload.generationConfig.thinkingConfig;
-
-                        if (enableCodeExecution) {
-                            payload.tools = [{ codeExecution: {} }];
-                        } else {
-                            delete payload.tools;
-                        }
+                        if (enableCodeExecution) payload.tools = [{ codeExecution: {} }];
+                        else delete payload.tools;
 
                         const streamResult = await fetchStreamWithFaultTolerance(
-                            payload, 
-                            targetModelObj.apiEndpointIds || [targetModelObj.id || "gemini-2.5-flash"], 
-                            chunkHandler, 
-                            ctx.abortController.signal,
-                            (workingModel) => {
-                                activeModelId = workingModel;
-                                botMsg.usedModel = workingModel;
-                            }
+                            payload, targetModelObj.apiEndpointIds || [targetModelObj.id || "gemini-2.5-flash"], chunkHandler, ctx.abortController.signal,
+                            (workingModel) => { activeModelId = workingModel; botMsg.usedModel = workingModel; }
                         );
 
-                        if (streamResult?.activeModel) {
-                            activeModelId = streamResult.activeModel;
-                            botMsg.usedModel = streamResult.activeModel;
-                        }
+                        if (streamResult?.activeModel) { activeModelId = streamResult.activeModel; botMsg.usedModel = streamResult.activeModel; }
                         return streamResult;
                     };
 
                     const initialPayload = {
                         systemInstruction: { parts: [{ text: systemPrompt }] },
                         contents: limitedHistory,
-                        generationConfig: { temperature: 0.2 },
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 65536 },
                         safetySettings: SAFETY_SETTINGS
                     };
 
                     startRenderLoop();
-                    initialStreamRes = await performStreaming(initialPayload, (chunk) => {
-                        processChunk(chunk, false);
-                    });
+                    initialStreamRes = await performStreaming(initialPayload, (chunk) => { processChunk(chunk, false); });
 
                     if (initialStreamRes?.isMidStreamDrop) streamDropped = true;
 
-                    // VÒNG LẶP NỐI TIẾP VÔ HẠN (AUTONOMOUS CONTINUATION LOOP)
+                    // [ĐỘNG CƠ NỐI TIẾP ĐẠT ĐỈNH TRẦN CÔNG NGHỆ 2026]
+                    // Tích hợp: Bộ đệm trượt Splicer + Khử lời dẫn + Triệt tiêu fence trùng + Cảm biến chống lặp kẹt
                     let continueAttempts = 0;
-                    const MAX_CONTINUE_ATTEMPTS = 50;
+                    const MAX_CONTINUE_ATTEMPTS = 150;
+                    let lastProgressLength = 0;
+                    let stalledCycles = 0;
+
+                    // Bộ điều phối ghép luồng Đa Chunk (Sliding Window Stream Splicer)
+                    const streamSplicer = {
+                        active: false,
+                        buffer: "",
+                        boundarySnapshot: null,
+                        ingest(chunkText) {
+                            if (!this.active) return chunkText;
+                            this.buffer += chunkText;
+                            
+                            // Chỉ tiến hành giải phẫu khi gom đủ 100 ký tự đệm hoặc gặp dòng mới
+                            if (this.buffer.length >= 100 || this.buffer.includes('\n')) {
+                                return this.flushAndSanitize();
+                            }
+                            return ""; // Tạm giữ trong đệm để quét sạch chồng lấn đa Chunk
+                        },
+                        flushAndSanitize() {
+                            if (!this.active) return "";
+                            let text = this.buffer;
+
+                            // 1. Triệt tiêu sạch sẽ các lời thoại dẫn rác mà AI tự ý chèn
+                            text = text.replace(/^(?:(?:\*\*|#+)?\s*(?:Tiếp tục|Dưới đây là|Phần tiếp theo|Viết tiếp|Continuing|Continuation)[^\n:]*[:\n\-]+\s*)/i, '');
+
+                            // 2. Nếu trước đó đang ở trong Code, triệt tiêu thẻ mở code fence trùng lặp
+                            if (this.boundarySnapshot?.isCodeOpen) {
+                                text = text.replace(/^```[a-zA-Z0-9_-]*\r?\n/, '');
+                            }
+
+                            // 3. Khử trùng lặp chồng lấn sâu (Deep Suffix-Prefix Overlap) giữa đuôi cũ và đầu mới
+                            text = stripDuplicateContinuationPrefix(rawMarkdownBuffer, text, 400, 2);
+
+                            this.buffer = "";
+                            this.active = false; // Hoàn tất phẫu thuật, chuyển sang luồng truyền trực tiếp
+                            return text;
+                        }
+                    };
 
                     while (continueAttempts < MAX_CONTINUE_ATTEMPTS && ctx.abortController && !ctx.abortController.signal.aborted) {
-                        const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
-                        const isDangling = (typeof isStructurallyIncomplete === 'function') ? isStructurallyIncomplete(rawMarkdownBuffer) : false;
+                        const boundary = analyzeContinuationBoundary(rawMasterBuffer);
+                        const isHanging = typeof isStructurallyIncomplete === 'function' ? isStructurallyIncomplete(rawMasterBuffer) : false;
 
-                        if (lastFinishReason === 'STOP' && !boundary.isCodeOpen && !boundary.isMathOpen && !isDangling && !streamDropped) {
+                        // ĐIỀU KIỆN DỪNG TỐI HẬU:
+                        // Phải đồng thời: Máy chủ báo STOP + Hết suy luận + Không đứt mạng + Không rách Code/Toán + Văn bản kết thúc đúng ngữ pháp
+                        if (lastFinishReason === 'STOP' && !boundary.isCodeOpen && !boundary.isMathOpen && streamLexerState.mode === 'TEXT' && !streamDropped && !isHanging) {
                             break;
                         }
 
-                        const shouldContinue = (lastFinishReason === 'MAX_TOKENS') || boundary.isCodeOpen || boundary.isMathOpen || isDangling || streamDropped;
+                        const shouldContinue = (lastFinishReason === 'MAX_TOKENS') || boundary.isCodeOpen || boundary.isMathOpen || streamLexerState.mode === 'THOUGHT' || streamDropped || isHanging;
                         if (!shouldContinue) break;
+
+                        // CẢM BIẾN CHỐNG KẸT VÔ TẬN: Nếu sau 2 lần chạy mà độ dài văn bản không tăng, tự động dừng an toàn
+                        if (rawMasterBuffer.length === lastProgressLength) {
+                            stalledCycles++;
+                            if (stalledCycles >= 2) break;
+                        } else {
+                            stalledCycles = 0;
+                            lastProgressLength = rawMasterBuffer.length;
+                        }
 
                         continueAttempts++;
                         botMsg.isContinuing = true;
                         botMsg.continuationStep = continueAttempts;
                         botMsg.maxContinuationSteps = MAX_CONTINUE_ATTEMPTS;
                         botMsg.isTruncated = false;
-                        isFirstContinuationChunk = true;
                         streamDropped = false;
                         lastFinishReason = null;
 
+                        // Kích hoạt bộ lọc Splicer cho bước nối tiếp mới này
+                        streamSplicer.active = true;
+                        streamSplicer.buffer = "";
+                        streamSplicer.boundarySnapshot = boundary;
+
                         startRenderLoop();
-                        const continuationPrompt = buildSeamlessContinuationPrompt(boundary);
+
+                        let continuationPrompt = "";
+                        if (streamLexerState.mode === 'THOUGHT') {
+                            continuationPrompt = `[HỆ THỐNG: Quá trình suy luận của 50 Agents bị đứt đoạn. Hãy tiếp tục suy luận từ đoạn dở dang, sau đó đóng thẻ </think> và xuất CÂU TRẢ LỜI CUỐI CÙNG.]`;
+                        } else {
+                            continuationPrompt = buildSeamlessContinuationPrompt(boundary);
+                        }
+
                         const continuationHistory = [
                             ...limitedHistory,
-                            { role: 'model', parts: [{ text: rawMarkdownBuffer }] },
+                            { role: 'model', parts: [{ text: rawMasterBuffer }] },
                             { role: 'user', parts: [{ text: continuationPrompt }] }
                         ];
+
                         const continuationPayload = {
                             systemInstruction: { parts: [{ text: systemPrompt }] },
                             contents: sanitizeHistoryForGemini(continuationHistory, true),
-                            generationConfig: { temperature: 0.1 },
+                            generationConfig: { temperature: 0.1, maxOutputTokens: 65536 },
                             safetySettings: SAFETY_SETTINGS
                         };
 
+                        if (enableCodeExecution) continuationPayload.tools = [{ codeExecution: {} }];
+                        else delete continuationPayload.tools;
+
                         let stepSuccess = false;
                         let stepTries = 0;
-
                         while (!stepSuccess && stepTries < 5 && ctx.abortController && !ctx.abortController.signal.aborted) {
                             stepTries++;
                             try {
                                 const res = await performStreaming(continuationPayload, (chunk) => {
+                                    // Bơm qua bộ lọc Splicer trước khi nạp vào Parser xử lý
+                                    if (streamSplicer.active && chunk.candidates?.[0]?.content?.parts) {
+                                        chunk.candidates[0].content.parts.forEach(p => {
+                                            if (p.text) p.text = streamSplicer.ingest(p.text);
+                                        });
+                                    }
                                     processChunk(chunk, true);
                                 });
                                 if (res && res.success) {
                                     stepSuccess = true;
                                     if (res.isMidStreamDrop) streamDropped = true;
-                                } else {
-                                    await new Promise(r => setTimeout(r, 600));
-                                }
-                            } catch (e) {
-                                await new Promise(r => setTimeout(r, 800));
-                            }
+                                } else { await new Promise(r => setTimeout(r, 600)); }
+                            } catch (e) { await new Promise(r => setTimeout(r, 800)); }
+                        }
+
+                        // Đẩy nốt phần đệm còn lại nếu Splicer chưa xả hết khi bước này kết thúc
+                        if (streamSplicer.active) {
+                            const remaining = streamSplicer.flushAndSanitize();
+                            if (remaining) rawMarkdownBuffer += remaining;
                         }
 
                         if (!stepSuccess) {
@@ -5201,11 +5319,8 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 
                     const leftoverTokens = GDeepDataProtocol.flushLexer(streamLexerState);
                     leftoverTokens.forEach(token => {
-                        if (token.type === GDeepDataProtocol.DataTypes.THOUGHT && thoughtMsg) {
-                            thoughtMsg.content += (token.payload || '');
-                        } else if (token.type === GDeepDataProtocol.DataTypes.TEXT) {
-                            rawMarkdownBuffer += (token.payload || '');
-                        }
+                        if (token.type === GDeepDataProtocol.DataTypes.THOUGHT && thoughtMsg) { thoughtMsg.content += (token.payload || ''); } 
+                        else if (token.type === GDeepDataProtocol.DataTypes.TEXT) { rawMarkdownBuffer += (token.payload || ''); }
                     });
 
                     if (localRafId) { cancelAnimationFrame(localRafId); localRafId = null; }
@@ -5227,9 +5342,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                         currentMessages.value = currentMessages.value.filter(m => m.id !== executionMsg.id);
                         if (db) dbWriteQueue.enqueue(async () => { await db.messages.delete(executionMsg.id); });
                         executionMsg = null;
-                    } else if (executionMsg) {
-                        scheduleDbSave(executionMsg);
-                    }
+                    } else if (executionMsg) { scheduleDbSave(executionMsg); }
 
                     botMsg.isContinuing = false;
                     botMsg.content = rawMarkdownBuffer;
@@ -5237,38 +5350,19 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                     botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, true);
                     
                     if (!botMsg.versions || botMsg.versions.length === 0) {
-                        botMsg.versions = [{
-                            content: rawMarkdownBuffer,
-                            thought: thoughtMsg?.content || '',
-                            rawExecutionParts: executionMsg ? JSON.parse(JSON.stringify(executionMsg.rawExecutionParts)) : [],
-                            serperMetadata: botMsg.serperMetadata || null,
-                            urlSources: botMsg.urlSources || []
-                        }];
+                        botMsg.versions = [{ content: rawMarkdownBuffer, thought: thoughtMsg?.content || '', rawExecutionParts: executionMsg ? JSON.parse(JSON.stringify(executionMsg.rawExecutionParts)) : [], serperMetadata: botMsg.serperMetadata || null, urlSources: botMsg.urlSources || [] }];
                         botMsg.activeVersionIndex = 0;
                     } else if (isRegenerate) {
-                        botMsg.versions.push({
-                            content: rawMarkdownBuffer,
-                            thought: thoughtMsg?.content || '',
-                            rawExecutionParts: executionMsg ? JSON.parse(JSON.stringify(executionMsg.rawExecutionParts)) : [],
-                            serperMetadata: botMsg.serperMetadata || null,
-                            urlSources: botMsg.urlSources || []
-                        });
+                        botMsg.versions.push({ content: rawMarkdownBuffer, thought: thoughtMsg?.content || '', rawExecutionParts: executionMsg ? JSON.parse(JSON.stringify(executionMsg.rawExecutionParts)) : [], serperMetadata: botMsg.serperMetadata || null, urlSources: botMsg.urlSources || [] });
                         botMsg.activeVersionIndex = botMsg.versions.length - 1;
                     } else {
                         const curIdx = botMsg.activeVersionIndex || 0;
-                        botMsg.versions[curIdx] = {
-                            content: rawMarkdownBuffer,
-                            thought: thoughtMsg?.content || '',
-                            rawExecutionParts: executionMsg ? JSON.parse(JSON.stringify(executionMsg.rawExecutionParts)) : [],
-                            serperMetadata: botMsg.serperMetadata || null,
-                            urlSources: botMsg.urlSources || []
-                        };
+                        botMsg.versions[curIdx] = { content: rawMarkdownBuffer, thought: thoughtMsg?.content || '', rawExecutionParts: executionMsg ? JSON.parse(JSON.stringify(executionMsg.rawExecutionParts)) : [], serperMetadata: botMsg.serperMetadata || null, urlSources: botMsg.urlSources || [] };
                     }
                     scheduleDbSave(botMsg);
 
                     if ((!ctx.abortController || !ctx.abortController.signal.aborted) && ctx.thisRequestToken === ctx.activeRequestToken) {
-                        const safeNextTick = ctx.nextTick || (typeof window !== 'undefined' && window.Vue && window.Vue.nextTick) || ((fn) => Promise.resolve().then(fn));
-                        safeNextTick(() => { if (typeof renderMermaidDiagrams === 'function') renderMermaidDiagrams(); });
+                        safeNextTick(() => { if (typeof window.mermaid !== 'undefined' && typeof renderMermaidDiagrams === 'function') renderMermaidDiagrams(); });
                         if (typeof triggerHaptic === 'function') triggerHaptic('light');
                         if (typeof triggerGenerateFollowUps === 'function') triggerGenerateFollowUps(botMsg);
                     }
@@ -5319,11 +5413,23 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                         try { effectivePayload = _activePatches.get(action)([payload])[0]; } catch (_) {}
                     }
 
-                    const result = entry.isAsync ? await entry.handler(effectivePayload) : entry.handler(effectivePayload);
+                    // Tự động Retry ngay lập tức nếu hàm gặp lỗi và được Model LITE sinh bản vá
+                    let result;
+                    try {
+                        result = entry.isAsync ? await entry.handler(effectivePayload) : entry.handler(effectivePayload);
+                    } catch (innerErr) {
+                        const healedArgs = await synthesizeAndCommitGene(action, innerErr, [effectivePayload]);
+                        if (healedArgs && healedArgs[0]) {
+                            effectivePayload = healedArgs[0];
+                            result = entry.isAsync ? await entry.handler(effectivePayload) : entry.handler(effectivePayload);
+                        } else {
+                            throw innerErr;
+                        }
+                    }
+
                     Telemetry.record('SUCCESS', action, Math.round(performance.now() - start));
                     return result;
                 } catch (fault) {
-                    await synthesizeAndCommitGene(action, fault, [payload]);
                     Telemetry.record('ERROR', action, Math.round(performance.now() - start), fault?.message || String(fault));
                     throw fault;
                 } finally {
@@ -5331,7 +5437,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
                 }
             };
 
-            // ĐĂNG KÝ MẶC ĐỊNH TOÀN BỘ CÁC ACTION CỐT LÕI VÀO KERNEL
+            // ĐĂNG KÝ CÁC ACTION CỐT LÕI
             registerAction('EXECUTE_IMAGE_PARAMETRIC_GPU', async (context) => {
                 return await TMGE_ImagePipeline.execute(context);
             }, { resource: 'GPU_CONTEXT', priority: 2 });
@@ -7550,6 +7656,7 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                         isListOpen: false,
                         listIndex: null,
                         isMathOpen: false,
+                        unclosedTags: [],
                         lastLine: '',
                         lastChunk: ''
                     };
@@ -7602,9 +7709,13 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                 const mathMatches = (cleanText.match(/\$\$/g) || []).length;
                 const isMathOpen = (mathMatches % 2 !== 0);
 
+                // [CẢM BIẾN QUÉT THẺ LIFO ĐA TẦNG]: Bóc tách toàn bộ thẻ XML/HTML/Thought chưa đóng
+                const unclosedTags = typeof detectUnclosedTags === 'function' ? detectUnclosedTags(cleanText) : [];
+
                 let state = 'NORMAL';
                 if (isCodeOpen) state = 'IN_CODE';
                 else if (isMathOpen) state = 'IN_MATH';
+                else if (unclosedTags.length > 0) state = 'IN_TAG';
                 else if (isTableOpen) state = 'IN_TABLE';
                 else if (isListOpen) state = 'IN_LIST';
 
@@ -7617,6 +7728,8 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                     isListOpen,
                     listIndex,
                     isMathOpen,
+                    unclosedTags,
+                    openTag: unclosedTags[unclosedTags.length - 1] || null,
                     lastLine: lastLine.slice(-150),
                     lastChunk: cleanText.slice(-400).trim()
                 };
@@ -7631,64 +7744,117 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
         }
         
         /**
-         * BỘ CẢM BIẾN DANG DỞ TUYỆT ĐỐI (ABSOLUTE TRUNCATION SENSOR)
-         * Không tin tưởng API, chỉ tin vào cấu trúc thực tế của văn bản.
+         * [QUÉT THẺ CHƯA KHÉP KÍN TOÀN TRI]: Bóc tách thẻ XML, HTML, Thought lơ lửng ngoài code block
+         */
+        function detectUnclosedTags(text) {
+            if (!text || typeof text !== 'string') return [];
+            // Loại bỏ khối code ``` và inline code ` để không quét nhầm thẻ minh họa
+            const stripped = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]+`/g, '');
+            const voidTags = new Set(['br', 'hr', 'img', 'input', 'link', 'meta', 'area', 'base', 'col', 'embed', 'param', 'source', 'track', 'wbr']);
+            const tagRegex = /<\/?([a-zA-Z0-9_\-]+)(?:\s+[^>]*)?\/?>/g;
+            const stack = [];
+            let m;
+            while ((m = tagRegex.exec(stripped)) !== null) {
+                const full = m[0];
+                const tag = m[1].toLowerCase();
+                if (voidTags.has(tag) || full.endsWith('/>')) continue;
+                if (full.startsWith('</')) {
+                    const idx = stack.lastIndexOf(tag);
+                    if (idx !== -1) stack.splice(idx, 1);
+                } else if (!full.startsWith('<?') && !full.startsWith('<!')) {
+                    stack.push(tag);
+                }
+            }
+            return stack;
+        }
+
+        /**
+         * [BỘ CẢM BIẾN DANG DỞ TOÀN TRI 2026 - TỰ ĐỘNG BẮT THIẾU THẺ & KÍCH HOẠT TIẾP NỐI]
          */
         function isStructurallyIncomplete(text) {
-            if (!text) return false;
-            const boundary = analyzeContinuationBoundary(text);
-            
-            // 1. Nếu khối Code hoặc Toán học chưa được đóng -> CHẮC CHẮN DANG DỞ
-            if (boundary.isCodeOpen || boundary.isMathOpen) return true;
-
+            if (!text || typeof text !== 'string') return false;
             const trimmed = text.trim();
             if (trimmed.length === 0) return false;
 
+            const boundary = analyzeContinuationBoundary(text);
+            
+            // 1. Khối Code hoặc Công thức Toán chưa khép kín -> 100% dang dở
+            if (boundary.isCodeOpen || boundary.isMathOpen) return true;
+
+            // 2. [TỰ ĐỘNG PHÁT HIỆN THIẾU THẺ]: Có bất kỳ thẻ mở nào chưa được khép kín (LIFO Stack)
+            const unclosed = detectUnclosedTags(trimmed);
+            if (unclosed.length > 0) return true;
+
+            // 3. Phát hiện chuỗi Base64 hoặc thẻ <img> chưa đóng hoàn thiện
+            if (/<img[^>]*src=["']data:image\/[^"']*$/i.test(trimmed)) return true;
+            if (/data:image\/[a-zA-Z0-9+.-]+(?:;charset=[^;]+)?;base64,[A-Za-z0-9+/=]*$/i.test(trimmed) && !trimmed.endsWith('"') && !trimmed.endsWith("'") && !trimmed.endsWith("/>") && !trimmed.endsWith(">")) return true;
+            if (/<img\b(?![^>]*\/>)[^>]*$/i.test(trimmed)) return true;
+
+            // 4. Kiểm tra ngoặc mở chưa đóng trong 600 ký tự cuối
+            const tail = trimmed.slice(-600);
+            const countChar = (str, ch) => (str.match(new RegExp('\\' + ch, 'g')) || []).length;
+            if (countChar(tail, '(') > countChar(tail, ')')) return true;
+            if (countChar(tail, '[') > countChar(tail, ']')) return true;
+            if (countChar(tail, '{') > countChar(tail, '}')) return true;
+
+            // 5. Rách định dạng in đậm (**), gạch ngang (~~)
+            const doubleStars = (tail.match(/(?<!\\)\*\*/g) || []).length;
+            if (doubleStars % 2 !== 0) return true;
+            const tildes = (tail.match(/(?<!\\)~~/g) || []).length;
+            if (tildes % 2 !== 0) return true;
+
+            // 6. Kết thúc bằng dấu ngắt lơ lửng, liên từ, hoặc ký hiệu toán/gán
             const lastChar = trimmed.slice(-1);
-            
-            // 2. Nếu kết thúc lơ lửng bằng dấu phẩy, dấu hai chấm, hoặc các liên từ
-            if (lastChar === ',' || lastChar === ':') return true;
-            
-            // 3. Nếu kết thúc bằng các từ nối tiếng Việt/Anh dang dở
-            if (/( và| hoặc| thì| nhưng| là| của| để| bằng| do| bởi| and| or| but| because| which| is| of)$/i.test(trimmed)) {
-                return true;
+            if (/[,\-–—:;\\\/&=+<>]/.test(lastChar)) return true;
+
+            // 7. Câu bị cụt giữa chừng chưa có dấu ngắt câu chuẩn mực
+            const validTerminators = /[.!?…\u3002"'”’`)}\]>]$/;
+            if (!validTerminators.test(trimmed)) {
+                if (/[\p{L}\p{N}]$/u.test(trimmed)) return true;
             }
+
+            // 8. Bị ngắt ngay tại marker danh sách dở dang
+            if (/(?:^|\n)\s*(?:\d+\.|[-*+])\s*$/.test(trimmed)) return true;
+
+            // 9. Bảng Markdown đang mở dở hàng
+            if (boundary.isTableOpen) return true;
 
             return false;
         }
 
         /**
-         * XÂY DỰNG CHỈ THỊ NỐI TIẾP KHÔNG TÌ VẾT (SURGICAL CONTINUATION PROMPT)
-         * Ra lệnh dứt khoát cho AI viết tiếp ngay tại ký tự cuối cùng, cấm tuyệt đối mở lại block.
+         * [CHỈ THỊ NỐI TIẾP PHẪU THUẬT SIÊU CHÍNH XÁC - HỖ TRỢ ĐÓNG THẺ CHUYÊN BIỆT]
          */
         function buildSeamlessContinuationPrompt(boundaryState) {
             const state = boundaryState || {};
-            const lastChunk = state.lastChunk || '';
+            const rawChunk = state.lastChunk || '';
+            const cleanTail = rawChunk.trim();
+            const surgicalAnchor = cleanTail.slice(-60);
 
-            let prompt = `[CHỈ THỊ HỆ THỐNG: TIẾP TỤC NỐI LIỀN MẠCH TUYỆT ĐỐI]\n` +
-                         `Nội dung phản hồi trước của bạn đã bị ngắt đột ngột do đạt giới hạn độ dài tại vị trí sau:\n` +
-                         `"""\n${lastChunk}\n"""\n\n` +
-                         `CÁC QUY TẮC BẮT BUỘC:\n` +
-                         `1. Viết tiếp NGAY LẬP TỨC từ vị trí ký tự bị đứt đoạn bên trên.\n` +
-                         `2. KHÔNG lặp lại bất kỳ từ ngữ nào đã xuất hiện ở đoạn cuối trên.\n` +
-                         `3. KHÔNG chèn lời chào, lời dẫn (như "Dưới đây là phần tiếp theo", "Tiếp tục:...").\n`;
+            let prompt = `[CHỈ THỊ CẤP BÁCH: VIẾT TIẾP NỐI LIỀN MẠCH SIÊU CHÍNH XÁC]\n` +
+                         `Phản hồi trước đã bị ngắt đột ngột chính xác tại mỏ neo sau:\n` +
+                         `"""...${surgicalAnchor}"""\n\n` +
+                         `MỆNH LỆNH BẮT BUỘC:\n` +
+                         `1. Viết tiếp NGAY TỨC THÌ từ ký tự tiếp theo sau mỏ neo trên.\n` +
+                         `2. TUYỆT ĐỐI KHÔNG lặp lại cụm từ mỏ neo hay bất kỳ từ ngữ nào trước đó.\n` +
+                         `3. TUYỆT ĐỐI KHÔNG chèn lời dẫn (như "Tiếp tục:", "Dưới đây là phần tiếp theo", "Tiếp theo:").\n`;
 
-            if (state.isCodeOpen) {
-                prompt += `4. Bạn ĐANG Ở TRONG KHỐI MÃ NGUỒN \`\`\`${state.lang}.\n` +
-                          `   - TUYỆT ĐỐI KHÔNG mở lại thẻ \`\`\`${state.lang}.\n` +
-                          `   - Tiếp tục viết tiếp mã nguồn với đúng độ thụt đầu dòng (indent) hiện tại.\n` +
-                          `   - Chỉ đóng \`\`\` khi toàn bộ mã nguồn đã kết thúc trọn vẹn.\n`;
+            if (state.unclosedTags && state.unclosedTags.length > 0) {
+                const targetTag = state.openTag;
+                prompt += `4. PHÁT HIỆN THẺ CHƯA ĐÓNG: <${targetTag}> (Toàn bộ các thẻ chưa khép: ${state.unclosedTags.map(t => '<' + t + '>').join(', ')}).\n` +
+                          `   - Viết tiếp nội dung bên trong thẻ <${targetTag}>.\n` +
+                          `   - BẮT BUỘC ĐÓNG lại đầy đủ bằng thẻ </${targetTag}> trước khi chuyển sang phần tiếp theo.\n`;
+            } else if (state.isCodeOpen) {
+                prompt += `4. BẠN ĐANG Ở BÊN TRONG KHỐI CODE \`\`\`${state.lang}.\n` +
+                          `   - TUYỆT ĐỐI KHÔNG viết lại \`\`\`${state.lang}.\n` +
+                          `   - Tiếp tục dòng lệnh với đúng thụt đầu dòng (indent).\n` +
+                          `   - Chỉ đóng \`\`\` khi toàn bộ script kết thúc.\n`;
             } else if (state.isTableOpen) {
-                prompt += `4. Bạn ĐANG Ở TRONG BẢNG DỮ LIỆU MARKDOWN.\n` +
-                          `   - Tiếp tục viết tiếp các hàng tiếp theo của bảng dữ liệu.\n` +
-                          `   - KHÔNG tạo lại hàng tiêu đề (header) của bảng.\n`;
+                prompt += `4. BẠN ĐANG Ở TRONG BẢNG DỮ LIỆU: Tiếp tục các hàng tiếp theo, không tạo lại hàng Header.\n`;
             } else if (state.isMathOpen) {
-                prompt += `4. Bạn ĐANG Ở TRONG CÔNG THỨC TOÁN HỌC ($$ / LaTeX).\n` +
-                          `   - Viết tiếp biểu thức toán học và đóng ký hiệu $$ khi hoàn thành.\n`;
-            } else if (state.isListOpen && state.listIndex !== null) {
-                prompt += `4. Bạn ĐANG Ở MỤC DANH SÁCH. Viết tiếp từ mục ${state.listIndex + 1}. hoặc hoàn thiện nội dung mục ${state.listIndex}.\n`;
+                prompt += `4. BẠN ĐANG Ở TRONG BIỂU THỨC TOÁN ($$): Tiếp tục công thức và đóng $$ khi xong.\n`;
             } else {
-                prompt += `4. Viết tiếp câu văn một cách tự nhiên liền mạch như thể chưa từng bị gián đoạn.\n`;
+                prompt += `4. Viết tiếp câu văn mượt mà như một dòng chảy tự nhiên duy nhất.\n`;
             }
 
             return prompt;
@@ -7718,7 +7884,6 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
                 buffer += decoder.decode(value, { stream: !done });
             }
 
-            // Chuẩn hóa toàn bộ ngắt dòng về LF (\n) duy nhất
             let normalized = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
             let eventBoundary;
@@ -7726,31 +7891,33 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
                 const rawEvent = normalized.slice(0, eventBoundary).trim();
                 normalized = normalized.slice(eventBoundary + 2);
 
-                if (!rawEvent || rawEvent.startsWith(':')) continue;
+                if (!rawEvent) continue;
+
+                // BẢO CHỨNG GOOGLE SSE: Nhận diện gói keep-alive comment (dấu :) để reset Watchdog không bao giờ ngắt luồng
+                if (rawEvent.startsWith(':')) {
+                    if (typeof onChunk === 'function') onChunk({ isHeartbeat: true });
+                    continue;
+                }
 
                 const lines = rawEvent.split('\n');
-                let dataString = '';
+                let dataLines = [];
 
                 for (const line of lines) {
                     if (line.startsWith('data:')) {
-                        const content = line.slice(5).trim();
-                        dataString += (dataString ? '\n' : '') + content;
+                        dataLines.push(line.slice(5).trimStart());
                     }
                 }
 
+                const dataString = dataLines.join('\n').trim();
                 if (!dataString || dataString === '[DONE]') continue;
 
-                // 1. Phân giải JSON: Nếu đã có \n\n mà JSON vẫn lỗi thì bỏ qua, tuyệt đối không nhét lại gây kẹt vòng lặp
                 let parsed = null;
                 try {
                     parsed = JSON.parse(dataString);
                 } catch (jsonErr) {
-                    // Sự kiện đã kết thúc bằng \n\n, nếu lỗi cú pháp chỉ ghi nhận cảnh báo
-                    console.warn('[SSE Parse Warning] Bỏ qua gói dữ liệu lỗi cú pháp');
                     continue;
                 }
 
-                // 2. Tách biệt kiểm tra lỗi API: Ném lỗi ra ngoài ngay lập tức, KHÔNG nhét lại vào buffer gây treo luồng
                 if (parsed && parsed.error) {
                     throw new Error(parsed.error.message || 'Lỗi từ máy chủ Google');
                 }
@@ -7761,7 +7928,6 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
             }
 
             buffer = normalized;
-
             if (done) break;
         }
     } finally {
@@ -7986,12 +8152,22 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
 
     let working = String(rawText);
 
-    // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Chống đứt gãy URL hình ảnh chứa ngoặc đơn lồng nhau
-    // Hỗ trợ đầy đủ URL chứa ký tự ( và ) như Wikimedia, token query parameters hoặc prompt lồng nhau
+    // [BỘ LỌC TỰ VÁ BASE64 STREAMING]: Làm sạch khoảng trắng/xuống dòng sinh ra do ghép luồng
+    // Đã cập nhật (?:;charset=[^;]+)? để tương thích trọn vẹn với charset=utf-8 kháng vỡ font
+    working = working.replace(/src=["'](data:image\/[a-zA-Z0-9+.-]+(?:;charset=[^;]+)?;base64,)([\s\S]*?)(["'])/gi, (match, prefix, base64Data, quote) => {
+        const cleanBase64 = base64Data.replace(/[\s\r\n\t]+/g, '');
+        return `src="${prefix}${cleanBase64}"`;
+    });
+
+    // [TỬ HUYỆT ĐÃ KHẮC PHỤC]: Chống đứt gãy URL hình ảnh và bảo vệ Base64 khỏi sự tàn phá của DOMPurify
+    // Hỗ trợ đầy đủ URL chứa ký tự ( và ) như Wikimedia, hoặc Base64 dung lượng siêu lớn.
     working = working.replace(/!\[(.*?)\]\(((?:https?|data):(?:[^\s\(\)]|\([^\s\(\)]*\))+)\)/gi, (match, alt, fullUrl) => {
         const safeAlt = escapeHTML(alt || 'Tác phẩm nghệ thuật');
-        const safeUrl = escapeHTML(fullUrl.trim());
-        return `\n\n<img src="${safeUrl}" alt="${safeAlt}" class="rounded-2xl my-3 max-h-[520px] w-auto shadow-2xl object-cover border border-white/10 hover:brightness-110 transition-all" />\n\n`;
+        // TUYỆT ĐỐI KHÔNG dùng escapeHTML cho URL vì escapeHTML biến '/' thành '&#x2F;' làm DOMPurify không nhận diện được 'data:image/' và chém đứt toàn bộ ảnh Base64.
+        // Thay vào đó, chỉ mã hóa dấu nháy kép và nháy đơn để bảo vệ an toàn thuộc tính HTML src.
+        const safeUrl = fullUrl.trim().replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        // Đã bổ sung max-w-full, h-auto và cursor-zoom-in để đồng bộ trải nghiệm Lightbox tương tác click
+        return `\n\n<img src="${safeUrl}" alt="${safeAlt}" class="rounded-2xl my-3 max-h-[520px] max-w-full h-auto shadow-2xl object-cover border border-white/10 hover:brightness-110 transition-all cursor-zoom-in" />\n\n`;
     });
 
             // Tiếp tục cân bằng cấu trúc nếu đang trong tiến trình streaming
@@ -9746,11 +9922,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         const mInfo = k.models[modelId];
 
                         if (mInfo) {
-                            // 2. Tự phục hồi lỗi 404/403 sau 12h (Auto-Amnesia)
-                            if (mInfo.status === 'unsupported') {
-                                if ((now - (mInfo.lastUpdated || 0)) <= 12 * 3600 * 1000) continue;
-                            }
-                            // 3. Khóa bị 429 cục bộ trên model này
+                            // 2. KHÓA CHẾT VĨNH VIỄN (ABSOLUTE LOCK-IN): Nếu Key không có quyền với Model này, cấm vĩnh viễn không bao giờ thử lại.
+                            if (mInfo.status === 'unsupported') continue;
+                            
+                            // 3. Khóa bị 429 cục bộ trên model này (Chỉ cấm tạm thời theo Exponential Backoff)
                             if (mInfo.status === 'cooldown' && mInfo.cooldownUntil > now) continue;
                         }
 
@@ -9816,9 +9991,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                         k.cooldownUntil = now + 86400000; // Khóa 24h
                         console.warn(`[G-Deep Matrix] Key [${k.key.slice(-6)}] dính 401 (Invalid). Khóa toàn cục 24h.`);
                     } 
-                    else if (statusCode === 404 || (statusCode === 403 && (errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('not found')))) {
-                        k.models[modelId] = { status: 'unsupported', reason: statusCode, lastUpdated: now };
-                        console.warn(`[G-Deep Matrix] Key [${k.key.slice(-6)}] không quyền truy cập model [${modelId}] (404/403).`);
+                    else if (statusCode === 404 || statusCode === 403) {
+                        // VẬN MỆNH VĨNH CỬU: Lỗi 403/404 đồng nghĩa Key này vĩnh viễn không phục vụ được Model này.
+                        k.models[modelId] = { status: 'unsupported', reason: statusCode, lockedAt: now };
+                        console.warn(`[G-Deep Matrix] Đã khóa vĩnh viễn Key [${k.key.slice(-6)}] đối với Model [${modelId}]. Nó sẽ chỉ phục vụ các Model khác.`);
                     } 
                     else if (statusCode === 429) {
                         const mFail = (k.models[modelId]?.failCount || 0) + 1;
@@ -9847,7 +10023,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
                 const getNextHealthyApiKey = (modelId = null) => {
                     if (modelId) {
                         const validKeys = getKeysForModel(modelId);
-                        if (validKeys.length > 0) return validKeys[0];
+                        if (validKeys.length > 0) {
+                            // Trả về Key tốt nhất (được xếp hạng #1 bởi Multi-Dimensional Round Robin)
+                            return validKeys[0];
+                        }
                     }
                     const now = Date.now(), all = apiKeyPool.value;
                     if (!all.length) return null;
@@ -9869,27 +10048,66 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON (KHÔNG KÈM LỜI DẪN):
 
                 const testAllApiKeys = async () => {
                     if (!apiKeyPool.value.length) return;
-                    notify("Đang kiểm tra và đặt lại ma trận tương thích...");
-                    let pass = 0;
-                    const testModel = "gemini-2.5-flash";
+                    notify("Đang quét toàn diện và phân bổ Ma trận Key-Model...");
+                    
+                    // BẢO CHỨNG QUÉT TOÀN DIỆN: Gom toàn bộ Model từ Ultra, Pro, Lite và Background
+                    const allModels = new Set();
+                    GDeepSystemConfig.Models.AVAILABLE.forEach(tier => {
+                        tier.apiEndpointIds.forEach(id => allModels.add(id));
+                    });
+                    Object.values(GDeepSystemConfig.Models.BACKGROUND).forEach(id => allModels.add(id));
+                    const targetModels = Array.from(allModels); // Chứa đầy đủ gemini-3.6-flash, 2.5-flash, 3.5-flash-lite, v.v.
+                    
+                    let totalActiveKeys = 0;
+
                     for (const k of apiKeyPool.value) {
-                        // Reset ma trận để học lại mới
-                        k.models = {};
-                        try {
-                            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${k.key}`, {
-                                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'ping' }] }], safetySettings: SAFETY_SETTINGS })
-                            });
-                            if (res.ok || res.status === 400) { 
-                                k.status = 'active'; k.cooldownUntil = 0; pass++; 
-                                k.models[testModel] = { status: 'supported', lastUsed: Date.now() };
-                            } 
-                            else if (res.status === 401) { k.status = 'invalid'; k.cooldownUntil = Date.now() + 86400000; } 
-                            else { k.status = 'active'; pass++; }
-                        } catch (_) { k.status = 'active'; pass++; }
+                        if (!k.models) k.models = {};
+                        if (k.status === 'invalid') continue; // Bỏ qua nếu đã bị khóa toàn cục từ trước
+
+                        let isGloballyDead = false;
+                        let supportedCount = 0;
+
+                        // Quét song song tất cả các Models để đẩy tốc độ tối đa
+                        await Promise.all(targetModels.map(async (testModel) => {
+                            if (isGloballyDead) return;
+
+                            try {
+                                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${k.key}`, {
+                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'ping' }] }] })
+                                })
+                                
+                                if (res.ok || res.status === 400) { 
+                                    k.models[testModel] = { status: 'supported', lastUsed: Date.now() };
+                                    supportedCount++;
+                                } else if (res.status === 401) { 
+                                    isGloballyDead = true; // Lỗi 401 -> Key chết toàn cục, ngưng test các model khác
+                                } else if (res.status === 404 || res.status === 403) {
+                                    // Đóng đinh vĩnh viễn: Key này không khả dụng cho Model này
+                                    k.models[testModel] = { status: 'unsupported', reason: res.status, lockedAt: Date.now() };
+                                } else if (res.status === 429) {
+                                    // Nếu chỉ hết Quota thì Key này vẫn là Key hỗ trợ Model này (chỉ đang cooldown)
+                                    k.models[testModel] = { status: 'cooldown', failCount: 1, cooldownUntil: Date.now() + 15000, lastUpdated: Date.now() };
+                                    supportedCount++;
+                                }
+                            } catch (_) {
+                                // Lỗi mạng (timeout), bỏ qua không ghi đè trạng thái
+                            }
+                        }));
+
+                        // Tổng kết sinh tồn cho Key sau đợt quét
+                        if (isGloballyDead) {
+                            k.status = 'invalid';
+                            k.cooldownUntil = Date.now() + 86400000;
+                        } else if (supportedCount > 0) {
+                            k.status = 'active';
+                            k.cooldownUntil = 0;
+                            totalActiveKeys++;
+                        }
                     }
+                    
                     try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(toRaw(apiKeyPool.value))); } catch (_) {}
-                    notify(`Hoàn tất: ${pass}/${apiKeyPool.value.length} chìa khóa hoạt động.`);
+                    notify(`Hoàn tất ma trận: ${totalActiveKeys}/${apiKeyPool.value.length} chìa khóa hoạt động.`);
                 };
 
                 // 2. Quản lý Pool khóa tìm kiếm Serper
@@ -11431,21 +11649,28 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     });
 
                     const formattedStatusText = computed(() => {
-                        const modelName = currentModel.value?.name || 'Ultra';
-                        const brand = `G-Deep ${modelName}`;
-                        
+                        // [CHUẨN HÓA UI CAO CẤP]: Tuyệt đối không gán cứng tên model rườm rà (như 3.5-flash-lite) vào UI.
+                        // Ưu tiên hiển thị thông điệp thẩm mỹ trực tiếp.
                         if (searchStatusText.value) {
                             let clean = searchStatusText.value
-                                .replace(/google|gemini|serper|pollinations|jina|flux|three\.?js|pyodide/gi, 'G-Deep')
+                                .replace(/google|gemini|serper|pollinations|jina|flux|three\.?js|pyodide/gi, '')
                                 .replace(/\s+/g, ' ')
                                 .trim();
-                            if (clean.length > 40) clean = clean.slice(0, 37) + '...';
-                            return `${brand}: ${clean}`;
+                            
+                            // Nới lỏng độ dài hiển thị lên 55 ký tự để khách hàng đọc được trọn vẹn thông điệp
+                            if (clean.length > 55) clean = clean.slice(0, 52) + '...';
+                            
+                            // Nếu thông báo từ Worker đã có icon ✨ (hoặc icon khác), giữ nguyên. Nếu chưa có, thêm ✨ cho sang trọng.
+                            return clean.startsWith('✨') || clean.startsWith('🎬') || clean.startsWith('🎨') 
+                                ? clean 
+                                : `✨ ${clean}`;
                         }
-                        if (enableCinemaStudio.value) return `${brand}: Đang đạo diễn...`;
-                        if (enableImageGen.value) return `${brand}: Đang kết xuất tác phẩm nghệ thuật...`;
-                        if (enableDeepThinking.value) return `${brand}: Đang suy luận logic đa chiều...`;
-                        return `${brand}: Đang xử lý tri thức...`;
+                        
+                        // Thông báo mặc định khi AI đang suy nghĩ mà chưa có log cụ thể
+                        if (enableCinemaStudio.value) return `🎬 Đang phân tích kịch bản điện ảnh...`;
+                        if (enableImageGen.value) return `✨ Đang khởi tạo bộ giải mã quang học...`;
+                        if (enableDeepThinking.value) return `🧠 Đang suy luận logic đa chiều...`;
+                        return `✨ Đang xử lý tri thức...`;
                     });
 
                     const currentInputTokensDisplay = ref('0%');
@@ -13021,19 +13246,19 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 // Cấu hình payload ban đầu
                                 const reqPayload = JSON.parse(JSON.stringify(payloadTemplate));
 
-                                // Thích ứng Thinking Config theo từng model cụ thể
+                                // [MỞ KHÓA TUYỆT ĐỐI 65536 TOKENS CHO MỖI VÒNG LẶP]
+                                if (!reqPayload.generationConfig) reqPayload.generationConfig = {};
+                                reqPayload.generationConfig.maxOutputTokens = 65536;
+
+                                // [KHÓA CỨNG THINKING CONFIG HIGH ĐA THẾ HỆ]
                                 if (enableDeepThinking.value && !enableCodeExecution.value) {
-                                    if (!reqPayload.generationConfig) reqPayload.generationConfig = {};
-                                    const isGen3 = String(currentModelId).includes('gemini-3');
                                     const isGen25 = String(currentModelId).includes('gemini-2.5');
-                                    const isLite = String(currentModelId).includes('lite');
-                                    
-                                    if (isLite || (!isGen3 && !isGen25)) {
-                                        delete reqPayload.generationConfig.thinkingConfig;
-                                    } else if (isGen3) {
+                                    if (isGen25) {
+                                        // Gemini 2.5: Thiết lập mức trần ngân sách suy luận tối đa (24576 tokens)
+                                        reqPayload.generationConfig.thinkingConfig = { thinkingBudget: 24576, includeThoughts: true };
+                                    } else {
+                                        // Gemini 3.x, 4.x: Thiết lập mức độ suy luận sâu tối thượng HIGH
                                         reqPayload.generationConfig.thinkingConfig = { thinkingLevel: "HIGH", includeThoughts: true };
-                                    } else if (isGen25) {
-                                        reqPayload.generationConfig.thinkingConfig = { thinkingBudget: 8192, includeThoughts: true };
                                     }
                                 } else if (reqPayload.generationConfig?.thinkingConfig) {
                                     delete reqPayload.generationConfig.thinkingConfig;
@@ -13056,8 +13281,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                         }
                                     }
 
-                                    // Timeout phản hồi ban đầu rút xuống 15s để không bị treo
-                                    let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 15000);
+                                    // BẢO CHỨNG TTFT SUY LUẬN SÂU: Cho phép tối đa 90 giây để 50 Agents khởi tạo suy luận
+                                    let stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 90000);
 
                                     try {
                                         const response = await fetch(endpoint, {
@@ -13074,8 +13299,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 
                                             await readSSEStream(response, combinedSignal, (chunk) => {
                                                 clearTimeout(stallWatchdog);
-                                                // Đang stream thì cho phép tối đa 30s giữa các chunk
-                                                stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 30000);
+                                                // Luôn reset bộ canh chừng 60s mỗi khi có dữ liệu hoặc Heartbeat từ Google
+                                                stallWatchdog = setTimeout(() => { stallAbortController.abort(); }, 60000);
+
+                                                if (chunk.isHeartbeat) return;
+
                                                 chunkCount++;
                                                 hasReceivedAnyChunk = true;
                                                 onChunk(chunk);
@@ -13103,22 +13331,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                                 continue; // Thử lại lần 2 trong while
                                             }
 
-                                            // 2. Lỗi 404 (Model không tồn tại): TRƯỢT NGAY SANG MODEL TIẾP THEO trong 0ms
+                                            // 2. Lỗi 404 (Model bị khai tử): Bắt buộc trượt ngay sang Model khác (vì key nào cũng sẽ 404).
                                             if (response.status === 404) {
-                                                console.warn(`[G-Deep Auto-Slide] Model ${currentModelId} không tồn tại (404). Trượt sang model tiếp theo ngay lập tức.`);
                                                 markKeyModelFailure(keyObj, currentModelId, 404, serverMsg);
-                                                forceNextModel = true; // Dừng thử các key khác của model chết này
-                                                break;
+                                                forceNextModel = true; 
+                                                break; 
                                             }
 
-                                            // 3. Lỗi 500, 503 (Server Google sập): Trượt ngay sang Model khác
-                                            if (response.status >= 500) {
-                                                console.warn(`[G-Deep Auto-Slide] Model ${currentModelId} sập server (${response.status}). Đổi model...`);
-                                                forceNextModel = true;
-                                                break;
-                                            }
-
-                                            // Lỗi 429 (Hết Quota) hoặc 403, 401: Phạt key này và chuyển key tiếp theo
+                                            // 3. KIÊN QUYẾT BÁM TRỤ: Với lỗi 429, 500, 503, 401, 403.
+                                            // Phạt Key hiện tại, nhưng TUYỆT ĐỐI KHÔNG đổi Model. 
+                                            // Lệnh break này chỉ thoát vòng lặp while, đẩy vòng lặp for chạy sang KEY KHẢ DỤNG TIẾP THEO của chính Model này!
                                             markKeyModelFailure(keyObj, currentModelId, response.status, serverMsg);
                                             break;
                                         }
@@ -13143,9 +13365,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         };
                     };
 
-// =========================================================================
-                    // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI TOÀN DIỆN QUA OMEGA CENTRAL CORE ENGINE
-                    // =========================================================================
                     // =========================================================================
                     // HÀM GỬI YÊU CẦU & ĐIỀU PHỐI TOÀN DIỆN QUA OMEGA CENTRAL CORE ENGINE
                     // =========================================================================
@@ -13233,14 +13452,19 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             }
                         }
 
-                        // 3. RẼ NHÁNH TẠO ẢNH GIẢI TÍCH GPU NATIVE (TMGE UNCOMPROMISING OMEGA)
+                        // 3. RẼ NHÁNH TẠO ẢNH NGUYÊN KHỐI NON-SSE (BẢO VỆ CHỐNG LUỒNG THÂY MA)
                         if (intakePlan.route === 'EXECUTE_IMAGE_PARAMETRIC_GPU') {
+                            if (abortController) { try { abortController.abort(); } catch (_) {} abortController = null; }
+                            const thisRequestToken = ++activeRequestToken; // Khóa token bảo vệ luồng
                             isGenerating.value = true;
+                            abortController = new AbortController();
                             triggerHaptic('heavy');
+                            
                             const targetMsg = createMessageRecord({
                                 threadId: currentThreadId.value, role: 'model', content: '', htmlContent: ''
                             });
                             currentMessages.value.push(targetMsg);
+                            currentStreamingMsg.value = targetMsg;
 
                             try {
                                 await OmegaCentralCoreEngine.dispatch('EXECUTE_IMAGE_PARAMETRIC_GPU', {
@@ -13250,6 +13474,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     imageConfig: imageConfig,
                                     currentModel: currentModel.value,
                                     apiKeyPool: apiKeyPool.value,
+                                    getKeysForModel: getKeysForModel,
+                                    markKeyModelSuccess: markKeyModelSuccess,
+                                    markKeyModelFailure: markKeyModelFailure,
                                     abortController: abortController,
                                     searchStatusText: searchStatusText,
                                     scheduleDbSave: scheduleDbSave,
@@ -13257,13 +13484,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     notify: notify
                                 });
                             } catch (err) {
-                                targetMsg.content = `Quá trình kết xuất gián đoạn: ${err.message}\n\n*Hệ thống đã tự động thử kết nối nhưng không thành công.*`;
+                                if (err.name === 'AbortError' || err.message === 'Aborted') {
+                                    targetMsg.content = (targetMsg.content || '') + '\n\n*(Đã dừng tạo ảnh)*';
+                                } else {
+                                    targetMsg.content = `⚠️ **Quá trình bị gián đoạn:** ${err.message}\n\n*Hệ thống đã thử toàn bộ phân cấp Model nhưng gặp sự cố.*`;
+                                    notify(`Lỗi tạo ảnh: ${err.message}`, true);
+                                }
                                 targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                                 scheduleDbSave(targetMsg);
-                                notify(`Lỗi kết xuất: ${err.message}`, true);
                             } finally {
-                                isGenerating.value = false;
-                                searchStatusText.value = "";
+                                if (thisRequestToken === activeRequestToken) { // Chỉ nhả UI nếu đây là luồng cuối cùng
+                                    isGenerating.value = false;
+                                    searchStatusText.value = "";
+                                    currentStreamingMsg.value = null;
+                                    abortController = null;
+                                }
                             }
                             return;
                         }
@@ -13292,12 +13527,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         if (!currentThreadId.value) await createNewThread();
                         const targetThreadId = currentThreadId.value;
 
-                        let limitedHistory = [];
-                        if (!isRegenerate) {
-                            limitedHistory = await buildCleanHistory(null, text);
-                            const newUserParts = buildTurnParts(text, attachments);
-                            limitedHistory.push({ role: 'user', parts: newUserParts });
-                        } else if (existingBotMsgTarget) {
+                        // 1. TẠO BOT MESSAGE TRƯỚC ĐỂ LÀM ĐIỂM NEO LỊCH SỬ (ANCHOR)
+                        let botMsg = null;
+                        if (existingBotMsgTarget) {
                             const targetIdx = currentMessages.value.findIndex(m => m.id === existingBotMsgTarget.id);
                             if (targetIdx !== -1) {
                                 const toPurge = [];
@@ -13310,18 +13542,30 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 if (db) dbWriteQueue.enqueue(async () => { for (const m of toPurge) await db.messages.delete(m.id); });
                                 currentMessages.value = currentMessages.value.slice(0, purgeEndIdx);
                             }
-                            limitedHistory = await buildCleanHistory(existingBotMsgTarget.id);
+                            botMsg = existingBotMsgTarget;
+                            botMsg.content = '';
+                            botMsg.htmlContent = '';
+                            botMsg.serperMetadata = null;
+                            botMsg.urlSources = [];
+                            botMsg.isContinuing = false;
+                            botMsg.isTruncated = false;
+                            botMsg.lastRenderSeq = 0;
+                            currentMessages.value.push(botMsg);
                         } else {
-                            const lastUser = [...currentMessages.value].reverse().find(m => m.role === 'user');
-                            if (lastUser) {
-                                limitedHistory = await buildCleanHistory(lastUser.id, lastUser.content || '');
-                                const userParts = buildTurnParts(lastUser.promptContent || lastUser.content || '', lastUser.attachments || []);
-                                limitedHistory.push({ role: 'user', parts: userParts });
-                            } else {
-                                limitedHistory = await buildCleanHistory();
-                            }
+                            botMsg = createMessageRecord({ 
+                                threadId: targetThreadId, 
+                                role: GDeepDataProtocol.Roles.MODEL, 
+                                htmlContent: '',
+                                searchExpanded: true, 
+                                urlSourcesExpanded: true 
+                            });
+                            currentMessages.value.push(botMsg);
                         }
+                        currentStreamingMsg.value = botMsg;
+                        scrollToBottom();
 
+                        // 2. TRÍCH XUẤT LỊCH SỬ TỰ NHIÊN ĐẾN TRƯỚC BOT MESSAGE (TRIỆT TIÊU NHÂN ĐÔI)
+                        let limitedHistory = await buildCleanHistory(botMsg.id, null);
                         limitedHistory = sanitizeHistoryForGemini(limitedHistory, false);
                         abortController = new AbortController();
 
@@ -13353,8 +13597,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 searchStatusText,
                                 isGenerating,
                                 userIsScrolledUp,
-                                renderLoopActive,
-                                renderRafId,
                                 fetchStreamWithFaultTolerance,
                                 performSerperSearch,
                                 dispatchBackgroundTaskWithFallback,
@@ -13387,19 +13629,23 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 searchStatusText.value = "";
                                 currentStreamingMsg.value = null;
                                 abortController = null;
-                                renderLoopActive = false;
-                                if (renderRafId) { cancelAnimationFrame(renderRafId); renderRafId = null; }
                                 if (!userIsScrolledUp) scrollToBottom();
 
                                 const bot = currentMessages.value[currentMessages.value.length - 1];
                                 if (bot && bot.role === 'model') {
+                                    const hasThoughtDone = currentMessages.value.some(m => m.role === 'system_thought' && m.content && m.content.trim().length > 0);
+                                    
                                     if (!bot.content || !bot.content.trim()) {
-                                        const reason = pipelineResult?.initialStreamRes?.errorMessage || lastPipelineError?.message || "Không nhận được phản hồi từ cổng API.";
-                                        bot.content = `⚠️ **Kết nối gián đoạn:** ${reason}\n\n*Gợi ý: Hãy kiểm tra chìa khóa hoặc đổi mô hình trong Cài đặt.*`;
+                                        if (hasThoughtDone) {
+                                            bot.content = `*(Quá trình suy luận của 50 Agents đã hoàn tất nhưng luồng dữ liệu trả về bị sập nghiêm trọng từ máy chủ. Vui lòng thử tạo lại phản hồi.)*`;
+                                        } else {
+                                            const reason = pipelineResult?.initialStreamRes?.errorMessage || lastPipelineError?.message || "Không nhận được phản hồi từ cổng API.";
+                                            bot.content = `⚠️ **Kết nối gián đoạn:** ${reason}\n\n*Gợi ý: Hãy kiểm tra chìa khóa hoặc đổi mô hình trong Cài đặt.*`;
+                                        }
                                         bot.htmlContent = compileMarkdownSync(bot.content, true);
                                         scheduleDbSave(bot);
                                     }
-
+                                    
                                     // TỰ ĐỘNG NÉN KÝ ỨC VĨNH CỬU NỀN (EPISTEMIC COMPACTION)
                                     if (bot.content.trim() && currentMessages.value.length >= 8) {
                                         setTimeout(() => {
@@ -13416,118 +13662,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             }
                         }
                     };
-
-                    // =========================================================================
-                    // TIẾP TỤC THỦ CÔNG TỐI ƯU HÓA KHÁNG LỖI CỰC HẠN (DUY NHẤT 1 BẢN)
-                    // =========================================================================
-                    const manualResumeContinuation = async (msg) => {
-                        if (isGenerating.value || !msg) return;
-                        triggerHaptic('light');
-                        msg.isTruncated = false;
-                        msg.isContinuing = true;
-                        isGenerating.value = true;
-                        currentStreamingMsg.value = msg;
-                        abortController = new AbortController();
-
-                        let rawMarkdownBuffer = msg.content || '';
-                        const boundary = analyzeContinuationBoundary(rawMarkdownBuffer);
-                        const continuationPrompt = buildSeamlessContinuationPrompt(boundary);
-                        const limitedHistory = await buildCleanHistory(msg.id, msg.promptContent || msg.content || "");
-                        const continuationHistory = sanitizeHistoryForGemini([
-                            ...limitedHistory,
-                            { role: 'model', parts: [{ text: rawMarkdownBuffer }] },
-                            { role: 'user', parts: [{ text: continuationPrompt }] }
-                        ], true);
-
-                        const activeGem = currentActiveGemObj.value;
-                        const targetModelObj = currentModel.value;
-                        const activeModelIds = Array.isArray(targetModelObj.apiEndpointIds) && targetModelObj.apiEndpointIds.length > 0
-                            ? [...targetModelObj.apiEndpointIds]
-                            : [targetModelObj.id || "gemini-3.7-flash"];
-                        
-                        const systemPrompt = `[CHỈ DẪN HỆ THỐNG]\nBạn là G-Deep ${targetModelObj.name}. Hãy tiếp tục nối liền nội dung.\n\n[CHUYÊN GIA: ${activeGem.name}]\n${activeGem.instruction || ''}`;
-
-                        const continuationPayload = {
-                            systemInstruction: { parts: [{ text: systemPrompt }] },
-                            contents: continuationHistory,
-                            generationConfig: { temperature: 0.1 },
-                            safetySettings: SAFETY_SETTINGS
-                        };
-
-                        if (continuationPayload.generationConfig.thinkingConfig) delete continuationPayload.generationConfig.thinkingConfig;
-
-                        if (enableCodeExecution.value && !enableImageGen.value) {
-                            continuationPayload.tools = [{ codeExecution: {} }];
-                        } else {
-                            delete continuationPayload.tools;
-                        }
-
-                        let isFirstManualChunk = true;
-                        let lastRenderTime = 0;
-                        let manualRafId = null;
-
-                        const startManualRenderLoop = () => {
-                            const loop = () => {
-                                if (!isGenerating.value && !msg.isContinuing) return;
-                                const now = performance.now();
-                                if (now - lastRenderTime >= 60) {
-                                    msg.content = rawMarkdownBuffer;
-                                    msg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
-                                    if (!userIsScrolledUp) scrollToBottom();
-                                    lastRenderTime = now;
-                                }
-                                manualRafId = requestAnimationFrame(loop);
-                            };
-                            manualRafId = requestAnimationFrame(loop);
-                        };
-
-                        startManualRenderLoop();
-                        const resumeLexerState = { inThought: false, buffer: "" };
-
-                        try {
-                            const streamRes = await fetchStreamWithFaultTolerance(continuationPayload, activeModelIds, (chunk) => {
-                                const parts = chunk.candidates?.[0]?.content?.parts || [];
-                                for (const rawPart of parts) {
-                                    const tokens = GDeepDataProtocol.classifyPart(rawPart, resumeLexerState);
-                                    for (const token of tokens) {
-                                        if (token.type === GDeepDataProtocol.DataTypes.TEXT) {
-                                            let newText = token.payload || '';
-                                            if (isFirstManualChunk && newText) {
-                                                newText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, newText, 400, 3);
-                                                if (newText.length > 0) isFirstManualChunk = false;
-                                            }
-                                            rawMarkdownBuffer += newText;
-                                        }
-                                    }
-                                }
-                            }, abortController.signal);
-
-                            if (!streamRes || (!streamRes.success && !rawMarkdownBuffer.trim())) {
-                                throw new Error("Mọi kênh truyền tải đều đang bận");
-                            }
-                            msg.content = rawMarkdownBuffer;
-                            msg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, true);
-                            if (msg.versions && msg.versions.length > 0) {
-                                const vIdx = msg.activeVersionIndex || 0;
-                                if (msg.versions[vIdx]) msg.versions[vIdx].content = rawMarkdownBuffer;
-                            }
-                            scheduleDbSave(msg);
-                            nextTick(() => renderMermaidDiagrams());
-                        } catch (err) {
-                            if (err.message !== 'AbortError') {
-                                notify("Đang duy trì dữ liệu: " + err.message, true);
-                                msg.isTruncated = true;
-                            }
-                        } finally {
-                            if (manualRafId) cancelAnimationFrame(manualRafId);
-                            msg.isContinuing = false;
-                            isGenerating.value = false;
-                            currentStreamingMsg.value = null;
-                            abortController = null;
-                            updateInputTokensDisplay();
-                        }
-                    };
-
+                    
                     const regenerateFromMsg = async (msg) => {
                         if (isGenerating.value) cancelGeneration();
                         const msgIndex = currentMessages.value.findIndex(m => m.id === msg.id);
@@ -13848,7 +13983,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         resizeTextarea, scrollToBottom, checkScroll, triggerFileUpload, handleRealFileUpload, handleDragEnter,
                         handleDragOver, handleDragLeave, handleFileDrop, removeAttachment, clearAllPendingAttachments, handleTouchStart,
                         handleTouchMove, handleTouchEnd, handleTouchCancel, triggerHaptic, copyFullMessage, openLightbox, toggleVoiceInput,
-                        speakText, isSpeaking, regenerateFromMsg, isLongUserMsg, handleFormSubmit, sendMessage, manualResumeContinuation,
+                        speakText, isSpeaking, regenerateFromMsg, isLongUserMsg, handleFormSubmit, sendMessage,
                         cancelGeneration, compileMarkdown, getImgSrc, startInlineEdit, cancelInlineEdit, saveAndResendInlineEdit,
                         handleUserMsgTouchStart, handleUserMsgTouchMove, handleUserMsgTouchEnd, handleUserMsgTouchCancel, cancelLongPress,
                         handleUserMsgMouseDown, handleUserMsgMouseMove, handleUserMsgMouseUp, handleUserMsgMouseLeave,
