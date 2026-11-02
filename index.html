@@ -4274,8 +4274,7 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
             ]);
 
             // =========================================================================
-            // PIPELINE TẠO ẢNH GIẢI TÍCH PHI-DIT: 20 TRỤ CỘT & 50 ĐẠI PHƯƠNG TRÌNH
-            // HẠ TẦNG PBR BẤT BIẾN + AI TẠC HÌNH HỌC KHÔNG GIAN ĐỘNG (SDF & MANIFOLD)
+            // MÃ NGUỒN WEB WORKER: ĐÃ FIX 100% LỖI KHAI BÁO GLSL_CORE_ENGINE_HEADER
             // =========================================================================
             const imagePipelineWorkerCode = "" +
 "const SAFETY_SETTINGS = [" +
@@ -4285,7 +4284,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }" +
 "];\n\n" +
 
-"// HẠ TẦNG QUANG HỌC PBR VÀ HÌNH HỌC VI PHÂN 50 CÔNG THỨC TRÊN GPU\\n" +
 "const GLSL_CORE_ENGINE_HEADER = " +
 "'precision highp float;\\n' +" +
 "'uniform vec2 uResolution;\\n' +" +
@@ -4306,13 +4304,15 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "'    float ior;\\n' +" +
 "'};\\n\\n' +" +
 
-"'// --- THƯ VIỆN TOÁN HỌC, NHIỄU & NAVIER-STOKES FBM ---\\n' +" +
 "'float hash(vec3 p) { p = fract(p * 0.3183099 + .1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }\\n' +" +
-"'float noise(in vec3 x) { vec3 i = floor(x); vec3 f = fract(x); f = f*f*(3.0-2.0*f); return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)),f.x), mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)),f.x),f.y), mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)),f.x), mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)),f.x),f.y),f.z); }\\n' +" +
+"'float noise(in vec3 x) {\\n' +" +
+"'    vec3 i = floor(x); vec3 f = fract(x); f = f*f*(3.0-2.0*f);\\n' +" +
+"'    return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)),f.x), mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)),f.x),f.y),\\n' +" +
+"'               mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)),f.x), mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)),f.x),f.y),f.z);\\n' +" +
+"'}\\n' +" +
 "'float fbm(vec3 p) { float f=0.0; f+=0.5000*noise(p); p*=2.02; f+=0.2500*noise(p); p*=2.03; f+=0.1250*noise(p); return f; }\\n' +" +
 "'vec3 curlNoise(vec3 p) { return vec3(fbm(p.yzx), fbm(p.zxy), fbm(p.xyz)); }\\n\\n' +" +
 
-"'// --- THƯ VIỆN HÌNH HỌC SDF & ĐA TẠP RIEMANN ---\\n' +" +
 "'float sdSphere(vec3 p, float r) { return length(p) - r; }\\n' +" +
 "'float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }\\n' +" +
 "'float sdRoundBox(vec3 p, vec3 b, float r) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0) - r; }\\n' +" +
@@ -4324,7 +4324,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "'float smax(float a, float b, float k) { float h = clamp(0.5+0.5*(b-a)/k, 0.0, 1.0); return mix(a,b,h)+k*h*(1.0-h); }\\n\\n';\n\n" +
 
 "const GLSL_CORE_ENGINE_FOOTER = " +
-"'// --- THƯ VIỆN QUANG HỌC PBR LƯỢNG TỬ & 50 PHƯƠNG TRÌNH ---\\n' +" +
 "'vec3 blackbody(float T) { vec3 c = vec3(1.0); c.g = clamp(0.4*log(T/1000.0)+0.1, 0.0, 1.0); c.b = clamp(0.8*log(T/2000.0)-0.2, 0.0, 1.0); return c; }\\n' +" +
 "'vec3 rayleighSky(vec3 rd, vec3 ld) { float c = dot(rd, ld); float r = 0.06 * (1.0 + c*c); return vec3(0.04, 0.08, 0.18) + vec3(0.2, 0.35, 0.65) * r; }\\n' +" +
 "'vec3 calcNormal(vec3 p) { vec2 e = vec2(0.002, 0.0); return normalize(vec3(map(p+e.xyy).x - map(p-e.xyy).x, map(p+e.yxy).x - map(p-e.yxy).x, map(p+e.yyx).x - map(p-e.yyx).x)); }\\n' +" +
@@ -4391,9 +4390,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "'    gl_FragColor = total / 4.0;\\n' +" +
 "'}\\n';\n\n" +
 
-"// ==========================================================================\n" +
-"// BIÊN DỊCH VÀ KẾT XUẤT HÌNH ẢNH GIẢI TÍCH (ANALYTICAL RENDERER)\n" +
-"// ==========================================================================\n" +
 "function testCompileAndRenderScene(sceneGlslCode, cameraParams, width, height, isDryRun) {\n" +
 "    if (typeof OffscreenCanvas === 'undefined') return { valid: false, log: 'OffscreenCanvas không hỗ trợ' };\n" +
 "    const canvas = new OffscreenCanvas(width, height);\n" +
@@ -4540,7 +4536,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "    try {\n" +
 "        postStatus('Đang kiến tạo bản thiết kế hình học giải tích theo Prompt...');\n\n" +
 
-"        // PROMPT CHỈ THỊ TẠO DỰNG HÌNH HỌC KHÔNG GIAN THỰC THỂ\n" +
 "        const ARCHITECT_SYSTEM = 'BẠN LÀ KIẾN TRÚC SƯ ĐỒ HỌA GIẢI TÍCH (ANALYTICAL SDF ARCHITECT).\\n' +\n" +
 "            'Động cơ WebGL PBR Engine ĐÃ TÍCH HỢP TOÀN BỘ Raymarching, Ánh sáng, Bóng đổ, SSS, AO và ACES Tonemap.\\n' +\n" +
 "            'Nhiệm vụ của bạn: TẠC NÊN BỐI CẢNH, CHỦ THỂ, ĐA CHỦ THỂ THEO ĐÚNG PROMPT NGƯỜI DÙNG.\\n\\n' +\n" +
@@ -4572,7 +4567,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "            '}\\n' +\n" +
 "            '```';\n\n" +
 
-"        // BƯỚC 1: XUẤT BẢN THIẾT KẾ BAN ĐẦU (GENESIS PASS)\n" +
 "        const genesisPrompt = 'Chủ đề: \"' + promptText + '\". Phong cách: ' + activeCam.genre + '.\\n' +\n" +
 "                              'Hãy dựng một khung cảnh 3D sống động có đầy đủ chủ thể chính, hậu cảnh, và ánh sáng điện ảnh!';\n" +
 "        const resGenesis = await callAiWithContinuation(ARCHITECT_SYSTEM, genesisPrompt, null, candidateModels, apiKeys);\n" +
@@ -4580,7 +4574,6 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 "        let currentCam = parseJsonBlock(resGenesis.text);\n" +
 "        let currentSceneGlsl = extractCodeBlock(resGenesis.text, 'glsl');\n\n" +
 
-"        // BƯỚC 2: RENDER THỬ VÀ ĐO LƯỜNG QUANG THÔNG (DRY-RUN SHIELD)\n" +
 "        postStatus('Đang kiểm tra tính toàn vẹn của tia sáng và quang thông...');\n" +
 "        let dryRun = testCompileAndRenderScene(currentSceneGlsl, currentCam, 64, 64, true);\n" +
 "        let tries = 0;\n" +
@@ -4600,13 +4593,11 @@ CRITICAL: Output ONLY a valid JSON Array. No markdown, no conversation.`;
 
 "        if (!dryRun.valid) throw new Error('Không thể hội tụ quang học: ' + dryRun.log);\n\n" +
 
-"        // BƯỚC 3: RENDER KHUNG HÌNH THẬT ĐẦU TIÊN (1024x1024)\n" +
 "        postStatus('Đang kết xuất tác phẩm hoàn chỉnh trên GPU WebGL...');\n" +
 "        let renderRes = await testCompileAndRenderScene(currentSceneGlsl, currentCam, 1024, 1024, false);\n" +
 "        let currentRenderUrl = renderRes.dataUrl;\n" +
 "        postDisplay(40, currentRenderUrl, currentSceneGlsl);\n\n" +
 
-"        // BƯỚC 4: VÒNG LẶP TINH CHỈNH ĐA CHIỀU (MULTI-AGENT REFINEMENT)\n" +
 "        const AUDITOR_SYSTEM = 'BẠN LÀ NHÀ QUAN TRẮC VẬT LÝ QUANG HỌC.\\n' +\n" +
 "            'Đối chiếu ảnh render đính kèm với Prompt người dùng: \"' + promptText + '\".\\n' +\n" +
 "            'Hãy chỉ ra 1 điểm khiếm khuyết lớn nhất cần cải thiện (về chi tiết chủ thể, bố cục, màu sắc).\\n' +\n" +
