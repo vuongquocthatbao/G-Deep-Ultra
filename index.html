@@ -7031,7 +7031,7 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
         const compileMarkdown = (raw, isFinal = true) => compileMarkdownSync(raw, isFinal);
 
         // =========================================================================================
-        // [MODULE 3: FULL-FEATURED PYTHON 3.11 WASM SOVEREIGN SANDBOX - 100% CAPABILITIES RESTORED]
+        // [MODULE 3: PYTHON 3.11 WASM SOVEREIGN SANDBOX - ZERO SYNTAX HAZARD]
         // =========================================================================================
         const PythonEngine = {
             _worker: null,
@@ -7040,7 +7040,6 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
             _initWorker() {
                 if (this._worker) return this._worker;
 
-                // KỊCH BẢN PHỤC HỒI: TOÀN BỘ 5 SIÊU TÍNH NĂNG PYTHON NỘI BỘ (AN TOÀN TUYỆT ĐỐI)
                 const workerScript = [
                     'const CDNS = ["https://cdn.jsdelivr.net/pyodide/v0.26.2/full/", "https://cdnjs.cloudflare.com/ajax/libs/pyodide/0.26.2/"];',
                     'let pyodide = null;',
@@ -7209,7 +7208,6 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                 return this._worker;
             },
 
-            // KỊCH BẢN PHỤC HỒI: NHẬN ĐẦY ĐỦ CÁC THAM SỐ ĐÍNH KÈM VÀ REPO URL
             async run(code, timeoutMs = 180000, inputFiles = [], repoUrl = null) {
                 return new Promise((resolve) => {
                     const id = 'py_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
@@ -7236,6 +7234,259 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                 this._callbacks.clear();
             }
         };
+
+        // =========================================================================================
+        // [KHÔI PHỤC TIỆN ÍCH HỆ THỐNG CỐT LÕI: LOGS, MERMAID, ĐA PHƯƠNG THỨC & SEARCH ENGINE]
+        // =========================================================================================
+        function getExecutionLogsText(msg) {
+            if (!msg?.rawExecutionParts?.length) return '';
+            const F = '```';
+            return msg.rawExecutionParts.map(p => {
+                const c = p.content !== undefined ? String(p.content) : '';
+                if (p.type === 'code') return `MÃ NGUỒN:\n${F}python\n${c}\n${F}`;
+                const ok = (p.outcome === "COMPLETED" || p.outcome === "OUTCOME_OK");
+                let res = `${ok ? "KẾT QUẢ:" : "LỖI:"}\n${F}text\n${c}\n${F}`;
+                if (p.plotBase64) res += `\n[ĐỒ THỊ HÌNH ẢNH MATPLOTLIB ĐÍNH KÈM]`;
+                return res;
+            }).join('\n\n');
+        }
+
+        function getExecutionLogsHtml(msg) {
+            if (!msg?.rawExecutionParts?.length) return '';
+            let cellIndex = 1;
+            const html = msg.rawExecutionParts.map((p) => {
+                const c = p.content !== undefined ? String(p.content) : '';
+                if (p.type === 'code') {
+                    const idx = cellIndex++;
+                    return `<div class="jupyter-cell input-cell" style="margin-bottom: 8px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between; padding:4px 8px; font-family:var(--font-mono); font-size:10px; color:#38bdf8; background:rgba(56,189,248,0.06); border-radius:8px 8px 0 0; border:1px solid rgba(56,189,248,0.15); border-bottom:none;">
+                            <span style="font-weight:700; letter-spacing:0.5px;">In [${idx}]: Python Kernel (WASM)</span>
+                            <span style="font-size:9px; color:#9aa2b1; opacity:0.8;">Chạy độc lập</span>
+                        </div>
+                        <pre style="background:#07090e; padding:10px 14px; border-radius:0 0 8px 8px; overflow-x:auto; color:#e0f2fe; border:1px solid rgba(56,189,248,0.15); margin:0; font-size:12px; line-height:1.6; font-family:var(--font-mono);">${escapeHTML(c)}</pre>
+                    </div>`;
+                }
+                const ok = (p.outcome === "COMPLETED" || p.outcome === "OUTCOME_OK");
+                let imgBlock = '';
+                if (p.plotBase64) {
+                    imgBlock = `<div style="margin-top:10px; border-radius:10px; overflow:hidden; border:1px solid rgba(255,255,255,0.1); background:#06080d; padding:8px; text-align:center;">
+                        <div style="font-size:9.5px; font-family:var(--font-mono); color:#9aa2b1; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+                            <span>Figure Output (Matplotlib)</span>
+                            <span style="color:#38bdf8; font-size:8.5px;">Nhấp để phóng to</span>
+                        </div>
+                        <img src="data:image/png;base64,${p.plotBase64}" style="max-height:420px; width:auto; max-width:100%; border-radius:6px; margin:0 auto; display:block; cursor:zoom-in; box-shadow:0 8px 24px rgba(0,0,0,0.6);" alt="Đồ thị tính toán" />
+                    </div>`;
+                }
+                return `<div class="jupyter-cell output-cell" style="margin-bottom: 12px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; padding:3px 8px; font-family:var(--font-mono); font-size:10px; color:${ok ? '#34d399' : '#f87171'}; background:${ok ? 'rgba(52,211,153,0.06)' : 'rgba(248,113,113,0.06)'}; border-radius:8px 8px 0 0; border:1px solid ${ok ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'}; border-bottom:none;">
+                        <span style="font-weight:700;">Out [${Math.max(1, cellIndex - 1)}]: ${ok ? 'Execution Success' : 'Runtime Error'}</span>
+                        <span style="font-size:8.5px; font-family:var(--font-mono);">${ok ? 'POSIX 0' : 'SIGERR'}</span>
+                    </div>
+                    ${c.trim() ? `<pre style="background:#05070a; padding:10px 14px; border-radius:${imgBlock ? '0' : '0 0 8px 8px'}; overflow-x:auto; color:${ok ? '#a7f3d0' : '#fca5a5'}; border:1px solid ${ok ? 'rgba(52,211,153,0.2)' : 'rgba(248,113,113,0.2)'}; margin:0; font-size:11.5px; line-height:1.55; font-family:var(--font-mono);">${escapeHTML(c)}</pre>` : ''}
+                    ${imgBlock}
+                </div>`;
+            }).join('');
+            return window.DOMPurify ? window.DOMPurify.sanitize(html, DOMPURIFY_CONFIG) : html;
+        }
+
+        let isMermaidRenderingActive = false;
+        let mermaidRenderPending = false;
+        const MermaidRenderNeuron = SynapticNeuralMesh.register('MermaidRenderNeuron', () => typeof window.mermaid !== 'undefined', async () => await rawRenderMermaidBatch(), false);
+        async function renderMermaidDiagrams() { return await MermaidRenderNeuron.fire(true); }
+
+        async function rawRenderMermaidBatch() {
+            if (typeof window.mermaid === 'undefined') return;
+            if (isMermaidRenderingActive) { mermaidRenderPending = true; return; }
+            const containers = Array.from(document.querySelectorAll('.mermaid-container:not([data-rendered="true"])'));
+            if (!containers.length) return;
+            isMermaidRenderingActive = true;
+            try {
+                for (const container of containers) {
+                    if (!container.isConnected) continue;
+                    let raw = container.getAttribute('data-mermaid-code') || container.textContent.trim();
+                    try { raw = decodeURIComponent(raw); } catch (_) {}
+                    raw = raw.replace(/^```mermaid\s*/i, '').replace(/```$/i, '').trim();
+                    if (!raw) continue;
+                    container.setAttribute('data-rendered', 'pending');
+                    const uniqueId = 'mermaid-svg-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8);
+                    try {
+                        const res = await window.mermaid.render(uniqueId, raw);
+                        const svg = typeof res === 'string' ? res : (res?.svg || '');
+                        if (container.isConnected && svg) { container.innerHTML = svg; container.setAttribute('data-rendered', 'true'); }
+                    } catch (e) {
+                        const stray = document.getElementById(uniqueId) || document.getElementById('d' + uniqueId);
+                        if (stray) stray.remove();
+                        if (container.isConnected) {
+                            container.setAttribute('data-rendered', 'error');
+                            container.innerHTML = `<pre class="text-[11px] font-mono text-red-400 p-2 bg-black/40 rounded">${escapeHTML(raw)}</pre>`;
+                        }
+                    }
+                }
+            } finally {
+                isMermaidRenderingActive = false;
+                if (mermaidRenderPending) {
+                    mermaidRenderPending = false;
+                    const unrendered = document.querySelectorAll('.mermaid-container:not([data-rendered="true"]):not([data-rendered="error"])');
+                    if (unrendered.length > 0) setTimeout(renderMermaidDiagrams, 200);
+                }
+            }
+        }
+
+        const rawCompressImageWorker = async ({ file, maxWidth, maxHeight, quality }) => {
+            if (!file) throw new Error("File không hợp lệ");
+            if (file.size <= 1024 * 1024 && ['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                return { mimeType: file.type, data: await readFileAsBase64(file) };
+            }
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        let { width, height } = img;
+                        if (width > maxWidth || height > maxHeight) {
+                            const ratio = Math.min(maxWidth / width, maxHeight / height);
+                            width = Math.round(width * ratio); height = Math.round(height * ratio);
+                        }
+                        const canvas = document.createElement('canvas');
+                        canvas.width = width; canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+                        resolve({ mimeType: 'image/jpeg', data: cleanBase64Data(dataUrl) });
+                    };
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+            });
+        };
+
+        const ImageCompressNeuron = SynapticNeuralMesh.register('ImageCompressNeuron', (p) => p?.file instanceof Blob, async (p) => await rawCompressImageWorker(p), () => ({ mimeType: 'image/jpeg', data: '' }));
+        async function compressImage(file, maxWidth = 1920, maxHeight = 1920, quality = 0.85) {
+            return await ImageCompressNeuron.fire({ file, maxWidth, maxHeight, quality });
+        }
+
+        const rawFileReaderMesh = {
+            async isBinary(file) {
+                if (!file) return false;
+                const textMimes = ['text/', 'application/json', 'application/javascript', 'application/xml'];
+                if (textMimes.some(m => file.type?.startsWith(m))) return false;
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        const buf = new Uint8Array(e.target.result);
+                        let nullCount = 0;
+                        for (let i = 0; i < buf.length; i++) if (buf[i] === 0) nullCount++;
+                        resolve(nullCount > 2);
+                    };
+                    reader.onerror = () => resolve(true);
+                    reader.readAsArrayBuffer(file.slice(0, 4096));
+                });
+            },
+            async readBase64(file) {
+                if (!file) return '';
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const res = reader.result;
+                        resolve(typeof res === 'string' ? res.slice(res.indexOf(',') + 1).replace(/[\s\r\n]+/g, '') : '');
+                    };
+                    reader.onerror = () => resolve('');
+                    reader.readAsDataURL(file);
+                });
+            },
+            async readText(file) {
+                if (!file) return '';
+                const buffer = await file.arrayBuffer();
+                const bytes = new Uint8Array(buffer);
+                if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) return new TextDecoder('utf-8').decode(buffer.slice(3));
+                if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) return new TextDecoder('utf-16le').decode(buffer);
+                try { return new TextDecoder('utf-8', { fatal: true }).decode(buffer); }
+                catch (_) {
+                    try { return new TextDecoder('windows-1258').decode(buffer); }
+                    catch (_) { return new TextDecoder('utf-8', { fatal: false }).decode(buffer); }
+                }
+            }
+        };
+
+        const AutonomousFileReader = SynapticNeuralMesh.autoWrapObject('FileReader', rawFileReaderMesh);
+        const isBinaryFile = async (f) => await AutonomousFileReader.isBinary(f);
+        const readFileAsBase64 = async (f) => await AutonomousFileReader.readBase64(f);
+        const readFileAsText = async (f) => await AutonomousFileReader.readText(f);
+
+        const rawExtractPdfWorker = async ({ arrayBuffer, maxPagesBudget }) => {
+            if (!arrayBuffer?.byteLength || typeof window.pdfjsLib === 'undefined') return "";
+            try {
+                const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer), cMapPacked: true });
+                const pdf = await loadingTask.promise;
+                let fullText = `[TÀI LIỆU PDF: ${pdf.numPages} trang]\n`;
+                const limit = Math.min(pdf.numPages, maxPagesBudget);
+                for (let i = 1; i <= limit; i++) {
+                    const page = await pdf.getPage(i);
+                    const text = await page.getTextContent();
+                    fullText += `--- [Trang ${i}/${pdf.numPages}] ---\n` + text.items.map(it => it.str).join(' ') + '\n\n';
+                }
+                return fullText.trim();
+            } catch (_) { return ""; }
+        };
+
+        const PdfExtractorNeuron = SynapticNeuralMesh.register('PdfExtractorNeuron', (p) => p?.arrayBuffer?.byteLength, async (p) => await rawExtractPdfWorker(p), "");
+        async function extractPdfText(arrayBuffer, maxPagesBudget = 100) { return await PdfExtractorNeuron.fire({ arrayBuffer, maxPagesBudget }); }
+
+        const rawBuildTurnParts = (text, attachments = []) => {
+            const parts = [];
+            let promptText = (text || '').trim();
+            let summary = '';
+
+            (attachments || []).forEach((att, idx) => {
+                if (!att) return;
+                const mime = normalizeMimeType(att.mimeType, att.name);
+                if (att.isFullVideo && att.data) {
+                    parts.push({ inlineData: { mimeType: att.mimeType || 'video/mp4', data: cleanBase64Data(att.data) } });
+                    summary += `\n[Tệp video #${idx + 1}: ${att.name}]\n`;
+                } else if (att.fileUri) {
+                    parts.push({ fileData: { mimeType: mime, fileUri: att.fileUri } });
+                } else if (att.textContent) {
+                    summary += `\n\n--- [Nội dung: ${att.name}] ---\n${att.textContent.trim()}\n--- [Hết: ${att.name}] ---`;
+                } else if (att.data) {
+                    parts.push({ inlineData: { mimeType: mime, data: cleanBase64Data(att.data) } });
+                }
+            });
+
+            if (summary) promptText = promptText ? `${promptText}\n${summary}` : summary.trim();
+            if (promptText) parts.push({ text: promptText });
+            return parts.length > 0 ? parts : [{ text: " " }];
+        };
+
+        const BuildTurnPartsNeuron = SynapticNeuralMesh.register('BuildTurnPartsNeuron', (p) => p && typeof p === 'object', ({ text, attachments }) => rawBuildTurnParts(text, attachments), () => [{ text: " " }]);
+        function buildTurnParts(text, attachments = []) { return BuildTurnPartsNeuron.fireSync({ text, attachments }); }
+
+        const SearchIntelligenceEngine = SynapticNeuralMesh.autoWrapObject('SearchIntel', {
+            robustJsonRepair(raw) {
+                if (!raw || typeof raw !== 'string') return null;
+                let clean = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+                try { return JSON.parse(clean); } catch (_) {}
+                const f = clean.indexOf('{'), l = clean.lastIndexOf('}');
+                if (f !== -1 && l !== -1 && l > f) {
+                    try { return JSON.parse(clean.slice(f, l + 1)); } catch (_) {}
+                }
+                return null;
+            },
+            async planIntelligentSearch(promptText, attachments = [], dispatchFn = null) {
+                if (!promptText || typeof dispatchFn !== 'function') return { queries: [promptText.slice(0, 100)] };
+                const p = `Phân tích yêu cầu và xuất 2 truy vấn Google search ngắn gọn chuẩn SEO: """${promptText}"""\nTrả về duy nhất JSON: {"queries": ["query 1", "query 2"]}`;
+                try {
+                    const res = await dispatchFn({
+                        contents: [{ role: 'user', parts: [{ text: p }] }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 500, responseMimeType: "application/json" }
+                    });
+                    const parsed = this.robustJsonRepair(res?.candidates?.[0]?.content?.parts?.[0]?.text);
+                    if (parsed?.queries?.length) return { queries: parsed.queries.slice(0, 3) };
+                } catch (_) {}
+                return { queries: [promptText.slice(0, 100)] };
+            }
+        });
 
         // =========================================================================================
         // CẦU NỐI ĐIỀU KHIỂN WEB WORKER XƯỞNG PHIM ĐIỆN ẢNH NGHỆ THUẬT TỐI THƯỢNG
