@@ -3353,7 +3353,7 @@ self.onmessage = async function(e) {
         }
 
         // =========================================================================================
-        // [MODULE 2: OMEGA CENTRAL DISPATCHER & FULL ENTERPRISE PIPELINES - 100% SCENARIOS RESTORED]
+        // [MODULE 2: OMEGA CENTRAL DISPATCHER & ALL ENTERPRISE PIPELINES - 100% ZERO-OMISSION]
         // =========================================================================================
         const OmegaCentralCoreEngine = (function(meshCore, masterCfg) {
             'use strict';
@@ -3405,26 +3405,100 @@ self.onmessage = async function(e) {
                         displayPrefix = '🎨 Tạo hình ảnh:';
                     }
 
-                    const imgFiles = attachments.filter(a => a.mimeType?.startsWith('image/'));
+                    const videoFiles = attachments.filter(a => a.isFullVideo || a.mimeType?.startsWith('video/'));
+                    const imageFiles = attachments.filter(a => a.mimeType?.startsWith('image/'));
+                    const audioFiles = attachments.filter(a => a.mimeType?.startsWith('audio/'));
+                    const docFiles = attachments.filter(a => a.mimeType === 'application/pdf' || a.textContent);
+
                     return {
-                        route,
-                        displayPrefix,
-                        cleanPrompt,
+                        route, displayPrefix, cleanPrompt,
                         profiles: {
-                            hasVideo: attachments.some(a => a.isFullVideo || a.mimeType?.startsWith('video/')),
-                            hasImage: imgFiles.length > 0,
-                            primaryImage: imgFiles[0] || null,
+                            hasVideo: videoFiles.length > 0,
+                            hasImage: imageFiles.length > 0,
+                            hasAudio: audioFiles.length > 0,
+                            hasDoc: docFiles.length > 0,
+                            primaryImage: imageFiles[0] || null,
                             totalFiles: attachments.length
                         }
                     };
                 }
             };
 
-            // 3. ĐỘNG CƠ TẠO ẢNH FLUX TĨNH LẶNG (SILENT FLUX CANVAS PIPELINE)
+            // 3. ĐỘNG CƠ HỘI TỤ QUANG HỌC VÔ HẠN FLUX (CHẶN ẢNH THÔ - INPAINTING WATERMARK - UX TĨNH LẶNG)
             const FluxImagePipeline = {
                 COOLDOWN_MS: 46000,
+
+                async _applyGLSLConvergence(base64Img, glslSnippet) {
+                    return new Promise((resolve, reject) => {
+                        const img = new Image();
+                        img.crossOrigin = "anonymous";
+                        img.onload = () => {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = img.width; canvas.height = img.height;
+                            const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+                            if (!gl) return reject(new Error("GPU không hỗ trợ WebGL."));
+
+                            const vs = gl.createShader(gl.VERTEX_SHADER);
+                            gl.shaderSource(vs, 'attribute vec2 position; varying vec2 vUv; void main(){ vUv = position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0); }');
+                            gl.compileShader(vs);
+
+                            const fs = gl.createShader(gl.FRAGMENT_SHADER);
+                            const fsSource = [
+                                'precision highp float;',
+                                'varying vec2 vUv;',
+                                'uniform sampler2D uTexture;',
+                                'uniform vec2 uResolution;',
+                                glslSnippet,
+                                'void main(){',
+                                '    vec4 originalCol = texture2D(uTexture, vUv);',
+                                '    gl_FragColor = physical_convergence(vUv, originalCol, uTexture, uResolution);',
+                                '}'
+                            ].join('\n');
+                            gl.shaderSource(fs, fsSource);
+                            gl.compileShader(fs);
+
+                            if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                                const errLog = gl.getShaderInfoLog(fs);
+                                gl.deleteShader(fs);
+                                return reject(new Error(`Lỗi cú pháp Shader: ${errLog}`));
+                            }
+
+                            const prog = gl.createProgram();
+                            gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+                            gl.linkProgram(prog); gl.useProgram(prog);
+
+                            const buf = gl.createBuffer();
+                            gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+                            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+                            const posLoc = gl.getAttribLocation(prog, 'position');
+                            gl.enableVertexAttribArray(posLoc);
+                            gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+                            const tex = gl.createTexture();
+                            gl.bindTexture(gl.TEXTURE_2D, tex);
+                            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+                            gl.uniform2f(gl.getUniformLocation(prog, 'uResolution'), canvas.width, canvas.height);
+                            gl.viewport(0, 0, canvas.width, canvas.height);
+                            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+                            const newBase64 = canvas.toDataURL('image/jpeg', 0.95);
+                            gl.deleteBuffer(buf); gl.deleteTexture(tex);
+                            gl.deleteProgram(prog); gl.deleteShader(vs); gl.deleteShader(fs);
+                            const loseCtx = gl.getExtension('WEBGL_lose_context');
+                            if (loseCtx) loseCtx.loseContext();
+                            resolve(newBase64);
+                        };
+                        img.onerror = () => reject(new Error("Lỗi đọc luồng ảnh."));
+                        img.src = base64Img;
+                    });
+                },
+
                 async execute(context) {
-                    const { targetMsg, promptText, imageConfig, abortController, scheduleDbSave, scrollToBottom } = context;
+                    const { targetMsg, promptText, imageConfig, abortController, scheduleDbSave, scrollToBottom, getNextHealthyApiKey } = context;
 
                     let w = 1024, h = 1024;
                     const ar = imageConfig.aspectRatio || '1:1';
@@ -3433,9 +3507,16 @@ self.onmessage = async function(e) {
                     else if (ar === '4:3') { w = 1024; h = 768; }
                     else if (ar === '3:4') { w = 768; h = 1024; }
                     else if (ar === '21:9') { w = 1344; h = 576; }
-                    w = Math.round(w / 16) * 16;
-                    h = Math.round(h / 16) * 16;
+                    w = Math.round(w / 16) * 16; h = Math.round(h / 16) * 16;
 
+                    const styleKey = imageConfig.style || 'photorealistic';
+                    const styleDef = GDeepMasterConfig.Studio.ImageStyles[styleKey] || GDeepMasterConfig.Studio.ImageStyles['photorealistic'];
+                    const fluxModel = styleDef.model || 'flux-realism';
+                    const seed = imageConfig.keepCharacter ? (imageConfig.characterSeed || 100000) : Math.floor(Math.random() * 899999) + 100000;
+                    const cleanUserPrompt = (promptText || '').trim() || 'A beautiful artistic masterpiece';
+                    const fullPrompt = `${cleanUserPrompt}, ${styleDef.desc}`;
+
+                    // Giao diện Khung xương Pulse mượt mà chuẩn ChatGPT
                     targetMsg.content = '';
                     targetMsg.htmlContent = `
                         <div class="my-4 rounded-3xl overflow-hidden border border-white/5 bg-[#070911]/90 backdrop-blur-2xl shadow-2xl p-3 sm:p-5">
@@ -3450,6 +3531,7 @@ self.onmessage = async function(e) {
                     scheduleDbSave(targetMsg);
                     scrollToBottom(true);
 
+                    // Giãn cách ngầm 46s Pollinations
                     const lastTs = Number(localStorage.getItem('gdeep_last_flux_gen_ts') || 0);
                     const elapsed = Date.now() - lastTs;
                     if (elapsed >= 0 && elapsed < this.COOLDOWN_MS) {
@@ -3462,68 +3544,105 @@ self.onmessage = async function(e) {
                     }
                     if (abortController?.signal?.aborted) return;
 
-                    const styleKey = imageConfig.style || 'photorealistic';
-                    const styleDef = GDeepMasterConfig.Studio.ImageStyles[styleKey] || GDeepMasterConfig.Studio.ImageStyles['photorealistic'];
-                    const fluxModel = styleDef.model || 'flux-realism';
-                    const seed = imageConfig.keepCharacter ? (imageConfig.characterSeed || 100000) : Math.floor(Math.random() * 899999) + 100000;
-                    const cleanPrompt = (promptText || '').trim() || 'A beautiful artistic masterpiece';
-                    const fullPrompt = `${cleanPrompt}, ${styleDef.desc}`;
-
+                    // LẤY ẢNH THÔ (RAW IMAGE)
                     const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${w}&height=${h}&seed=${seed}&model=${fluxModel}&nologo=true`;
                     localStorage.setItem('gdeep_last_flux_gen_ts', Date.now());
 
+                    let currentBase64 = null;
                     try {
-                        let finalDataUrl = fluxUrl;
-                        let blob = null;
-                        try {
-                            const res = await fetch(fluxUrl, { signal: abortController?.signal });
-                            if (res.ok) blob = await res.blob();
-                        } catch (_) {}
-
-                        if (!blob) {
-                            try {
-                                const proxyRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(fluxUrl)}`, { signal: abortController?.signal });
-                                if (proxyRes.ok) blob = await proxyRes.blob();
-                            } catch (_) {}
+                        let res = await fetch(fluxUrl, { signal: abortController?.signal }).catch(() => null);
+                        if (!res || !res.ok) res = await fetch(`https://corsproxy.io/?${encodeURIComponent(fluxUrl)}`, { signal: abortController?.signal });
+                        if (res && res.ok) {
+                            const blob = await res.blob();
+                            currentBase64 = await new Promise((r) => { const rd = new FileReader(); rd.onloadend = () => r(rd.result); rd.readAsDataURL(blob); });
                         }
+                    } catch (_) {}
 
-                        if (blob && blob.size > 0) {
-                            finalDataUrl = await new Promise((r) => {
-                                const rd = new FileReader();
-                                rd.onloadend = () => r(rd.result);
-                                rd.readAsDataURL(blob);
-                            });
-                        }
-
-                        const finalHtml = `
-                            <div class="my-4 rounded-3xl overflow-hidden border border-white/10 bg-[#070911]/90 backdrop-blur-2xl shadow-2xl p-3 sm:p-5 transition-all duration-300">
-                                <div class="flex items-center justify-between gap-2 mb-3.5 px-1">
-                                    <span class="text-xs font-bold text-white tracking-wide">G-Deep Vision Canvas</span>
-                                    <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/15 text-emerald-300 font-bold uppercase tracking-wider">HQ RENDER</span>
-                                </div>
-                                <div class="relative rounded-2xl overflow-hidden bg-black/80 shadow-2xl flex items-center justify-center border border-white/5">
-                                    <img src="${finalDataUrl}" alt="${cleanPrompt}" class="w-full h-auto max-h-[680px] object-contain rounded-2xl cursor-zoom-in" style="aspect-ratio: ${w}/${h};" />
-                                </div>
-                                <div class="mt-3.5 px-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-textMuted border-t border-white/5 pt-3">
-                                    <span class="text-white/90 font-medium truncate">“${cleanPrompt}”</span>
-                                    <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-white/5 text-purple-300 shrink-0">${w}x${h} · ${ar}</span>
-                                </div>
-                            </div>`;
-
-                        targetMsg.content = finalHtml;
-                        targetMsg.htmlContent = compileMarkdownSync(finalHtml, true);
-                        scheduleDbSave(targetMsg);
-                        scrollToBottom(true);
-                    } catch (err) {
-                        if (err.name === 'AbortError') return;
-                        targetMsg.content = `*(Không thể kết nối đến máy chủ đồ họa lúc này)*`;
+                    if (!currentBase64) {
+                        targetMsg.content = "*(Không thể kết nối đến máy chủ đồ họa lúc này)*";
                         targetMsg.htmlContent = compileMarkdownSync(targetMsg.content, true);
                         scheduleDbSave(targetMsg);
+                        return;
                     }
+
+                    // VÒNG LẶP HỘI TỤ QUANG HỌC VẬT LÝ VÀ INPAINTING XÓA WATERMARK
+                    let iteration = 0, glslFeedback = "", converged = false;
+                    const visionModel = GDeepMasterConfig.Models.AVAILABLE[1].apiEndpointIds[0] || "gemini-2.5-flash";
+
+                    while (!converged) {
+                        if (abortController?.signal?.aborted) break;
+                        iteration++;
+
+                        const aiPrompt = `[SUPREME OPTICS & INPAINTING ENGINE - ITERATION ${iteration}]
+Nhiệm vụ: Bức ảnh đính kèm là ảnh thô/ảnh đang hiệu chỉnh cần hội tụ vật lý qua WebGL Fragment Shader.
+1. Khảo sát vi mô: Cân bằng PBR (Bóng đổ, Phản xạ vi mô, SSS trên da), Trọng tâm, Phối cảnh.
+2. BẮT BUỘC: Phát hiện Watermark/Text rác ở GÓC DƯỚI BÊN PHẢI (vùng uv.x > 0.8 && uv.y < 0.2). Viết thuật toán Inpainting/Poisson Blending bằng GLSL để XÓA SẠCH WATERMARK hòa trộn hoàn hảo vào nền.
+${glslFeedback ? `LỖI BIÊN DỊCH VÒNG TRƯỚC: ${glslFeedback}. HÃY SỬA CÚ PHÁP GLSL ES 2.0 NGAY!` : ''}
+Chữ ký hàm: vec4 physical_convergence(vec2 uv, vec4 col, sampler2D tex, vec2 res)
+TRẢ VỀ DUY NHẤT JSON:
+{
+  "reasoning": "Ghi chú nội bộ",
+  "glsl_code": "vec4 physical_convergence(vec2 uv, vec4 col, sampler2D tex, vec2 res) { ... return newCol; }",
+  "converged": false // Chỉ True khi ĐÃ XÓA SẠCH WATERMARK và đạt hội tụ vật lý
+}`;
+
+                        const keyObj = (typeof getNextHealthyApiKey === 'function') ? getNextHealthyApiKey(visionModel) : null;
+                        if (!keyObj) break;
+
+                        try {
+                            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${visionModel}:generateContent?key=${keyObj.key}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    contents: [{ role: 'user', parts: [{ text: aiPrompt }, { inlineData: { mimeType: 'image/jpeg', data: currentBase64.split(',')[1] } }] }],
+                                    generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
+                                }),
+                                signal: abortController?.signal
+                            });
+
+                            if (!res.ok) { await new Promise(r => setTimeout(r, 1500)); continue; }
+                            const data = await res.json();
+                            const parsed = SearchIntelligenceEngine.robustJsonRepair(data?.candidates?.[0]?.content?.parts?.[0]?.text);
+
+                            if (parsed?.glsl_code) {
+                                try {
+                                    currentBase64 = await this._applyGLSLConvergence(currentBase64, parsed.glsl_code);
+                                    glslFeedback = "";
+                                    if (parsed.converged === true || String(parsed.converged) === 'true') converged = true;
+                                } catch (err) { glslFeedback = err.message; }
+                            }
+                        } catch (_) {
+                            if (abortController?.signal?.aborted) break;
+                            await new Promise(r => setTimeout(r, 1500));
+                        }
+                    }
+
+                    if (abortController?.signal?.aborted) return;
+
+                    // KẾT THÚC: KẾT XUẤT THÀNH PHẨM VĨNH CỬU
+                    const finalHtml = `
+                        <div class="my-4 rounded-3xl overflow-hidden border border-white/10 bg-[#070911]/90 backdrop-blur-2xl shadow-2xl p-3 sm:p-5 transition-all duration-300">
+                            <div class="flex items-center justify-between gap-2 mb-3.5 px-1">
+                                <span class="text-xs font-bold text-white tracking-wide">G-Deep Vision Canvas</span>
+                                <span class="text-[9.5px] font-mono px-2.5 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/15 text-emerald-300 font-bold uppercase tracking-wider">STUDIO HQ</span>
+                            </div>
+                            <div class="relative rounded-2xl overflow-hidden bg-black/80 shadow-2xl flex items-center justify-center border border-white/5">
+                                <img src="${currentBase64}" alt="${cleanUserPrompt}" class="w-full h-auto max-h-[680px] object-contain rounded-2xl cursor-zoom-in" style="aspect-ratio: ${w}/${h};" />
+                            </div>
+                            <div class="mt-3.5 px-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-textMuted border-t border-white/5 pt-3">
+                                <span class="text-white/90 font-medium truncate">“${cleanUserPrompt}”</span>
+                                <span class="text-[9.5px] font-mono px-2 py-0.5 rounded-md bg-white/5 text-purple-300 shrink-0">${w}x${h} · ${ar}</span>
+                            </div>
+                        </div>`;
+
+                    targetMsg.content = finalHtml;
+                    targetMsg.htmlContent = compileMarkdownSync(finalHtml, true);
+                    scheduleDbSave(targetMsg);
+                    scrollToBottom(true);
                 }
             };
 
-            // 4. ĐỘNG CƠ STREAM CHAT PHÂN TÁCH 3 KÊNH (COGNITIVE STREAM PIPELINE - FULL KHÔI PHỤC)
+            // 4. ĐỘNG CƠ STREAM CHAT PHÂN TÁCH 3 KÊNH (COGNITIVE STREAM PIPELINE - PHỤC HỒI TOÀN BỘ 7 KỊCH BẢN)
             const CognitiveStreamPipeline = {
                 async execute(ctx) {
                     const {
@@ -3547,7 +3666,7 @@ self.onmessage = async function(e) {
                         (activeGem.instruction || "").trim()
                     ].join('\n');
 
-                    // KỊCH BẢN KHÔI PHỤC: URL GROUNDING ĐỐI CHIẾU NGUỒN TRỰC TIẾP
+                    // KỊCH BẢN PHỤC HỒI 1: URL GROUNDING & ĐỒNG BỘ PROMPT NGƯỜI DÙNG
                     const detectedUrls = (typeof UrlGroundingEngine !== 'undefined') ? UrlGroundingEngine.extractUrls(text) : [];
                     if (detectedUrls.length > 0) {
                         searchStatusText.value = "Đang giải mã liên kết trực tiếp...";
@@ -3555,22 +3674,69 @@ self.onmessage = async function(e) {
                         const validSources = fetchedSources.filter(s => s.success);
                         if (validSources.length > 0) {
                             botMsg.urlSources = validSources;
-                            systemPrompt += "\n\n[DỮ LIỆU ĐỐI SOÁT LIÊN KẾT TRỰC TIẾP]:\n" + validSources.map((s, i) => `[${i+1}] ${s.title} (${s.url}): ${s.text.slice(0, 3500)}`).join('\n');
+                            const groundingBlock = "\n\n[DỮ LIỆU ĐỐI SOÁT LIÊN KẾT TRỰC TIẾP]:\n" + validSources.map((s, i) => `[${i+1}] ${s.title} (${s.url}): ${s.text.slice(0, 3500)}`).join('\n');
+                            systemPrompt += groundingBlock;
+
+                            const curUserMsg = currentMessages.value.find(m => m.role === 'user' && m.content === text);
+                            if (curUserMsg) {
+                                curUserMsg.promptContent = (curUserMsg.promptContent || curUserMsg.content || '') + groundingBlock;
+                                scheduleDbSave(curUserMsg);
+                            }
                         }
                     }
 
-                    // KỊCH BẢN KHÔI PHỤC: GOOGLE SEARCH GROUNDING THỜI GIAN THỰC
+                    // KỊCH BẢN PHỤC HỒI 2: GOOGLE SEARCH GROUNDING TẦNG SÂU (PLANNER + DEEP SCRAPES 6 TẦNG)
+                    let directAnswerBox = "", detectedEntities = [], executedQueries = [], allSearchResults = [];
                     if (enableGoogleSearch && serperApiKeys.length > 0) {
-                        searchStatusText.value = "Đang tra cứu dữ liệu thời gian thực...";
-                        const searchRes = await performSerperSearch(text.slice(0, 100));
-                        if (searchRes?.organic?.length) {
-                            const topItems = searchRes.organic.slice(0, 5);
-                            botMsg.serperMetadata = { query: text, results: topItems };
-                            systemPrompt += "\n\n[DỮ LIỆU GOOGLE SEARCH]:\n" + topItems.map((r, i) => `[${i+1}] ${r.title} (${r.link}): ${r.snippet}`).join('\n');
+                        searchStatusText.value = "Đang lập kế hoạch truy vấn dữ liệu...";
+                        const searchPlan = await SearchIntelligenceEngine.planIntelligentSearch(text, attachments, dispatchBackgroundTaskWithFallback);
+                        detectedEntities = searchPlan.entities || [];
+                        executedQueries = searchPlan.queries || [];
+
+                        if (executedQueries.length > 0) {
+                            const searchPromises = executedQueries.slice(0, 2).map(q => performSerperSearch(q));
+                            const resultsList = await Promise.allSettled(searchPromises);
+                            const seenLinks = new Set();
+
+                            resultsList.forEach(settled => {
+                                if (settled.status === 'fulfilled' && settled.value) {
+                                    const d = settled.value;
+                                    if (!directAnswerBox && d.answerBox) directAnswerBox = d.answerBox.answer || d.answerBox.snippet || d.answerBox.title || "";
+                                    if (!directAnswerBox && d.knowledgeGraph) directAnswerBox = d.knowledgeGraph.description || d.knowledgeGraph.title || "";
+                                    if (Array.isArray(d.organic)) {
+                                        d.organic.forEach(item => {
+                                            if (item.link && !seenLinks.has(item.link)) { seenLinks.add(item.link); allSearchResults.push(item); }
+                                        });
+                                    }
+                                }
+                            });
+
+                            allSearchResults = allSearchResults.slice(0, 5);
+                            if (allSearchResults.length > 0) {
+                                searchStatusText.value = "Đang cào dữ liệu tầng sâu bài viết...";
+                                const topScrapes = allSearchResults.slice(0, 2).map(async (item) => {
+                                    try {
+                                        const res = await UrlGroundingEngine.fetchWithSixTierFallback(item.link, 2000);
+                                        if (res && res.text) item.deepContent = res.text.slice(0, 900).replace(/\n{3,}/g, '\n\n');
+                                    } catch (_) {}
+                                });
+                                await Promise.allSettled(topScrapes);
+                            }
+                        }
+
+                        if (allSearchResults.length > 0 || directAnswerBox) {
+                            botMsg.serperMetadata = { query: text, queries: executedQueries, entities: detectedEntities, answerBox: directAnswerBox, results: allSearchResults };
+                            let sBlock = "\n\n[DỮ LIỆU GOOGLE SEARCH ĐÃ ĐỐI SOÁT]:";
+                            if (directAnswerBox) sBlock += "\n- TÓM TẮT TRỰC TIẾP: " + directAnswerBox;
+                            allSearchResults.forEach((r, i) => {
+                                const body = r.deepContent || r.snippet || 'Dữ liệu web.';
+                                sBlock += `\n[${i+1}] ${r.title} (${r.link}): """${body}"""`;
+                            });
+                            systemPrompt += sBlock;
                         }
                     }
 
-                    // KỊCH BẢN KHÔI PHỤC: MA TRẬN 50 BẢN THỂ TƯ DUY ĐỐI KHÁNG
+                    // KỊCH BẢN PHỤC HỒI 3: MA TRẬN 50 BẢN THỂ TƯ DUY ĐỐI KHÁNG
                     if (enableDeepThinking) {
                         systemPrompt += [
                             "\n\n========================================================",
@@ -3583,19 +3749,31 @@ self.onmessage = async function(e) {
                         ].join('\n');
                     }
 
-                    // KỊCH BẢN KHÔI PHỤC: CHỈ THỊ MÁY ẢO PYTHON WASM NỘI BỘ
-                    if (enableCodeExecution) {
+                    // KỊCH BẢN PHỤC HỒI 4: TỰ ĐỘNG BẮT MẠCH GITHUB REPO
+                    const githubUrls = detectedUrls.filter(u => u.includes('github.com'));
+                    if (githubUrls.length > 0 && enableCodeExecution) {
                         systemPrompt += [
-                            "\n\n[MÔI TRƯỜNG ĐIỆN TOÁN NỘI BỘ: PYTHON 3.11 WASM KERNEL]",
-                            "Hệ thống có máy ảo Python WASM chạy trực tiếp trên thiết bị client.",
-                            "Khi cần tính toán, kiểm chứng hoặc phân tích dữ liệu, BẮT BUỘC viết khối mã ```python ... ``` để máy ảo tự động thực thi."
+                            "\n[MỆNH LỆNH CHIẾN LƯỢC: PHÂN TÍCH GITHUB REPOSITORY]",
+                            `Hệ thống phát hiện người dùng yêu cầu xử lý Repository: ${githubUrls.join(', ')}`,
+                            "BẠN PHẢI sinh ra khối mã Python để nạp và khám phá kho lưu trữ này:",
+                            "```python",
+                            `await load_repo('${githubUrls[0]}')`,
+                            "import os",
+                            "for root, dirs, files in os.walk('.'):",
+                            "    dirs[:] = [d for d in dirs if not d.startswith('.')]",
+                            "    for f in files: print(os.path.join(root, f))",
+                            "```\n"
                         ].join('\n');
                     }
+
+                    // KỊCH BẢN PHỤC HỒI 5: TIỀM THỨC SỞ THÍCH NGƯỜI DÙNG (AXIOMS)
+                    const subconsciousAxioms = (typeof EpistemicMemoryEngine !== 'undefined') ? EpistemicMemoryEngine.getGlobalAxioms() : '';
+                    if (subconsciousAxioms) systemPrompt += "\n[TIỀM THỨC VỀ NGƯỜI DÙNG]:\n" + subconsciousAxioms + "\n";
 
                     searchStatusText.value = "";
                     scrollToBottom();
 
-                    // KỊCH BẢN KHÔI PHỤC: BỘ CHÈN HUY HIỆU TRÍCH DẪN AN TOÀN AST (AST-SAFE CITATION MASKING)
+                    // KỊCH BẢN PHỤC HỒI 6: BỘ CHÈN HUY HIỆU TRÍCH DẪN AN TOÀN AST
                     const injectCitationsSafely = (markdownText, urlSources) => {
                         if (!markdownText || !urlSources || !urlSources.length) return markdownText;
                         const maskedBlocks = Object.create(null);
@@ -3603,23 +3781,19 @@ self.onmessage = async function(e) {
 
                         let masked = markdownText.replace(/(?:^|\n)```[\s\S]*?(?:\n```|$)/g, (m) => {
                             const tok = `\uE003CB_${maskCounter++}\uE004`;
-                            maskedBlocks[tok] = m;
-                            return tok;
+                            maskedBlocks[tok] = m; return tok;
                         });
                         masked = masked.replace(/\$\$[\s\S]*?\$\$/g, (m) => {
                             const tok = `\uE003MD_${maskCounter++}\uE004`;
-                            maskedBlocks[tok] = m;
-                            return tok;
+                            maskedBlocks[tok] = m; return tok;
                         });
                         masked = masked.replace(/(^|[^\w\$\\])\$([^\$\n\r\s]|(?:[^\$\n\r\s][^\$\n\r]*?[^\$\n\r\s]))\$(?![\d])/g, (m) => {
                             const tok = `\uE003IM_${maskCounter++}\uE004`;
-                            maskedBlocks[tok] = m;
-                            return tok;
+                            maskedBlocks[tok] = m; return tok;
                         });
                         masked = masked.replace(/`[^`\n]+`/g, (m) => {
                             const tok = `\uE003IC_${maskCounter++}\uE004`;
-                            maskedBlocks[tok] = m;
-                            return tok;
+                            maskedBlocks[tok] = m; return tok;
                         });
 
                         urlSources.forEach((src, sIdx) => {
@@ -3628,13 +3802,11 @@ self.onmessage = async function(e) {
                             masked = masked.replace(citeRegex, ` <a href="${src.url}" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-family:var(--font-mono);font-weight:700;color:#38bdf8;background:rgba(56,189,248,0.14);border:1px solid rgba(56,189,248,0.3);padding:0 5px;border-radius:4px;text-decoration:none;vertical-align:super;margin:0 1.5px;" title="${src.title || src.url}">[${num}]</a>`);
                         });
 
-                        for (const tok in maskedBlocks) {
-                            masked = masked.split(tok).join(maskedBlocks[tok]);
-                        }
+                        for (const tok in maskedBlocks) masked = masked.split(tok).join(maskedBlocks[tok]);
                         return masked;
                     };
 
-                    // KỊCH BẢN KHÔI PHỤC: BỘ ĐỊNH DẠNG HUY HIỆU TƯ DUY PHÁT QUANG (THOUGHT BADGES)
+                    // KỊCH BẢN PHỤC HỒI 7: BỘ HUY HIỆU TƯ DUY PHÁT QUANG
                     const formatThoughtContentWithBadges = (rawThought) => {
                         if (!rawThought) return `*G-Deep ${currentTierName} đang khởi tạo ma trận tư duy sâu...*`;
                         let cleaned = rawThought.replace(/<\/?(?:think|thought)>/gi, '');
@@ -3643,6 +3815,60 @@ self.onmessage = async function(e) {
                             return `\n\n<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:8px;background:rgba(168,199,250,0.14);border:1px solid rgba(168,199,250,0.35);color:#dbeafe;font-family:var(--font-mono);font-size:10px;font-weight:700;margin-bottom:5px;letter-spacing:0.3px;"><svg style="width:11px;height:11px;display:inline-block;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg> G-DEEP ${currentTierName} · ${cleanName}</span>\n`;
                         });
                         return compileMarkdownSync(formatted, false);
+                    };
+
+                    // KỊCH BẢN PHỤC HỒI 8: BỘ ĐIỀU TỐC RENDER 60FPS THÍCH ỨNG SINH HỌC
+                    let lastRenderedLength = 0, lastRenderTime = 0, lastThoughtRenderLength = 0, localRafId = null;
+                    const blockMemoCache = { completedHtml: '', processedIndex: 0 };
+
+                    const compileIncrementally = (fullText, isFinal = false) => {
+                        if (isFinal) {
+                            const cited = injectCitationsSafely(fullText, botMsg.urlSources);
+                            return compileMarkdownSync(cited, true);
+                        }
+                        const lastBreak = fullText.lastIndexOf('\n\n');
+                        if (lastBreak > blockMemoCache.processedIndex && lastBreak > 100) {
+                            const newPart = fullText.slice(blockMemoCache.processedIndex, lastBreak);
+                            blockMemoCache.completedHtml += compileMarkdownSync(newPart, true);
+                            blockMemoCache.processedIndex = lastBreak;
+                        }
+                        return blockMemoCache.completedHtml + compileMarkdownSync(fullText.slice(blockMemoCache.processedIndex), false);
+                    };
+
+                    const startRenderLoop = () => {
+                        const loop = () => {
+                            if (!ctx.isGenerating.value && (!botMsg || !botMsg.isContinuing)) {
+                                if (botMsg && rawMarkdownBuffer.length !== lastRenderedLength) {
+                                    botMsg.content = rawMarkdownBuffer;
+                                    botMsg.htmlContent = compileIncrementally(rawMarkdownBuffer, true);
+                                    scheduleDbSave(botMsg, true);
+                                }
+                                if (thoughtMsg && thoughtMsg.content.length !== lastThoughtRenderLength) {
+                                    thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
+                                    scheduleDbSave(thoughtMsg, true);
+                                }
+                                localRafId = null; return;
+                            }
+                            const now = performance.now();
+                            const interval = SynapticOcularMatrix.vision.isTabHidden ? 400 : (SynapticOcularMatrix.vision.isUserReading ? 100 : 50);
+                            if (now - lastRenderTime >= interval || lastRenderedLength === 0) {
+                                if (botMsg && rawMarkdownBuffer.length !== lastRenderedLength) {
+                                    botMsg.content = rawMarkdownBuffer;
+                                    botMsg.lastRenderSeq = ++globalStreamSeq;
+                                    botMsg.htmlContent = compileIncrementally(rawMarkdownBuffer, false);
+                                    if (!ctx.userIsScrolledUp && !SynapticOcularMatrix.vision.isUserReading) scrollToBottom();
+                                    lastRenderedLength = rawMarkdownBuffer.length;
+                                }
+                                if (thoughtMsg?.isThinking && thoughtMsg.content.length !== lastThoughtRenderLength) {
+                                    thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
+                                    lastThoughtRenderLength = thoughtMsg.content.length;
+                                    if (!ctx.userIsScrolledUp && !SynapticOcularMatrix.vision.isUserReading) scrollToBottom();
+                                }
+                                lastRenderTime = now;
+                            }
+                            localRafId = requestAnimationFrame(loop);
+                        };
+                        localRafId = requestAnimationFrame(loop);
                     };
 
                     const ensureMsg = (role, currentRef, setupFn = null) => {
@@ -3662,13 +3888,12 @@ self.onmessage = async function(e) {
                         return currentRef;
                     };
 
-                    // BỘ PHÂN LUỒNG XỬ LÝ CHUNK SSE TOÀN DIỆN
                     const processChunk = (chunkJson) => {
                         const candidate = chunkJson.candidates?.[0];
                         if (!candidate) return;
                         if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
-                        // KỊCH BẢN KHÔI PHỤC: ĐO LƯỜNG CHÍNH XÁC TOKEN TỪ SERVER (USAGE METADATA)
+                        // KỊCH BẢN PHỤC HỒI 9: ĐO LƯỜNG CHÍNH XÁC TOKEN TỪ SERVER
                         if (chunkJson.usageMetadata) {
                             botMsg.exactTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
                             botMsg.promptTokens = Number(chunkJson.usageMetadata.promptTokenCount) || 0;
@@ -3677,17 +3902,14 @@ self.onmessage = async function(e) {
 
                         const parts = candidate.content?.parts || [];
                         for (const rawPart of parts) {
-                            // KÊNH 1: SUY LUẬN NGẦM (THINKING BUFFER)
                             if (rawPart.thought === true || rawPart.reasoning) {
                                 thoughtMsg = ensureMsg(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
                                 const clean = String(rawPart.text || rawPart.reasoning || '').replace(/<\/?(?:think|thought)>/gi, '');
                                 thoughtMsg.content += clean;
                                 rawThoughtBuffer += clean;
-                                thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
                                 continue;
                             }
 
-                            // KÊNH 2: MÃ PYTHON WASM (ACCUMULATOR & STREAMING DISPATCH)
                             let pyCodeToRun = null;
                             if (rawPart.executableCode) {
                                 pyCodeToRun = String(rawPart.executableCode.code || '');
@@ -3704,7 +3926,6 @@ self.onmessage = async function(e) {
                                 }
                             }
 
-                            // KỊCH BẢN KHÔI PHỤC: TỰ ĐỘNG BẮT MẠCH REPO GITHUB & THỰC THI QUA WASM
                             if (pyCodeToRun && typeof PythonEngine !== 'undefined') {
                                 executionMsg = ensureMsg(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                 executionMsg.rawExecutionParts.push({ type: 'code', content: pyCodeToRun });
@@ -3729,11 +3950,8 @@ self.onmessage = async function(e) {
                                 });
                             }
 
-                            // KÊNH 3: VĂN BẢN TRẢ LỜI CHÍNH THỨC
                             let chunkText = String(rawPart.text || '');
-                            if (chunkText.includes('<think>')) {
-                                chunkText = chunkText.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\/?(?:think|thought)>/gi, '');
-                            }
+                            if (chunkText.includes('<think>')) chunkText = chunkText.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\/?(?:think|thought)>/gi, '');
                             if (chunkText) {
                                 if (thoughtMsg && thoughtMsg.isThinking) {
                                     thoughtMsg.isThinking = false;
@@ -3742,10 +3960,6 @@ self.onmessage = async function(e) {
                                     scheduleDbSave(thoughtMsg);
                                 }
                                 rawMarkdownBuffer += chunkText;
-                                botMsg.content = rawMarkdownBuffer;
-                                botMsg.lastRenderSeq = ++globalStreamSeq;
-                                botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
-                                scrollToBottom();
                             }
                         }
                     };
@@ -3778,12 +3992,13 @@ self.onmessage = async function(e) {
                     };
                     if (enableCodeExecution) initialPayload.tools = [{ codeExecution: {} }];
 
+                    startRenderLoop();
                     const streamResult = await performStream(initialPayload);
                     if (streamResult?.isMidStreamDrop) streamDropped = true;
 
-                    // VÒNG LẶP TIẾP NỐI VÔ HẠN PHẪU THUẬT (SURGICAL CONTINUATION SPLICER)
+                    // VÒNG LẶP TIẾP NỐI VÔ HẠN PHẪU THUẬT
                     let continueSteps = 0;
-                    while (continueSteps < 100 && (!abortController || !abortController.isUserInitiated)) {
+                    while (continueSteps < 150 && (!abortController || !abortController.isUserInitiated)) {
                         const isThinkingInterrupted = (thoughtMsg && thoughtMsg.isThinking);
                         const activeBuf = isThinkingInterrupted ? rawThoughtBuffer : rawMarkdownBuffer;
                         const boundary = analyzeContinuationBoundary(activeBuf);
@@ -3799,7 +4014,7 @@ self.onmessage = async function(e) {
                         lastFinishReason = null;
 
                         const contPrompt = isThinkingInterrupted
-                            ? "[HỆ THỐNG CẤP BÁCH: Luồng suy luận bị gián đoạn kết nối. Tiếp tục tư duy trong kênh Thinking và đưa ra câu trả lời đầy đủ.]"
+                            ? "[HỆ THỐNG CẤP BÁCH: Luồng suy luận bị gián đoạn. Tiếp tục tư duy trong kênh Thinking và đưa ra câu trả lời đầy đủ.]"
                             : buildSeamlessContinuationPrompt(boundary);
 
                         const contHistory = [
@@ -3821,11 +4036,24 @@ self.onmessage = async function(e) {
                         if (contRes.isMidStreamDrop) streamDropped = true;
                     }
 
-                    // KỊCH BẢN KHÔI PHỤC: KẾT XUẤT CUỐI CÙNG VỚI HUY HIỆU TRÍCH DẪN AN TOÀN AST
+                    if (localRafId) { cancelAnimationFrame(localRafId); localRafId = null; }
+
+                    // DỌN SẠCH CÁC HỘP RỖNG NẾU AI KHÔNG SINH DỮ LIỆU
+                    if (thoughtMsg && !thoughtMsg.content?.trim()) {
+                        currentMessages.value = currentMessages.value.filter(m => m.id !== thoughtMsg.id);
+                        if (dbWriteQueue) dbWriteQueue.enqueue(async () => { await ctx.db?.messages?.delete(thoughtMsg.id); });
+                        thoughtMsg = null;
+                    }
+                    if (executionMsg && !executionMsg.rawExecutionParts?.length) {
+                        currentMessages.value = currentMessages.value.filter(m => m.id !== executionMsg.id);
+                        if (dbWriteQueue) dbWriteQueue.enqueue(async () => { await ctx.db?.messages?.delete(executionMsg.id); });
+                        executionMsg = null;
+                    }
+
+                    // KẾT XUẤT CUỐI CÙNG VỚI HUY HIỆU TRÍCH DẪN AN TOÀN
                     botMsg.isContinuing = false;
                     botMsg.content = rawMarkdownBuffer || 'Đã hoàn tất phân tích.';
-                    const finalCited = injectCitationsSafely(rawMarkdownBuffer, botMsg.urlSources);
-                    botMsg.htmlContent = compileMarkdownSync(finalCited, true);
+                    botMsg.htmlContent = compileIncrementally(rawMarkdownBuffer, true);
 
                     if (thoughtMsg) {
                         thoughtMsg.isThinking = false;
@@ -3835,7 +4063,7 @@ self.onmessage = async function(e) {
                     }
                     if (executionMsg) scheduleDbSave(executionMsg);
 
-                    // KỊCH BẢN KHÔI PHỤC: LƯU PHÂN NHÁNH PHIÊN LÀM VIỆC (BRANCHING VERSIONS NAVIGATOR)
+                    // KỊCH BẢN PHỤC HỒI 10: LƯU PHÂN NHÁNH TIN NHẮN (BRANCHING VERSIONS NAVIGATOR)
                     if (!botMsg.versions || botMsg.versions.length === 0) {
                         botMsg.versions = [{ 
                             content: rawMarkdownBuffer, 
@@ -3865,6 +4093,15 @@ self.onmessage = async function(e) {
                         };
                     }
                     scheduleDbSave(botMsg);
+
+                    // KỊCH BẢN PHỤC HỒI 11: KÍCH HOẠT NÉN KÝ ỨC VĨNH CỬU NỀN
+                    if (botMsg.content.trim() && currentMessages.value.length >= 8 && typeof EpistemicMemoryEngine !== 'undefined') {
+                        setTimeout(() => {
+                            EpistemicMemoryEngine.autoCompactThread(
+                                targetThreadId, currentMessages.value, dispatchBackgroundTaskWithFallback, ctx.db
+                            );
+                        }, 1000);
+                    }
 
                     if (!abortController?.isUserInitiated) {
                         if (typeof triggerHaptic === 'function') triggerHaptic('light');
@@ -6794,7 +7031,7 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
         const compileMarkdown = (raw, isFinal = true) => compileMarkdownSync(raw, isFinal);
 
         // =========================================================================================
-        // [MODULE 3: FULL-FEATURED PYTHON 3.11 WASM SOVEREIGN SANDBOX - ZERO SYNTAX HAZARD]
+        // [MODULE 3: FULL-FEATURED PYTHON 3.11 WASM SOVEREIGN SANDBOX - 100% CAPABILITIES RESTORED]
         // =========================================================================================
         const PythonEngine = {
             _worker: null,
@@ -6803,7 +7040,7 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
             _initWorker() {
                 if (this._worker) return this._worker;
 
-                // KỊCH BẢN KHÔI PHỤC: TOÀN BỘ 5 SIÊU TÍNH NĂNG ĐÓNG GÓI BẰNG MẢNG CHUỖI AN TOÀN
+                // KỊCH BẢN PHỤC HỒI: TOÀN BỘ 5 SIÊU TÍNH NĂNG PYTHON NỘI BỘ (AN TOÀN TUYỆT ĐỐI)
                 const workerScript = [
                     'const CDNS = ["https://cdn.jsdelivr.net/pyodide/v0.26.2/full/", "https://cdnjs.cloudflare.com/ajax/libs/pyodide/0.26.2/"];',
                     'let pyodide = null;',
@@ -6817,7 +7054,7 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     '        for (const c of CDNS) {',
                     '            try { importScripts(c + "pyodide.js"); pyodide = await loadPyodide({ indexURL: c }); break; } catch(_) {}',
                     '        }',
-                    '        if (!pyodide) throw new Error("Không thể nạp Pyodide từ mạng phân phối.");',
+                    '        if (!pyodide) throw new Error("Không thể nạp Pyodide từ CDN.");',
                     '        try { await pyodide.loadPackage(["micropip", "numpy", "matplotlib"]); } catch(_) {}',
                     '        const pyInit = [',
                     '            "import sys, os, io, json, base64, ast, zipfile, gc",',
@@ -6972,7 +7209,7 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                 return this._worker;
             },
 
-            // KỊCH BẢN KHÔI PHỤC: NHẬN ĐẦY ĐỦ CÁC THAM SỐ ĐÍNH KÈM VÀ REPO URL
+            // KỊCH BẢN PHỤC HỒI: NHẬN ĐẦY ĐỦ CÁC THAM SỐ ĐÍNH KÈM VÀ REPO URL
             async run(code, timeoutMs = 180000, inputFiles = [], repoUrl = null) {
                 return new Promise((resolve) => {
                     const id = 'py_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
