@@ -9873,25 +9873,38 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     };
 
                     const loadThreads = async () => {
-                        let loaded = [];
+                        let dbThreads = [];
                         if (db) {
-                            try { loaded = (await db.threads.toArray()).map(t => normalizeThreadRecord(t)); } catch (_) {}
+                            try { dbThreads = (await db.threads.toArray()).map(t => normalizeThreadRecord(t)); } catch (_) {}
                         }
-                        if (!loaded.length) {
-                            try {
-                                const backupStr = localStorage.getItem('gdeep_threads_backup');
-                                const backup = backupStr ? JSON.parse(backupStr) : [];
-                                if (backup.length) {
-                                    loaded = backup.map(t => normalizeThreadRecord(t));
-                                    if (db) {
-                                        for (const t of loaded) {
-                                            try { await db.threads.put(cleanForDb(t)); } catch (_) {}
-                                        }
-                                    }
-                                }
-                            } catch (_) {}
+                        
+                        let lsThreads = [];
+                        try {
+                            const backupStr = localStorage.getItem('gdeep_threads_backup');
+                            lsThreads = backupStr ? JSON.parse(backupStr).map(t => normalizeThreadRecord(t)) : [];
+                        } catch (_) {}
+
+                        // KHẮC PHỤC ĐIỂM MÙ: Hợp nhất (Merge) IndexedDB và LocalStorage. 
+                        // LocalStorage luôn chứa dữ liệu đồng bộ mới nhất (khi F5 tắt tab đột ngột).
+                        const mergedMap = new Map();
+                        dbThreads.forEach(t => mergedMap.set(t.id, t));
+                        lsThreads.forEach(t => {
+                            const existing = mergedMap.get(t.id);
+                            if (!existing || (t.updatedAt || 0) >= (existing.updatedAt || 0)) {
+                                mergedMap.set(t.id, t);
+                            }
+                        });
+
+                        const finalThreads = Array.from(mergedMap.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+                        
+                        // Cập nhật lại IndexedDB nếu nó bị thọt so với LocalStorage
+                        if (db && lsThreads.length > 0) {
+                            dbWriteQueue.enqueue(async () => {
+                                try { await db.threads.bulkPut(finalThreads.map(t => cleanForDb(t))); } catch (_) {}
+                            }, { priority: 0 });
                         }
-                        threads.value = loaded;
+                        
+                        threads.value = finalThreads;
                     };
 
                     const loadGems = async () => {
@@ -9918,13 +9931,33 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         let rawMsgs = [];
                         if (db) {
                             try {
-                                // SỬA LỖI DEXIE: DÙNG .toArray() THAY VÌ .sortBy() TRÊN COLLECTION
                                 rawMsgs = await db.messages.where('threadId').equals(id).toArray();
-                                rawMsgs.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
                             } catch (dbErr) {
                                 console.warn("[Dexie] Không đọc được dữ liệu tin nhắn:", dbErr);
                             }
                         }
+
+                        // KHẮC PHỤC ĐIỂM MÙ: Luôn đọc LocalStorage (vì lưu đồng bộ lúc F5/Reload)
+                        // và đè lên dữ liệu IndexedDB bằng Map dựa trên ID để bảo toàn tin nhắn cuối cùng.
+                        try {
+                            const msgBackupStr = localStorage.getItem(`gdeep_msg_backup_${id}`);
+                            const lsMsgs = msgBackupStr ? JSON.parse(msgBackupStr) : [];
+                            if (lsMsgs.length > 0) {
+                                const msgMap = new Map();
+                                rawMsgs.forEach(m => msgMap.set(m.id, m));
+                                lsMsgs.forEach(m => msgMap.set(m.id, m)); // LS đè lên Dexie vì LS luôn mới hơn
+                                rawMsgs = Array.from(msgMap.values());
+                                
+                                // Phục hồi dữ liệu bị thọt vào DB nền
+                                if (db) {
+                                    dbWriteQueue.enqueue(async () => {
+                                        try { await db.messages.bulkPut(rawMsgs.map(m => cleanForDb(m))); } catch (_) {}
+                                    }, { priority: 0 });
+                                }
+                            }
+                        } catch (_) {}
+
+                        rawMsgs.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
 
                         // Nếu người dùng đã click sang Thread khác trong lúc truy vấn, huỷ ngay lập tức
                         if (currentLock !== activeDbQueryLock) return;
@@ -9940,21 +9973,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         currentThreadId.value = id;
                         try { localStorage.setItem('gdeep_current_thread_id', id); } catch (_) {}
                         disablePagination.value = false;
-
-                        if (!rawMsgs.length) {
-                            try {
-                                const msgBackupStr = localStorage.getItem(`gdeep_msg_backup_${id}`);
-                                const msgBackup = msgBackupStr ? JSON.parse(msgBackupStr) : [];
-                                if (msgBackup.length) {
-                                    rawMsgs = msgBackup.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-                                    if (db) {
-                                        for (const m of rawMsgs) {
-                                            try { await db.messages.put(cleanForDb(m)); } catch (_) {}
-                                        }
-                                    }
-                                }
-                            } catch (_) {}
-                        }
 
                         if (currentLock !== activeDbQueryLock) return;
                         currentMessages.value = rawMsgs.map(m => {
@@ -10074,9 +10092,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         if (db) {
                             try { rawMsgs = await db.messages.where('threadId').equals(threadId).toArray(); } catch (_) {}
                         }
-                        if (!rawMsgs.length) {
-                            try { rawMsgs = JSON.parse(localStorage.getItem(`gdeep_msg_backup_${threadId}`) || '[]'); } catch (_) {}
-                        }
+                        try {
+                            const lsMsgs = JSON.parse(localStorage.getItem(`gdeep_msg_backup_${threadId}`) || '[]');
+                            if (lsMsgs.length > 0) {
+                                const msgMap = new Map();
+                                rawMsgs.forEach(m => msgMap.set(m.id, m));
+                                lsMsgs.forEach(m => msgMap.set(m.id, m));
+                                rawMsgs = Array.from(msgMap.values());
+                            }
+                        } catch (_) {}
+                        rawMsgs.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
                         const exportPayload = {
                             signature: 'G-DEEP-ULTRA-EXPORT',
                             exportedAt: getMonotonicTimestamp(),
@@ -10269,12 +10294,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         let allMessages = [];
                         for (const t of allThreads) {
                             try {
-                                const msgs = db ? await db.messages.where('threadId').equals(t.id).toArray() : [];
-                                if (msgs.length) allMessages = allMessages.concat(msgs);
-                                else {
-                                    const bMsgs = JSON.parse(localStorage.getItem(`gdeep_msg_backup_${t.id}`) || '[]');
-                                    allMessages = allMessages.concat(bMsgs);
-                                }
+                                const dbMsgs = db ? await db.messages.where('threadId').equals(t.id).toArray() : [];
+                                const lsMsgs = JSON.parse(localStorage.getItem(`gdeep_msg_backup_${t.id}`) || '[]');
+                                
+                                const msgMap = new Map();
+                                dbMsgs.forEach(m => msgMap.set(m.id, m));
+                                lsMsgs.forEach(m => msgMap.set(m.id, m));
+                                
+                                allMessages = allMessages.concat(Array.from(msgMap.values()));
                             } catch (_) {}
                         }
                         const data = {
