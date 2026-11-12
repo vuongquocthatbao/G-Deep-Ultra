@@ -2207,6 +2207,79 @@
             </button>
         </transition>
 
+        <!-- FLOATING WIDGET TRỢ LÝ HƯỚNG DẪN ẢO G-DEEP (LIVE CONCIERGE) -->
+        <div class="absolute bottom-[76px] left-3.5 md:left-8 z-30 flex items-center">
+            <button type="button" @click="toggleGuide" class="btn-instant flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#0d101b]/90 backdrop-blur-xl border border-indigo-500/30 hover:border-indigo-400 shadow-2xl text-white group transition-all duration-300">
+                <div class="w-5 h-5 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white shadow-md animate-pulse">
+                    <lucide-icon name="sparkles" class="w-3 h-3"></lucide-icon>
+                </div>
+                <span class="text-[11px] font-bold tracking-wide hidden sm:inline text-indigo-200 group-hover:text-white">Trợ Lý Hướng Dẫn</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]"></span>
+            </button>
+        </div>
+
+        <!-- HỘP THOẠI TRỢ LÝ ẢO TƯ VẤN THỜI GIAN THỰC -->
+        <transition name="fade">
+            <div v-if="guideWidget.isOpen" class="fixed inset-0 modal-glass-backdrop z-50 flex items-end sm:items-center justify-start sm:pl-8 sm:pb-8 p-3" @click.self="toggleGuide">
+                <div class="bg-[#0b0e17]/98 border border-white/15 w-full max-w-sm sm:max-w-md h-[580px] max-h-[85vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden backdrop-blur-2xl relative">
+                    <!-- Header Trợ Lý -->
+                    <header class="p-3.5 border-b border-white/10 flex items-center justify-between bg-surfaceElevated/80 shrink-0">
+                        <div class="flex items-center gap-2.5">
+                            <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white shadow-md">
+                                <lucide-icon name="sparkles" class="w-4 h-4"></lucide-icon>
+                            </div>
+                            <div>
+                                <div class="font-extrabold text-white text-xs flex items-center gap-1.5">
+                                    <span>Trợ Lý Hướng Dẫn G-Deep</span>
+                                    <span class="text-[8.5px] px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 font-mono font-bold">ONLINE</span>
+                                </div>
+                                <div class="text-[9.5px] text-textMuted">Tư vấn trực tiếp · Lõi Background Model</div>
+                            </div>
+                        </div>
+                        <button type="button" @click="toggleGuide" class="btn-instant p-1.5 rounded-lg text-textMuted hover:text-white hover:bg-white/10">
+                            <lucide-icon name="x" class="w-4 h-4"></lucide-icon>
+                        </button>
+                    </header>
+
+                    <!-- Khung Nội Dung Hướng Dẫn -->
+                    <div ref="guideChatContainer" class="flex-1 overflow-y-auto p-3.5 space-y-3 custom-scrollbar text-xs">
+                        <div v-for="m in guideWidget.messages" :key="m.id" :class="['flex flex-col', m.role === 'user' ? 'items-end' : 'items-start']">
+                            <div :class="['p-3 rounded-2xl max-w-[88%] leading-relaxed', m.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none shadow-md' : 'bg-surfaceElevated border border-white/10 text-zinc-200 rounded-bl-none shadow-sm markdown-body']"
+                                 v-html="m.htmlContent || compileMarkdown(m.content)">
+                            </div>
+                        </div>
+
+                        <div v-if="guideWidget.isLoading" class="flex items-center gap-2 text-textMuted italic text-[11px] p-2">
+                            <span class="w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
+                            <span>Trợ lý đang tra cứu kiến thức hệ thống...</span>
+                        </div>
+                    </div>
+
+                    <!-- Gợi Ý Chủ Đề Nhanh -->
+                    <div class="px-3 py-2 border-t border-white/5 bg-black/30 flex items-center gap-1.5 overflow-x-auto custom-scrollbar shrink-0">
+                        <button v-for="(topic, tIdx) in guideWidget.suggestedTopics" :key="tIdx"
+                                type="button" @click="askGuide(topic.prompt)"
+                                class="btn-instant px-2.5 py-1 rounded-full bg-white/5 hover:bg-indigo-500/20 text-[10px] text-zinc-300 hover:text-indigo-200 border border-white/10 whitespace-nowrap shrink-0 transition-colors">
+                            {{ topic.title }}
+                        </button>
+                    </div>
+
+                    <!-- Ô Nhập Câu Hỏi Cho Trợ Lý -->
+                    <footer class="p-2.5 border-t border-white/10 bg-surfaceElevated/60 shrink-0">
+                        <form @submit.prevent="askGuide()" class="flex items-center gap-1.5 bg-black/40 border border-white/10 rounded-2xl px-3 py-1.5 focus-within:border-indigo-500/50 transition-colors">
+                            <input v-model="guideWidget.inputText" type="text" placeholder="Hỏi cách dùng bất kỳ tính năng nào..."
+                                   class="bg-transparent border-0 outline-none text-white text-xs flex-1 placeholder-zinc-500 allow-select"
+                                   :disabled="guideWidget.isLoading">
+                            <button type="submit" :disabled="!guideWidget.inputText.trim() || guideWidget.isLoading"
+                                    class="btn-instant p-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-30 transition-all shrink-0">
+                                <lucide-icon name="send" class="w-3.5 h-3.5"></lucide-icon>
+                            </button>
+                        </form>
+                    </footer>
+                </div>
+            </div>
+        </transition>
+
         <!-- FOOTER PROMPT BAR -->
         <footer class="shrink-0 w-full px-3 py-2 md:px-6 md:py-3 z-20 bg-transparent min-w-0" style="padding-bottom: calc(10px + var(--safe-bottom));">
             <form @submit.prevent="handleFormSubmit" class="max-w-3xl mx-auto relative flex flex-col floating-input-capsule p-2 md:p-2.5 min-w-0 transition-all duration-300 border border-white/10"
@@ -9953,6 +10026,122 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         availableVoices, selectedVoiceName, initTTSVoices
                     } = settingsModule;
 
+                    // =========================================================================
+                    // [ĐỘNG CƠ TRỢ LÝ HƯỚNG DẪN ẢO G-DEEP - VẬN HÀNH BẰNG BACKGROUND MODEL]
+                    // =========================================================================
+                    const guideChatContainer = ref(null);
+                    const guideWidget = reactive({
+                        isOpen: false,
+                        isLoading: false,
+                        inputText: '',
+                        messages: [
+                            {
+                                id: 'welcome',
+                                role: 'assistant',
+                                content: 'Xin chào! Tôi là **Trợ lý Ảo G-Deep Ultra**. Bạn cần hướng dẫn sử dụng tính năng nào: **Multi-Agent**, **Dựng Phim**, **Tạo Ảnh**, **Xuất PowerPoint** hay **Cài đặt Chìa Khóa API**?'
+                            }
+                        ],
+                        suggestedTopics: [
+                            { title: '⚡ Dùng Multi-Agent', prompt: 'Hướng dẫn chi tiết cách tạo bài thuyết trình và xử lý công việc bằng Multi-Agent?' },
+                            { title: '🎬 Xưởng Phim 60FPS', prompt: 'Cách thiết lập thời lượng, phân cảnh và giọng đọc để dựng video trong Xưởng Phim?' },
+                            { title: '📊 Xuất PowerPoint', prompt: 'Làm thế nào để xuất file PowerPoint (.pptx) chuẩn 16:9?' },
+                            { title: '🔑 Cài đặt API Key', prompt: 'Cách thêm và kiểm tra chìa khóa API Gemini vào hệ thống?' },
+                            { title: '🌐 Cào Web & Đọc File', prompt: 'Cách đưa link web và tài liệu PDF vào để AI phân tích đối soát?' }
+                        ]
+                    });
+
+                    const toggleGuide = () => {
+                        guideWidget.isOpen = !guideWidget.isOpen;
+                        triggerHaptic('light');
+                        if (guideWidget.isOpen) {
+                            nextTick(() => {
+                                if (guideChatContainer.value) guideChatContainer.value.scrollTop = guideChatContainer.value.scrollHeight;
+                            });
+                        }
+                    };
+
+                    const askGuide = async (userPrompt = null) => {
+                        const prompt = (userPrompt || guideWidget.inputText).trim();
+                        if (!prompt || guideWidget.isLoading) return;
+
+                        guideWidget.inputText = '';
+                        guideWidget.messages.push({
+                            id: 'u_' + Date.now(),
+                            role: 'user',
+                            content: prompt
+                        });
+                        guideWidget.isLoading = true;
+                        triggerHaptic('light');
+
+                        nextTick(() => {
+                            if (guideChatContainer.value) guideChatContainer.value.scrollTop = guideChatContainer.value.scrollHeight;
+                        });
+
+                        const systemInstruction = `[BẠN LÀ TRỢ LÝ HƯỚNG DẪN ẢO CAO CẤP CỦA G-DEEP ULTRA 2026]
+Nhiệm vụ: Tư vấn, giải đáp và hướng dẫn người dùng sử dụng thành thạo mọi tính năng trên nền tảng G-Deep Ultra theo thời gian thực.
+
+KIẾN THỨC NỀN TẢNG CỦA HỆ THỐNG G-DEEP ULTRA:
+1. Multi-Agent Studio (Hội Đồng Chuyên Gia A2A):
+   - Mở qua tab "Multi-Agent" ở Sidebar hoặc gõ lệnh /agent, /workflow trong thanh chat.
+   - Sở hữu 5 quy trình mẫu: Slide PowerPoint (.pptx), Phân tích Web & Tài liệu, Xưởng Phim 60 FPS, Mỹ thuật Flux, Khoa học dữ liệu Python WASM.
+   - Các Super-Tools: Search (Google Live), Web/Doc (Cào URL & đọc PDF), WASM (Python 3.11), Ảnh (Flux AI), Phim (Three.js/WebGL 60 FPS).
+2. Xưởng Phim Nghệ Thuật (Cinema Studio):
+   - Bấm icon "Xưởng phim" trong menu (+) hoặc tab Multi-Agent.
+   - Tùy chỉnh: Thời lượng (15s - 300s), Khung hình (16:9, 9:16, 21:9), Nhân vật lồng tiếng (Puck, Charon, Kore, Fenrir, Aoede).
+   - Xuất file Video MP4 60 FPS bản địa.
+3. Xuất Slide PowerPoint (.pptx):
+   - Trong Multi-Agent, chọn định dạng "Slide PowerPoint (.pptx)".
+   - Hệ thống tự động thiết kế dàn ý, bullet points và tải file .pptx chuẩn 16:9 mở trực tiếp trên Microsoft PowerPoint, Keynote hoặc Google Slides.
+4. Phân Tích Web & Đa Phương Thức:
+   - Đọc trực tiếp PDF scan, Video (tách kênh tiếng 16kHz WAV), Âm thanh, Code, CSV/Excel.
+   - Tự động cào link web khi người dùng dán URL vào prompt thông qua mạng lưới 6 tầng đối soát.
+5. Máy Ảo Python 3.11 WASM:
+   - Chạy code tính toán trực tiếp trên trình duyệt, vẽ biểu đồ Matplotlib, clone repo GitHub qua lệnh load_repo("owner/repo").
+6. Quản Lý Chìa Khóa & Dữ Liệu:
+   - Cài đặt -> dán API Key Gemini (mỗi dòng một key) -> bấm "Kiểm tra" để phân bổ Ma trận Model.
+   - Phím tắt: Ctrl+K / Cmd+K (Tìm kiếm lệnh), Ctrl+B / Cmd+B (Bảng điều khiển).
+
+QUY TẮC PHẢN HỒI:
+- Trả lời bằng tiếng Việt lịch thiệp, dễ hiểu, định dạng Markdown rõ ràng, chia từng bước (Step-by-step).
+- In đậm các nút bấm và vị trí thao tác trên giao diện để người dùng dễ làm theo.`;
+
+                        try {
+                            const historyContext = guideWidget.messages.slice(-4).map(m =>
+                                `${m.role === 'user' ? 'Khách' : 'Trợ lý'}: ${m.content}`
+                            ).join('\n\n');
+
+                            const payload = {
+                                systemInstruction: { parts: [{ text: systemInstruction }] },
+                                contents: [
+                                    { role: 'user', parts: [{ text: `Lịch sử trao đổi:\n${historyContext}\n\nCâu hỏi mới: "${prompt}"` }] }
+                                ],
+                                generationConfig: { temperature: 0.2, maxOutputTokens: 1500 }
+                            };
+
+                            const res = await dispatchBackgroundTaskWithFallback(payload);
+                            const reply = res?.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+                                || 'Tôi chưa tìm thấy thông tin phù hợp cho câu hỏi này. Bạn hãy thử chọn các chủ đề gợi ý bên dưới nhé!';
+
+                            guideWidget.messages.push({
+                                id: 'bot_' + Date.now(),
+                                role: 'assistant',
+                                content: reply,
+                                htmlContent: compileMarkdownSync(reply, true)
+                            });
+                        } catch (err) {
+                            guideWidget.messages.push({
+                                id: 'err_' + Date.now(),
+                                role: 'assistant',
+                                content: '*(Không thể kết nối đến Background Model lúc này. Vui lòng kiểm tra lại chìa khóa API trong Cài đặt)*'
+                            });
+                        } finally {
+                            guideWidget.isLoading = false;
+                            nextTick(() => {
+                                if (guideChatContainer.value) guideChatContainer.value.scrollTop = guideChatContainer.value.scrollHeight;
+                            });
+                        }
+                    };
+
                     const toggleGoogleSearch = () => {
                         settingsModule.toggleGoogleSearch(() => {
                             activeTab.value = 'settings';
@@ -12816,6 +13005,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         applyWorkflowTemplate,
                         launchAgentPreset,
                         addNewWorkflowAgent,
+                        guideWidget,
+                        guideChatContainer,
+                        toggleGuide,
+                        askGuide,
                         handleWorkflowFileUpload,
                         executeAutonomousWorkflow,
                         stopWorkflowExecution,
