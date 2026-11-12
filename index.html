@@ -7670,16 +7670,31 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
             };
 
             const saveThreadToLocalStorageBackup = (threadObj) => {
-                try {
-                    const listStr = localStorage.getItem('gdeep_threads_backup');
-                    const list = listStr ? JSON.parse(listStr) : [];
-                    const idx = list.findIndex(t => t.id === threadObj.id);
-                    const cleaned = cleanForDb(threadObj);
-                    if (idx !== -1) list[idx] = cleaned;
-                    else list.unshift(cleaned);
-                    localStorage.setItem('gdeep_threads_backup', JSON.stringify(list));
-                } catch (_) {}
-            };
+                        try {
+                            const listStr = localStorage.getItem('gdeep_threads_backup');
+                            const list = listStr ? JSON.parse(listStr) : [];
+                            const idx = list.findIndex(t => t.id === threadObj.id);
+                            const cleaned = cleanForDb(threadObj);
+                            if (idx !== -1) list[idx] = cleaned;
+                            else list.unshift(cleaned);
+                            
+                            try {
+                                localStorage.setItem('gdeep_threads_backup', JSON.stringify(list));
+                            } catch (err) {
+                                // [TỬ HUYỆT ĐÃ VÁ]: Nếu tràn bộ nhớ (QuotaExceeded), dọn dẹp các backup tin nhắn cũ để nhường chỗ lưu ID phiên
+                                if (err.name === 'QuotaExceededError' || String(err.message).toLowerCase().includes('quota')) {
+                                    for (let i = 0; i < localStorage.length; i++) {
+                                        const k = localStorage.key(i);
+                                        if (k && k.startsWith('gdeep_msg_backup_') && k !== `gdeep_msg_backup_${threadObj.id}`) {
+                                            localStorage.removeItem(k);
+                                            break; // Chỉ xóa 1 mục cũ nhất rồi thử lại
+                                        }
+                                    }
+                                    localStorage.setItem('gdeep_threads_backup', JSON.stringify(list));
+                                }
+                            }
+                        } catch (_) {}
+                    };
 
             // =========================================================================
             // [HẠ TẦNG XỬ LÝ ĐA PHƯƠNG THỨC & TIỆN ÍCH LÕI BỔ SUNG NGUYÊN KHỐI]
@@ -8873,14 +8888,26 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 const files = Array.from(e.target.files || []);
                 for (const file of files) {
                     try {
-                        const isText = file.type.startsWith('text/') || /\.(csv|json|py|txt|md|html|js)$/i.test(file.name);
+                        // Mở rộng danh sách nhận diện đuôi file code
+                        const isText = file.type.startsWith('text/') || /\.(csv|json|py|txt|md|html|js|ts|css|xml|yaml|sh)$/i.test(file.name);
                         let base64 = "";
                         let textContent = "";
 
+                        // BẢO VỆ CHỐNG TRÀN BỘ NHỚ (OOM CRASH) KHI NẠP DỮ LIỆU VÀO WORKSPACE
                         if (isText) {
-                            textContent = await readFileAsText(file);
+                            if (file.size > 15 * 1024 * 1024) {
+                                notify(`Tệp [${file.name}] lớn hơn 15MB, tự động cắt lát để bảo vệ RAM.`, true);
+                                textContent = await readFileAsText(file.slice(0, 15 * 1024 * 1024));
+                                textContent += '\n...[Đã cắt bớt]';
+                            } else {
+                                textContent = await readFileAsText(file);
+                            }
                         } else {
-                            base64 = await readFileAsBase64(file);
+                            if (file.size > 25 * 1024 * 1024) {
+                                notify(`Tệp nhị phân [${file.name}] quá lớn (>25MB), đã chặn mã hóa Base64.`, true);
+                            } else {
+                                base64 = await readFileAsBase64(file);
+                            }
                         }
 
                         workflowStudio.inputFiles.push({
@@ -9342,10 +9369,25 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                             return ac;
                                         });
                                     }
+                                    // [VÁ LỖI TRÀN QUOTA LOCALSTORAGE]: Gọt bớt Base64 khổng lồ trong HTML content
+                                    // LocalStorage chỉ để backup khẩn cấp, IndexedDB vẫn giữ bản gốc nét căng.
+                                    if (c.htmlContent && c.htmlContent.length > 25000) {
+                                        c.htmlContent = c.htmlContent.replace(/src=["']data:image\/[^"']+["']/gi, 'src=""');
+                                    }
+                                    if (c.content && c.content.length > 25000) {
+                                        c.content = c.content.replace(/data:image\/[^)]+/gi, '...');
+                                    }
                                     return c;
                                 });
                             if (threadMsgs.length > 0) {
-                                localStorage.setItem(backupKey, JSON.stringify(threadMsgs));
+                                try {
+                                    localStorage.setItem(backupKey, JSON.stringify(threadMsgs));
+                                } catch (err) {
+                                    // Nếu bộ nhớ vẫn đầy, chỉ giữ lại 15 tin nhắn gần nhất để cứu vãn phiên
+                                    if (threadMsgs.length > 15) {
+                                        localStorage.setItem(backupKey, JSON.stringify(threadMsgs.slice(-15)));
+                                    }
+                                }
                             }
                         } catch (_) {}
                     };
@@ -9738,22 +9780,44 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                         rawType: file.type || 'image/jpeg'
                                     });
                                 } else {
-                                    const isBin = await isBinaryFile(file);
+                                    // Bổ sung nhận diện nhanh file mã nguồn/văn bản chuẩn để bỏ qua quét nhị phân
+                                    const isCodeOrTextExt = /\.(csv|json|py|txt|md|html|js|ts|vue|css|xml|yaml|yml|sh|cpp|c|java|rs|go)$/i.test(file.name);
+                                    const isBin = !isCodeOrTextExt && await isBinaryFile(file);
+                                    
                                     if (isBin) {
+                                        // [VÁ LỖI CHỐNG SẬP TRÌNH DUYỆT]: Giới hạn file nhị phân <= 25MB mới chuyển Base64
+                                        let base64Data = '';
+                                        if (file.size <= 25 * 1024 * 1024) {
+                                            base64Data = await readFileAsBase64(file);
+                                        } else {
+                                            notify(`Tệp [${file.name}] quá lớn (${sizeStr}). Đã chặn mã hóa Base64 để chống tràn RAM.`, true);
+                                        }
+
                                         pendingAttachments.value.push({
                                             name: file.name,
                                             mimeType: file.type || 'application/octet-stream',
-                                            data: await readFileAsBase64(file),
+                                            data: base64Data,
                                             isBinary: true,
-                                            textContent: `[Tệp: ${file.name}]`,
+                                            textContent: `[Tệp hệ thống/nhị phân: ${file.name}]`,
                                             size: sizeStr,
                                             rawType: file.type
                                         });
                                     } else {
+                                        // [VÁ LỖI QUOTA]: Giới hạn file văn bản ở 15MB (~ 4 triệu ký tự, rất dư dả cho Gemini 1.5/2.0)
+                                        let textData = '';
+                                        if (file.size > 15 * 1024 * 1024) {
+                                            notify(`Tệp [${file.name}] quá dài, hệ thống tự động cắt lấy 15MB đầu tiên.`, true);
+                                            const slicedFile = file.slice(0, 15 * 1024 * 1024);
+                                            textData = await readFileAsText(slicedFile);
+                                            textData += '\n\n...[Nội dung đã bị cắt bớt do vượt quá giới hạn an toàn 15MB]...';
+                                        } else {
+                                            textData = await readFileAsText(file);
+                                        }
+
                                         pendingAttachments.value.push({
                                             name: file.name,
                                             mimeType: 'text/plain',
-                                            textContent: await readFileAsText(file),
+                                            textContent: textData,
                                             size: sizeStr,
                                             rawType: file.type
                                         });
