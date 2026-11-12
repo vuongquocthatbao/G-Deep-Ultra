@@ -3588,10 +3588,20 @@ self.onmessage = async function(e) {
                     const currentTierName = (targetModelObj.name || 'Ultra').toUpperCase();
 
                     let systemPrompt = [
-                        `[HỆ THỐNG G-DEEP ULTRA 2026 - TIER: ${currentTierName}]`,
+                        `[HỆ THỐNG G-DEEP ${targetModelObj.name} 2026 - TIER: ${currentTierName}]`,
                         `Bạn là G-Deep ${targetModelObj.name}. BẮT BUỘC tuân thủ nguyên tắc lập luận logic khép kín, minh bạch và chuyên nghiệp.`,
                         (activeGem.instruction || "").trim()
                     ].join('\n');
+
+                    // KHẮC SÂU KÝ ỨC VĨNH CỬU TRỰC TIẾP VÀO ATTENTION CỦA SYSTEM PROMPT
+                    const permanentMemoryText = EpistemicMemoryEngine.getFormattedSystemInstructionMemory(targetThreadId);
+                    if (permanentMemoryText) {
+                        systemPrompt += `\n\n${permanentMemoryText}`;
+                    }
+                    const globalUserAxioms = EpistemicMemoryEngine.getGlobalAxioms();
+                    if (globalUserAxioms) {
+                        systemPrompt += `\n\n[TIÊN ĐỀ SỞ THÍCH NGƯỜI DÙNG]:\n${globalUserAxioms}`;
+                    }
 
                     // KỊCH BẢN KHÔI PHỤC: URL GROUNDING ĐỐI CHIẾU NGUỒN TRỰC TIẾP
                     const detectedUrls = (typeof UrlGroundingEngine !== 'undefined') ? UrlGroundingEngine.extractUrls(text) : [];
@@ -4245,12 +4255,11 @@ self.onmessage = async function(e) {
         }
 
         // =========================================================================================
-        // HỆ THỐNG KÝ ỨC ĐA TẦNG VĨNH CỬU (EPISTEMIC LIVING MEMORY LEDGER & BM25 RETRIEVAL)
+        // HỆ THỐNG KÝ ỨC ĐA TẦNG VĨNH CỬU (EPISTEMIC LIVING MEMORY LEDGER & BM25 NEEDLE ENGINE)
         // =========================================================================================
         const EpistemicMemoryEngine = {
             _compactionLocks: new Set(),
 
-            // 1. Quản lý Sổ Ký Ức Vĩnh Cửu (Thread Living Ledger)
             getThreadLedger(threadId) {
                 if (!threadId) return null;
                 try {
@@ -4272,14 +4281,59 @@ self.onmessage = async function(e) {
                 } catch (_) {}
             },
 
-            // 2. ĐỘNG CƠ TỰ ĐỘNG NÉN KÝ ỨC VĨNH CỬU NỀN (AUTONOMOUS BACKGROUND COMPACTOR)
-            // Tự động phân tích sâu tiến trình hội thoại và tích lũy vào Sổ Ký Ức Bất Biến
+            // ĐỊNH DẠNG SỔ KÝ ỨC ĐỂ KHẮC THẲNG VÀO SYSTEM PROMPT (ATTENTION CAO NHẤT)
+            getFormattedSystemInstructionMemory(threadId) {
+                const ledger = this.getThreadLedger(threadId);
+                if (!ledger || !ledger.summary) return '';
+                let text = `========================================================\n` +
+                           `[SỔ KÝ ỨC VĨNH CỬU CỦA PHIÊN - G-DEEP EPISTEMIC LIVING LEDGER]\n` +
+                           `BỐI CẢNH & MỤC TIÊU CỐT LÕI:\n${ledger.summary}\n`;
+                if (Array.isArray(ledger.decisions) && ledger.decisions.length > 0) {
+                    text += `\nCÁC QUYẾT ĐỊNH, DỮ KIỆN & THÔNG SỐ BẤT BIẾN ĐÃ CHỐT:\n` + ledger.decisions.map(d => `- ${d}`).join('\n') + `\n`;
+                }
+                if (ledger.activeState) {
+                    text += `\nTRẠNG THÁI HIỆN TẠI & BÀI TOÁN ĐANG GIẢI QUYẾT:\n${ledger.activeState}\n`;
+                }
+                text += `\n[CHỈ DẪN ATTENTION BẮT BUỘC: Bạn phải ghi nhớ toàn bộ tiến trình trên để phản hồi liền mạch 100%, tuyệt đối không được quên các quyết định đã chốt.]\n` +
+                        `========================================================`;
+                return text;
+            },
+
+            // BỘ PHÂN TÍCH NỘI SUY TRÍCH XUẤT TẠI CHỖ (OFFLINE DETERMINISTIC FALLBACK)
+            _fallbackDeterministicCompactor(turns, existingLedger) {
+                const decisions = Array.isArray(existingLedger?.decisions) ? [...existingLedger.decisions] : [];
+                const milestones = [];
+                for (const t of turns) {
+                    const txt = (t.promptContent || t.content || '').trim();
+                    if (!txt) continue;
+                    // Bóc tách quyết định, thông số, đoạn code quan trọng
+                    const lines = txt.split('\n').filter(l => /(chốt|chọn|quy định|thống nhất|yêu cầu|lưu ý|tên biến|hàm|endpoint|database|api)/i.test(l));
+                    lines.slice(0, 3).forEach(l => {
+                        const clean = l.replace(/^[*\s-#>]+/g, '').slice(0, 160).trim();
+                        if (clean.length > 10 && !decisions.includes(clean)) decisions.push(clean);
+                    });
+                    if (t.role === 'user') {
+                        milestones.push(txt.slice(0, 90).replace(/\n/g, ' '));
+                    }
+                }
+                const oldSummary = existingLedger?.summary || '';
+                const newMilestones = milestones.slice(-4).join(' ➔ ');
+                const combinedSummary = oldSummary ? `${oldSummary} | Tiếp nối: ${newMilestones}` : `Tiến trình: ${newMilestones}`;
+                return {
+                    summary: combinedSummary.slice(0, 1200),
+                    decisions: decisions.slice(-15),
+                    activeState: milestones.length ? `Đang tập trung giải quyết: "${milestones[milestones.length - 1]}"` : 'Đang xử lý.',
+                    lastUpdated: Date.now()
+                };
+            },
+
+            // ĐỘNG CƠ TỰ ĐỘNG NÉN KÝ ỨC VĨNH CỬU NỀN (AUTONOMOUS DUAL-PHASE COMPACTOR)
             async autoCompactThread(threadId, allMessages, bgDispatcher, dbInstance = null) {
-                if (!threadId || !Array.isArray(allMessages) || allMessages.length < 8 || !bgDispatcher) return;
+                if (!threadId || !Array.isArray(allMessages) || allMessages.length < 6) return;
                 if (this._compactionLocks.has(threadId)) return;
 
                 const cleanChat = allMessages.filter(m => (m.role === 'user' || m.role === 'model') && (m.content || m.promptContent));
-                if (cleanChat.length < 8) return;
+                if (cleanChat.length < 6) return;
 
                 const currentLedger = this.getThreadLedger(threadId) || {
                     lastCompactedIndex: 0,
@@ -4289,10 +4343,9 @@ self.onmessage = async function(e) {
                     lastUpdated: Date.now()
                 };
 
-                // Chỉ kích hoạt nén khi có ít nhất 6 lượt trao đổi mới nằm ngoài cửa sổ gần nhất
-                const recentWindowCount = 8;
+                const recentWindowCount = 10;
                 const targetUncompactedCount = cleanChat.length - recentWindowCount;
-                if (targetUncompactedCount <= currentLedger.lastCompactedIndex + 4) return;
+                if (targetUncompactedCount <= currentLedger.lastCompactedIndex + 2) return;
 
                 this._compactionLocks.add(threadId);
 
@@ -4300,70 +4353,81 @@ self.onmessage = async function(e) {
                     const turnsToCompact = cleanChat.slice(currentLedger.lastCompactedIndex, targetUncompactedCount);
                     if (!turnsToCompact.length) return;
 
-                    const deltaText = turnsToCompact.map((m, idx) => {
-                        const sender = m.role === 'user' ? 'Người dùng' : 'AI';
-                        const text = (m.promptContent || m.content || '').replace(/<[^>]*>?/gm, '').replace(/```[\s\S]*?```/g, '[Khối mã nguồn]').slice(0, 800);
-                        return `[#${currentLedger.lastCompactedIndex + idx + 1} | ${sender}]: ${text}`;
-                    }).join('\n');
+                    let updatedLedger = null;
 
-                    const compactorPrompt = `[EPISTEMIC MEMORY ENGINE: NÉN KÝ ỨC VĨNH CỬU KHÔNG SUY HAO]
-Bạn là Kiến trúc sư Bộ nhớ Dài hạn. Nhiệm vụ của bạn là tích lũy các lượt trò chuyện mới vào "Sổ Ký Ức Vĩnh Cửu" của phiên làm việc này.
+                    // GIAI ĐOẠN 1: Thử nghiệm nén bằng AI nền thông minh
+                    if (typeof bgDispatcher === 'function') {
+                        try {
+                            const deltaText = turnsToCompact.map((m, idx) => {
+                                const sender = m.role === 'user' ? 'Người dùng' : 'AI';
+                                const text = (m.promptContent || m.content || '').replace(/<[^>]*>?/gm, '').replace(/```[\s\S]*?```/g, '[Khối code]').slice(0, 600);
+                                return `[#${currentLedger.lastCompactedIndex + idx + 1} | ${sender}]: ${text}`;
+                            }).join('\n');
 
-SỔ KÝ ỨC HIỆN TẠI:
-"""${currentLedger.summary || 'Chưa có tóm tắt trước đó.'}"""
+                            const compactorPrompt = `[EPISTEMIC MEMORY ENGINE: NÉN KÝ ỨC VĨNH CỬU KHÔNG SUY HAO]
+Nhiệm vụ: Cập nhật Sổ Ký Ức Vĩnh Cửu cho phiên làm việc này từ các lượt trò chuyện mới.
 
-CÁC LƯỢT TRÒ CHUYỆN MỚI CẦN ĐÚC KẾT:
+SỔ KÝ ỨC CŨ:
+"""${currentLedger.summary || 'Chưa có'}"""
+
+LƯỢT MỚI CẦN ĐÚC KẾT:
 """${deltaText}"""
 
-HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (KHÔNG KÈM LỜI DẪN):
+TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 {
-  "summary": "Tóm tắt tiến trình toàn cảnh, mục tiêu tối thượng mà người dùng đang theo đuổi (150-250 từ).",
-  "decisions": [
-    "Các kết luận, ý tưởng đã chốt, lựa chọn kỹ thuật hoặc thỏa thuận đã đạt được...",
-    "Tên biến, thông số, đoạn logic cốt lõi đã hoàn thành..."
-  ],
-  "activeState": "Trạng thái công việc hiện tại, các bài toán còn dang dở hoặc kế hoạch sắp tới."
+  "summary": "Tóm lược tiến trình toàn cảnh, mục tiêu tối thượng và bối cảnh cốt lõi (150-250 từ)",
+  "decisions": ["Kết luận, ý tưởng đã chốt, lựa chọn kỹ thuật, biến số hoặc thỏa thuận quan trọng..."],
+  "activeState": "Bài toán hoặc chủ đề đang giải quyết dở dang hiện tại"
 }`;
 
-                    const res = await bgDispatcher({
-                        contents: [{ role: 'user', parts: [{ text: compactorPrompt }] }],
-                        generationConfig: { temperature: 0.1, maxOutputTokens: 1500, responseMimeType: "application/json" }
-                    });
+                            const res = await bgDispatcher({
+                                contents: [{ role: 'user', parts: [{ text: compactorPrompt }] }],
+                                generationConfig: { temperature: 0.1, maxOutputTokens: 1200, responseMimeType: "application/json" }
+                            });
 
-                    const rawJson = res?.candidates?.[0]?.content?.parts?.[0]?.text;
-                    const parsed = SearchIntelligenceEngine.robustJsonRepair(rawJson);
-
-                    if (parsed && parsed.summary) {
-                        const updatedLedger = {
-                            lastCompactedIndex: targetUncompactedCount,
-                            summary: parsed.summary.trim(),
-                            decisions: Array.isArray(parsed.decisions) ? parsed.decisions : currentLedger.decisions,
-                            activeState: parsed.activeState ? parsed.activeState.trim() : currentLedger.activeState,
-                            lastUpdated: Date.now()
-                        };
-                        this.saveThreadLedger(threadId, updatedLedger, dbInstance);
-                        console.log(`[G-Deep Memory] Đã nén và khắc ghi ký ức vĩnh cửu đến lượt #${targetUncompactedCount} cho Thread [${threadId.slice(0, 8)}]`);
+                            const rawJson = res?.candidates?.[0]?.content?.parts?.[0]?.text;
+                            const parsed = SearchIntelligenceEngine.robustJsonRepair(rawJson);
+                            if (parsed && parsed.summary) {
+                                updatedLedger = {
+                                    lastCompactedIndex: targetUncompactedCount,
+                                    summary: parsed.summary.trim(),
+                                    decisions: Array.isArray(parsed.decisions) ? parsed.decisions : currentLedger.decisions,
+                                    activeState: parsed.activeState ? parsed.activeState.trim() : currentLedger.activeState,
+                                    lastUpdated: Date.now()
+                                };
+                            }
+                        } catch (_) {}
                     }
+
+                    // GIAI ĐOẠN 2: Tự động dùng Fallback trích xuất Offline nếu AI nền không khả dụng
+                    if (!updatedLedger) {
+                        const fallbackData = this._fallbackDeterministicCompactor(turnsToCompact, currentLedger);
+                        updatedLedger = {
+                            lastCompactedIndex: targetUncompactedCount,
+                            ...fallbackData
+                        };
+                    }
+
+                    this.saveThreadLedger(threadId, updatedLedger, dbInstance);
                 } catch (err) {
-                    console.warn("[G-Deep Memory] Tiến trình nén ký ức nền tạm dừng:", err.message);
+                    console.warn("[G-Deep Memory] Nén ký ức tạm hoãn:", err.message);
                 } finally {
                     this._compactionLocks.delete(threadId);
                 }
             },
 
-            // 3. Rút trích Tiềm thức Sở thích Người dùng
             async consolidateSubconscious(dbInstance, bgDispatcher) {
                 try {
                     const lastSleepTs = Number(localStorage.getItem('gdeep_last_sleep_ts') || 0);
                     if (Date.now() - lastSleepTs < 86400000) return;
 
                     if (!dbInstance) return;
-                    const recentMessages = await dbInstance.messages.orderBy('createdAt').reverse().limit(100).toArray();
+                    const recentMessages = await dbInstance.messages.orderBy('createdAt').reverse().limit(60).toArray();
                     const userMsgs = recentMessages.filter(m => m.role === 'user' && m.content && m.content.length > 20);
-                    if (userMsgs.length < 5) return;
+                    if (userMsgs.length < 4) return;
 
-                    const corpus = userMsgs.map(m => m.content).join('\n---\n').slice(0, 15000);
-                    const prompt = `[PHÂN TÍCH TIỀM THỨC NGƯỜI DÙNG]\nDựa trên 100 tin nhắn gần nhất:\n"""${corpus}"""\n\nHãy trích xuất đúng 3 "Tiên đề" (Axioms) về sở thích, phong cách làm việc, trình độ chuyên môn hoặc yêu cầu định dạng của người dùng này (Chỉ viết gạch đầu dòng ngắn gọn, không giải thích).`;
+                    const corpus = userMsgs.map(m => m.content).join('\n---\n').slice(0, 10000);
+                    const prompt = `[PHÂN TÍCH TIỀM THỨC]\nTừ các yêu cầu gần nhất:\n"""${corpus}"""\nTrích xuất đúng 3 gạch đầu dòng về phong cách, yêu cầu kỹ thuật hoặc sở thích của người dùng này.`;
 
                     const res = await bgDispatcher({
                         contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -4385,9 +4449,7 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
             tokenize(text) {
                 if (!text) return [];
                 const str = String(text);
-                // Tách camelCase thành các từ tố riêng biệt đồng thời giữ nguyên từ gốc
-                const expanded = str.replace(/([a-z])([A-Z])/g, '$1 $2')
-                                    .replace(/[_\-\.]+/g, ' ');
+                const expanded = str.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_\-\.]+/g, ' ');
                 const tokens = (str + ' ' + expanded).toLowerCase()
                     .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
                     .split(/\s+/)
@@ -4396,63 +4458,28 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
             },
 
             bm25Score(queryTokens, docTokens, avgDocLen, totalDocs, dfMap) {
-                const k1 = 1.5;
-                const b = 0.75;
+                const k1 = 1.5, b = 0.75;
                 const docLen = docTokens.length;
                 let score = 0;
-
                 const termFreq = {};
                 for (const t of docTokens) termFreq[t] = (termFreq[t] || 0) + 1;
-
                 for (const q of queryTokens) {
                     const f = termFreq[q] || 0;
                     if (f === 0) continue;
                     const df = dfMap[q] || 1;
                     const idf = Math.log((totalDocs - df + 0.5) / (df + 0.5) + 1);
-                    const num = f * (k1 + 1);
-                    const den = f + k1 * (1 - b + b * (docLen / (avgDocLen || 1)));
-                    score += idf * (num / den);
+                    score += idf * ((f * (k1 + 1)) / (f + k1 * (1 - b + b * (docLen / (avgDocLen || 1)))));
                 }
                 return score;
             },
 
-            async retrieveRelevantMemories(userQuery, allMessages, excludeMessageIds = new Set(), maxResults = 12) {
-                const neuron = SynapticNeuralMesh.get('MemoryRetrievalNeuron') || SynapticNeuralMesh.register(
-                    'MemoryRetrievalNeuron',
-                    (p) => p && typeof p.query === 'string' && Array.isArray(p.msgs),
-                    async ({ query, msgs, excludeIds, limit }) => await this._executeRawBM25(query, msgs, excludeIds, limit),
-                    () => [],
-                    { tags: ['cognitive', 'bm25', 'memory'] }
-                );
-                return await neuron.fire({ query: userQuery, msgs: allMessages, excludeIds: excludeMessageIds, limit: maxResults }, 'CognitiveCore', (bad) => {
-                    return {
-                        query: String(bad?.query || ''),
-                        msgs: Array.isArray(bad?.msgs) ? bad.msgs : [],
-                        excludeIds: bad?.excludeIds instanceof Set ? bad.excludeIds : new Set(),
-                        limit: Number(bad?.limit) || 12
-                    };
-                });
-            },
-
-            async _executeRawBM25(userQuery, allMessages, excludeMessageIds = new Set(), maxResults = 12) {
+            async retrieveRelevantMemories(userQuery, allMessages, excludeMessageIds = new Set(), maxResults = 8) {
                 if (!allMessages || allMessages.length === 0 || !userQuery) return [];
-
                 const queryTokens = this.tokenize(userQuery);
                 const queryLower = String(userQuery).toLowerCase().trim();
 
-                const isAskingAboutBeginning = /(tin nhắn đầu|câu đầu|lúc đầu|mở đầu|đầu tiên|first message|ban đầu|bắt đầu)/i.test(queryLower);
-                const isAskingAboutSpecifics = /(ở lượt|tệp|file|đã gửi|nhớ lại|trước đây|hôm trước|ngày xưa|trước đó|từng nói|bảo là|hỏi lại)/i.test(queryLower);
-
-                const candidatePool = allMessages.filter(m => !excludeMessageIds.has(m.id) && (m.content || m.promptContent)).slice(-300);
+                const candidatePool = allMessages.filter(m => !excludeMessageIds.has(m.id) && (m.content || m.promptContent));
                 if (!candidatePool.length) return [];
-
-                const priorityAnchors = [];
-                if (isAskingAboutBeginning) {
-                    const firstUserMsg = candidatePool.find(m => m.role === 'user');
-                    if (firstUserMsg) priorityAnchors.push({ msg: firstUserMsg, score: 9999, reason: 'Nội dung mở đầu' });
-                    const firstModelMsg = candidatePool.find(m => m.role === 'model');
-                    if (firstModelMsg) priorityAnchors.push({ msg: firstModelMsg, score: 9998, reason: 'Phản hồi mở đầu' });
-                }
 
                 const dfMap = {};
                 const docTokensList = candidatePool.map(m => {
@@ -4461,8 +4488,7 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                         m._bm25Tokens = this.tokenize(text);
                     }
                     const tokens = m._bm25Tokens;
-                    const unique = new Set(tokens);
-                    for (const u of unique) dfMap[u] = (dfMap[u] || 0) + 1;
+                    new Set(tokens).forEach(u => { dfMap[u] = (dfMap[u] || 0) + 1; });
                     return { msg: m, tokens };
                 });
 
@@ -4473,72 +4499,44 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                 for (const doc of docTokensList) {
                     let score = this.bm25Score(queryTokens, doc.tokens, avgDocLen, totalDocs, dfMap);
                     const contentLower = (doc.msg.content || '').toLowerCase();
-                    if (queryTokens.length >= 2 && contentLower.includes(queryLower)) score += 30.0;
-                    if (doc.msg.attachments && doc.msg.attachments.length > 0 && isAskingAboutSpecifics) score += 10.0;
-                    if (score > 1.0) scoredDocs.push({ msg: doc.msg, score, reason: `Liên quan ngữ cảnh: ${score.toFixed(1)}` });
+                    if (queryTokens.length >= 2 && contentLower.includes(queryLower)) score += 35.0;
+                    if (score > 1.2) scoredDocs.push({ msg: doc.msg, score });
                 }
 
-                const combined = [...priorityAnchors, ...scoredDocs].sort((a, b) => b.score - a.score);
-                const uniqueResults = [];
-                const seenIds = new Set();
-                for (const item of combined) {
-                    if (!seenIds.has(item.msg.id)) {
-                        seenIds.add(item.msg.id);
-                        uniqueResults.push(item);
-                        if (uniqueResults.length >= maxResults) break;
-                    }
-                }
-                return uniqueResults;
+                return scoredDocs.sort((a, b) => b.score - a.score).slice(0, maxResults);
             }
         };
 
         // ============================================================
-        // ĐIỀU TIẾT DUNG LƯỢNG NGỮ CẢNH ĐÃ NEURON HÓA (AUTONOMOUS TOKEN BUDGET MESH)
+        // ĐIỀU TIẾT DUNG LƯỢNG NGỮ CẢNH VÔ HẠN (TOKEN BUDGET & PRUNING MESH)
         // ============================================================
         const TokenBudgetManager = SynapticNeuralMesh.autoWrapObject('TokenBudget', {
-            _tokenCache: new WeakMap(),
-            _apiCountCache: new Map(),
-
             getModelLimits(modelObj) {
                 const totalContext = Number(modelObj?.maxContextTokens) || 250000;
                 return {
                     totalContext,
                     safeLimit: Math.floor(totalContext * 0.75),
-                    recentBudget: Math.floor(totalContext * 0.40)
+                    recentBudget: Math.floor(totalContext * 0.45)
                 };
             },
 
             measurePartTokens(part) {
                 if (!part) return 0;
-                let tokens = 0;
-                if (part.text) {
-                    tokens = Math.ceil(String(part.text).length / 3.2);
-                } else if (part.inlineData) {
+                if (part.text) return Math.ceil(String(part.text).length / 3.2);
+                if (part.inlineData) {
                     const mime = (part.inlineData.mimeType || '').toLowerCase();
-                    if (mime.startsWith('image/')) tokens = 258;
-                    else if (mime.startsWith('video/')) {
-                        const durationSec = Number(part.duration || part.inlineData.duration || 0);
-                        tokens = durationSec > 0 ? Math.max(1024, Math.round(durationSec * 265)) : 1024;
-                    } else if (mime.startsWith('audio/')) {
-                        const approxSec = Math.max(1, Math.round((part.inlineData.data?.length || 0) * 0.75 / 16000));
-                        tokens = approxSec * 32;
-                    } else tokens = 258;
-                } else if (part.fileData) tokens = 258;
-                return tokens;
+                    if (mime.startsWith('image/')) return 258;
+                    if (mime.startsWith('video/')) return 1200;
+                    return 258;
+                }
+                return 258;
             },
 
             measureTurnTokens(turn) {
                 if (!turn) return 0;
                 if (turn.exactTokens && turn.exactTokens > 0) return turn.exactTokens;
-                if (Array.isArray(turn.parts)) {
-                    return turn.parts.reduce((sum, p) => sum + this.measurePartTokens(p), 0);
-                }
-                let tokens = 0;
-                if (turn.content || turn.promptContent) {
-                    tokens += Math.ceil(String(turn.promptContent || turn.content).length / 3.2);
-                }
-                if (Array.isArray(turn.attachments)) tokens += turn.attachments.length * 258;
-                return tokens;
+                if (Array.isArray(turn.parts)) return turn.parts.reduce((sum, p) => sum + this.measurePartTokens(p), 0);
+                return Math.ceil(String(turn.promptContent || turn.content || '').length / 3.2);
             },
 
             measureHistoryTokens(history) {
@@ -4546,58 +4544,7 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                 return history.reduce((sum, turn) => sum + this.measureTurnTokens(turn), 0);
             },
 
-            compressHistoricalTurnPreservingContext(turn, turnIndex) {
-                const refactoredParts = [];
-                for (const part of turn.parts || []) {
-                    if (part.text) {
-                        const cleanText = part.text.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-                        refactoredParts.push({ text: cleanText });
-                    } else if (part.inlineData) {
-                        const mime = part.inlineData.mimeType || 'tệp đính kèm';
-                        refactoredParts.push({ text: `[Dữ liệu đính kèm tại lượt ${turnIndex + 1}: ${mime}]` });
-                    } else if (part.fileData) {
-                        refactoredParts.push({ text: `[Tệp tham chiếu lượt ${turnIndex + 1}: ${part.fileData.fileUri}]` });
-                    }
-                }
-                return {
-                    role: turn.role,
-                    exactTokens: turn.exactTokens ? Math.min(turn.exactTokens, 300) : 0,
-                    parts: refactoredParts.length > 0 ? refactoredParts : [{ text: " " }]
-                };
-            },
-
-            // ĐÓNG GÓI SỔ KÝ ỨC VĨNH CỬU BẤT BIẾN THÀNH LƯỢT HỘI THOẠI
-            buildPermanentLedgerTurn(ledger) {
-                if (!ledger || !ledger.summary) return null;
-                const decisionsText = Array.isArray(ledger.decisions) && ledger.decisions.length > 0
-                    ? `\nCÁC QUYẾT ĐỊNH & THÔNG SỐ CỐT LÕI ĐÃ CHỐT:\n` + ledger.decisions.map(d => `- ${d}`).join('\n')
-                    : '';
-                const activeStateText = ledger.activeState ? `\n\nTRẠNG THÁI HIỆN TẠI & BÀI TOÁN ĐANG GIẢI QUYẾT:\n${ledger.activeState}` : '';
-
-                const text = `[HỒ SƠ BỘ NHỚ VĨNH CỬU CỦA PHIÊN - BẢO CHỨNG BỞI G-DEEP EPISTEMIC LEDGER]\n` +
-                             `Toàn bộ ngữ cảnh lịch sử từ đầu cuộc trò chuyện đến nay đã được đúc kết bất biến:\n\n` +
-                             `TIẾN TRÌNH & BỐI CẢNH TOÀN CẢNH:\n${ledger.summary}\n` +
-                             decisionsText +
-                             activeStateText +
-                             `\n\n[CHỈ DẪN QUAN TRỌNG: Hãy tiếp nhận toàn bộ các dữ kiện trên để đối thoại liền mạch, tuyệt đối không được quên các quyết định đã chốt.]`;
-
-                return { role: 'user', parts: [{ text }] };
-            },
-
-            buildEpistemicRetrievalTurn(retrievedMemories) {
-                if (!retrievedMemories || retrievedMemories.length === 0) return null;
-                let injection = `[ĐẦU DÒ TRUY HỒI CHI TIẾT TỪ QUÁ KHỨ (BM25 NEEDLE RETRIEVAL)]\nĐối soát các dữ kiện vi mô được phục hồi nguyên văn:\n\n`;
-                retrievedMemories.forEach((item, idx) => {
-                    const m = item.msg;
-                    const role = m.role === 'user' ? 'Người dùng' : 'Hệ thống';
-                    const originalText = (m.promptContent || m.content || '').trim();
-                    const attNames = (m.attachments && m.attachments.length > 0) ? ` [Tệp: ${m.attachments.map(a => a.name).join(', ')}]` : '';
-                    injection += `--- [Trích đoạn ${idx + 1} | ${role}${attNames}] ---\n${originalText}\n--- [Hết trích đoạn ${idx + 1}] ---\n\n`;
-                });
-                return { role: 'user', parts: [{ text: injection }] };
-            },
-
-            // LẮP RÁP PAYLOAD CHAT VÔ HẠN (INFINITE CONTEXT COMPILER)
+            // TỔNG HỢP PAYLOAD VÔ HẠN LƯỢT KHÔNG SUY HAO NGỮ CẢNH (INFINITE CONTEXT COMPILER)
             async assembleInfiniteContextPayload(fullMessagesList, currentPromptText, upToMessageId = null, currentModelObj = null, activeApiKey = null, threadId = null) {
                 if (!Array.isArray(fullMessagesList) || fullMessagesList.length === 0) return [];
 
@@ -4614,13 +4561,7 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                     const m = targetList[i];
                     if (m.role === 'user') {
                         const parts = buildTurnParts(m.promptContent || m.content || '', m.attachments || []);
-                        fullTurns.push({ 
-                            role: 'user', 
-                            parts, 
-                            rawId: m.id, 
-                            rawMsg: m, 
-                            exactTokens: Number(m.exactTokens) || 0 
-                        });
+                        fullTurns.push({ role: 'user', parts, rawId: m.id, exactTokens: Number(m.exactTokens) || 0 });
                     } else if (m.role === 'model') {
                         let mText = (m.content || '').trim();
                         const prev = targetList[i - 1];
@@ -4629,13 +4570,7 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                             if (execLogs) mText = `[KẾT QUẢ TÍNH TOÁN]:\n${execLogs}\n[KẾT LUẬN]:\n${mText}`;
                         }
                         if (mText) {
-                            fullTurns.push({ 
-                                role: 'model', 
-                                parts: [{ text: mText }], 
-                                rawId: m.id, 
-                                rawMsg: m, 
-                                exactTokens: Number(m.exactTokens) || 0 
-                            });
+                            fullTurns.push({ role: 'model', parts: [{ text: mText }], rawId: m.id, exactTokens: Number(m.exactTokens) || 0 });
                         }
                     }
                 }
@@ -4643,16 +4578,39 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                 const totalTurns = fullTurns.length;
                 if (totalTurns === 0) return [];
 
-                // 1. Phân tách cửa sổ hội thoại nóng (Recent Window)
+                // CẮT TỈA TỆP ĐA PHƯƠNG TIỆN CŨ (CHỐNG TRÀN TOKEN/RAM CHO CÁC LƯỢT QUÁ KHỨ)
+                const pruneOldMedia = (turns, keepLastN = 4) => {
+                    const thresholdIndex = Math.max(0, turns.length - keepLastN);
+                    return turns.map((t, idx) => {
+                        if (idx >= thresholdIndex) return t;
+                        const safeParts = t.parts.map(p => {
+                            if (p.inlineData && (p.inlineData.mimeType.startsWith('image/') || p.inlineData.mimeType.startsWith('video/') || p.inlineData.mimeType.startsWith('audio/'))) {
+                                return { text: `[Tệp đa phương tiện đã phân tích ở lượt trước: ${p.inlineData.mimeType}]` };
+                            }
+                            return p;
+                        });
+                        return { ...t, parts: safeParts };
+                    });
+                };
+
+                const prunedTurns = pruneOldMedia(fullTurns, 4);
+                const totalActualTokens = this.measureHistoryTokens(prunedTurns);
+
+                // TRƯỜNG HỢP 1: Tổng token vẫn dưới giới hạn an toàn -> Gửi toàn bộ lượt đã cắt tỉa media
+                if (totalActualTokens <= safeLimit) {
+                    return prunedTurns.map(t => ({ role: t.role, parts: t.parts }));
+                }
+
+                // TRƯỜNG HỢP 2: Hội thoại dài vô hạn -> Phân tầng Neo Khởi Nguyên + Needle BM25 + Cửa sổ trượt nóng
                 const recentTurnsReversed = [];
                 const recentMsgIds = new Set();
                 let accumulatedRecentTokens = 0;
                 let splitIndex = totalTurns;
 
                 for (let i = totalTurns - 1; i >= 0; i--) {
-                    const turn = fullTurns[i];
+                    const turn = prunedTurns[i];
                     const turnTokens = this.measureTurnTokens(turn);
-                    if (accumulatedRecentTokens + turnTokens <= recentBudget) {
+                    if (accumulatedRecentTokens + turnTokens <= recentBudget || recentTurnsReversed.length < 8) {
                         accumulatedRecentTokens += turnTokens;
                         recentTurnsReversed.push(turn);
                         if (turn.rawId) recentMsgIds.add(turn.rawId);
@@ -4663,92 +4621,33 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                 }
 
                 const recentWindow = recentTurnsReversed.reverse();
-                const totalActualTokens = this.measureHistoryTokens(fullTurns);
-
-                // Nếu chưa chạm ngưỡng cảnh báo, gửi 100% nguyên vẹn dữ liệu
-                if (totalActualTokens <= safeLimit) {
-                    return fullTurns.map((t, idx) => {
-                        const isCurrentTurn = idx === fullTurns.length - 1;
-                        const safeParts = t.parts.map(p => {
-                            if (!isCurrentTurn && p.inlineData && (p.inlineData.mimeType.startsWith('video/') || p.inlineData.mimeType.startsWith('audio/'))) {
-                                return { text: `[Tệp đa phương tiện đã được phân tích ở lượt trước: ${p.inlineData.mimeType}]` };
-                            }
-                            return p;
-                        });
-                        return { role: t.role, parts: safeParts };
-                    });
-                }
-
-                // 2. KHI ĐẠT NGƯỠNG VÔ HẠN: KÍCH HOẠT HỒ SƠ KÝ ỨC VĨNH CỬU
                 const assembledPayload = [];
 
-                // A. Lượt mở đầu cuộc hội thoại (Genesis Turn - Cắt tỉa media cũ chống phình payload)
-                const rootTurn = fullTurns[0];
-                const isRootAlreadyInRecent = recentMsgIds.has(rootTurn.rawId);
-                if (!isRootAlreadyInRecent) {
-                    const sanitizedRootParts = rootTurn.parts.map(p => {
-                        if (p.inlineData && (p.inlineData.mimeType.startsWith('video/') || p.inlineData.mimeType.startsWith('audio/'))) {
-                            return { text: `[Tệp đa phương tiện đã phân tích ở lượt mở đầu: ${p.inlineData.mimeType}]` };
-                        }
-                        return p;
-                    });
-                    assembledPayload.push({ role: rootTurn.role, parts: sanitizedRootParts });
-                }
-
-                // B. Khắc sâu Sổ Ký Ức Vĩnh Cửu (Living Ledger)
-                const ledger = threadId ? EpistemicMemoryEngine.getThreadLedger(threadId) : null;
-                const permanentTurn = this.buildPermanentLedgerTurn(ledger);
-                if (permanentTurn) {
-                    assembledPayload.push(permanentTurn);
-                    assembledPayload.push({
-                        role: 'model',
-                        parts: [{ text: "Tôi đã tiếp nhận và ghi nhớ trọn vẹn toàn bộ hồ sơ dữ kiện, mục tiêu và các quyết định lịch sử của phiên trò chuyện. Mọi phản hồi tiếp theo sẽ tuân thủ tuyệt đối tính liền mạch này." }]
-                    });
-                }
-
-                // C. Đầu dò vi sai BM25 (Trích xuất các câu trích dẫn hoặc biến số cụ thể trong quá khứ)
-                const retrievedMemories = await EpistemicMemoryEngine.retrieveRelevantMemories(
-                    currentPromptText,
-                    targetList,
-                    recentMsgIds,
-                    8
-                );
-                const memoryInjectionTurn = this.buildEpistemicRetrievalTurn(retrievedMemories);
-                if (memoryInjectionTurn) {
-                    assembledPayload.push(memoryInjectionTurn);
-                    assembledPayload.push({
-                        role: 'model',
-                        parts: [{ text: "Đã phục hồi chính xác các trích đoạn đối soát theo yêu cầu." }]
-                    });
-                }
-
-                // D. Nén nhẹ các lượt trung gian nằm giữa nếu ngân sách Token còn dư
-                const middleTurns = (splitIndex > 1) ? fullTurns.slice(1, splitIndex) : [];
-                const lightlyCompressedMiddle = [];
-                let middleTokensBudget = safeLimit - accumulatedRecentTokens - 25000;
-
-                for (let i = middleTurns.length - 1; i >= 0; i--) {
-                    const compTurn = this.compressHistoricalTurnPreservingContext(middleTurns[i], i + 1);
-                    const tTokens = this.measureTurnTokens(compTurn);
-                    if (middleTokensBudget - tTokens > 0) {
-                        middleTokensBudget -= tTokens;
-                        lightlyCompressedMiddle.unshift(compTurn);
-                    } else {
-                        break;
+                // 1. Giữ nguyên lượt khởi đầu (Turn 1: Neo mở đầu)
+                const rootTurn = prunedTurns[0];
+                if (!recentMsgIds.has(rootTurn.rawId)) {
+                    assembledPayload.push({ role: rootTurn.role, parts: rootTurn.parts });
+                    if (prunedTurns.length > 1 && prunedTurns[1].role === 'model') {
+                        assembledPayload.push({ role: 'model', parts: [{ text: (prunedTurns[1].parts[0]?.text || '').slice(0, 500) + '...' }] });
                     }
                 }
-                for (const mTurn of lightlyCompressedMiddle) assembledPayload.push({ role: mTurn.role, parts: mTurn.parts });
 
-                // E. Cửa sổ ngữ cảnh nóng gần nhất (Chỉ giữ media nguyên bản cho lượt cuối cùng)
-                recentWindow.forEach((rTurn, rIdx) => {
-                    const isLatestTurn = (rIdx === recentWindow.length - 1);
-                    const safeRecentParts = rTurn.parts.map(p => {
-                        if (!isLatestTurn && p.inlineData && (p.inlineData.mimeType.startsWith('video/') || p.inlineData.mimeType.startsWith('audio/'))) {
-                            return { text: `[Tệp đa phương tiện đã phân tích ở lượt trước: ${p.inlineData.mimeType}]` };
-                        }
-                        return p;
+                // 2. Đầu dò BM25: Trích xuất các dữ kiện vi mô trong quá khứ liên quan câu hỏi hiện tại
+                const needles = await EpistemicMemoryEngine.retrieveRelevantMemories(currentPromptText, targetList, recentMsgIds, 6);
+                if (needles.length > 0) {
+                    let needleText = `[TRUY HỒI ĐỐI SOÁT TỪ CÁC LƯỢT TRƯỚC ĐÓ (BM25 NEEDLE RETRIEVAL)]:\n`;
+                    needles.forEach((item, idx) => {
+                        const m = item.msg;
+                        const roleName = m.role === 'user' ? 'Người dùng' : 'AI';
+                        needleText += `--- [Trích đoạn #${idx + 1} | ${roleName}] ---\n${(m.promptContent || m.content || '').slice(0, 800)}\n`;
                     });
-                    assembledPayload.push({ role: rTurn.role, parts: safeRecentParts });
+                    assembledPayload.push({ role: 'user', parts: [{ text: needleText }] });
+                    assembledPayload.push({ role: 'model', parts: [{ text: "Tôi đã đối soát và nhớ rõ các trích đoạn dữ kiện trên từ quá khứ." }] });
+                }
+
+                // 3. Nạp Cửa sổ trượt nóng gần nhất (Đảm bảo mạch văn phong tươi mới)
+                recentWindow.forEach(rTurn => {
+                    assembledPayload.push({ role: rTurn.role, parts: rTurn.parts });
                 });
 
                 return assembledPayload;
@@ -7567,30 +7466,28 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                 db = null;
             }
 
-            // NEURAL REGISTRY CHUẨN HÓA RECORD
+            // NEURAL REGISTRY CHUẨN HÓA RECORD (LOẠI BỎ TRIỆT ĐỂ BẢN GHI MA)
             SynapticNeuralMesh.register('ThreadNormalizerNeuron',
-                (t) => t !== null && typeof t === 'object',
+                (t) => t !== null && typeof t === 'object' && t.id,
                 (t) => ({
-                    id: t.id || generateUUID(),
+                    id: String(t.id),
                     gemId: t.gemId || 'default',
                     title: t.title || 'Phiên trò chuyện mới',
                     isPinned: Boolean(t.isPinned),
                     isAutoGenerated: Boolean(t.isAutoGenerated),
                     updatedAt: Number(t.updatedAt) || getMonotonicTimestamp()
                 }),
-                () => ({ id: generateUUID(), gemId: 'default', title: 'Phiên trò chuyện mới', isPinned: false, isAutoGenerated: false, updatedAt: getMonotonicTimestamp() })
+                () => null
             );
 
             const normalizeThreadRecord = (t) => {
+                if (!t || typeof t !== 'object' || !t.id) return null;
                 const neuron = SynapticNeuralMesh.get('ThreadNormalizerNeuron');
                 try {
-                    // [TỬ HUYỆT ĐÃ KHẮC PHỤC]: Sửa lỗi "neuron.validate is not a function". 
-                    // Lỗi này ném ra TypeError khiến khối try-catch trong hàm loadThreads nuốt trọn, 
-                    // làm mảng lịch sử trở thành rỗng và reset toàn bộ phiên trò chuyện mỗi khi tải lại trang (F5).
-                    const isValid = typeof neuron.schemaContract === 'function' ? neuron.schemaContract(t) : (t !== null && typeof t === 'object');
-                    return isValid ? neuron.processor(t) : (typeof neuron.fallback === 'function' ? neuron.fallback() : neuron.fallback);
+                    const isValid = typeof neuron.schemaContract === 'function' ? neuron.schemaContract(t) : Boolean(t && t.id);
+                    return isValid ? neuron.processor(t) : null;
                 } catch (err) {
-                    return { id: generateUUID(), gemId: 'default', title: 'Phiên trò chuyện mới', isPinned: false, isAutoGenerated: false, updatedAt: getMonotonicTimestamp() };
+                    return null;
                 }
             };
 
@@ -10046,36 +9943,53 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     const loadThreads = async () => {
                         let dbThreads = [];
                         if (db) {
-                            try { dbThreads = (await db.threads.toArray()).map(t => normalizeThreadRecord(t)); } catch (_) {}
+                            try { 
+                                const raw = await db.threads.toArray();
+                                dbThreads = raw.map(t => normalizeThreadRecord(t)).filter(Boolean);
+                            } catch (_) {}
                         }
                         
                         let lsThreads = [];
                         try {
                             const backupStr = localStorage.getItem('gdeep_threads_backup');
-                            lsThreads = backupStr ? JSON.parse(backupStr).map(t => normalizeThreadRecord(t)) : [];
+                            if (backupStr) {
+                                const parsed = JSON.parse(backupStr);
+                                if (Array.isArray(parsed)) {
+                                    lsThreads = parsed.map(t => normalizeThreadRecord(t)).filter(Boolean);
+                                }
+                            }
                         } catch (_) {}
 
-                        // KHẮC PHỤC ĐIỂM MÙ: Hợp nhất (Merge) IndexedDB và LocalStorage. 
-                        // LocalStorage luôn chứa dữ liệu đồng bộ mới nhất (khi F5 tắt tab đột ngột).
+                        // Hợp nhất chính xác theo ID (Bỏ qua hoàn toàn các đối tượng null/lỗi)
                         const mergedMap = new Map();
-                        dbThreads.forEach(t => mergedMap.set(t.id, t));
+                        dbThreads.forEach(t => { if (t && t.id) mergedMap.set(t.id, t); });
                         lsThreads.forEach(t => {
-                            const existing = mergedMap.get(t.id);
-                            if (!existing || (t.updatedAt || 0) >= (existing.updatedAt || 0)) {
-                                mergedMap.set(t.id, t);
+                            if (t && t.id) {
+                                const existing = mergedMap.get(t.id);
+                                if (!existing || (t.updatedAt || 0) >= (existing.updatedAt || 0)) {
+                                    mergedMap.set(t.id, t);
+                                }
                             }
                         });
 
                         const finalThreads = Array.from(mergedMap.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-                        
-                        // Cập nhật lại IndexedDB nếu nó bị thọt so với LocalStorage
-                        if (db && lsThreads.length > 0) {
+                        threads.value = finalThreads;
+
+                        // Đồng bộ danh sách sạch vào LocalStorage & IndexedDB (dọn sạch các thread ma cũ)
+                        try {
+                            localStorage.setItem('gdeep_threads_backup', JSON.stringify(finalThreads.map(t => cleanForDb(t))));
+                        } catch (_) {}
+
+                        if (db) {
                             dbWriteQueue.enqueue(async () => {
-                                try { await db.threads.bulkPut(finalThreads.map(t => cleanForDb(t))); } catch (_) {}
+                                try {
+                                    await db.threads.clear();
+                                    if (finalThreads.length > 0) {
+                                        await db.threads.bulkPut(finalThreads.map(t => cleanForDb(t)));
+                                    }
+                                } catch (_) {}
                             }, { priority: 0 });
                         }
-                        
-                        threads.value = finalThreads;
                     };
 
                     const loadGems = async () => {
@@ -12257,11 +12171,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 });
                             }
                             await seedInitialData();
-                            await loadThreads();
                             await loadGems();
                             if (!gems.value.some(g => g.id === activeGemId.value)) {
                                 activeGemId.value = gems.value[0]?.id || 'default';
                             }
+                            // Chỉ gọi loadThreadsForActiveGem một lần duy nhất tại đây
                             await loadThreadsForActiveGem();
                         } catch (_) {
                         } finally {
