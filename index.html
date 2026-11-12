@@ -1354,14 +1354,34 @@
                     <template v-if="activeTab === 'threads'">
                         <div class="px-1 py-1 text-[10px] font-bold uppercase tracking-widest flex items-center justify-between" :style="{ color: selectedAccent }">
                             <span>Không gian: {{ currentActiveGemObj.name || 'Tiêu chuẩn' }}</span>
-                            <span class="text-textMuted">{{ filteredThreads.length }}</span>
-                        </div>
-                        <div v-for="thread in filteredThreads" :key="thread.id" @click="loadThread(thread.id)" :class="['flex justify-between items-center p-2.5 rounded-xl border border-white/5 transition-all cursor-pointer relative min-h-[42px]', currentThreadId === thread.id ? 'bg-white/10 text-white shadow-md' : 'bg-surfaceElevated/60 text-textMuted hover:text-white hover:bg-white/5']">
-                            <div class="flex items-center space-x-2 truncate flex-1 pr-1 min-w-0">
-                                <lucide-icon :name="thread.isPinned ? 'pin' : 'message-square'" class="w-3.5 h-3.5 shrink-0" :style="{ color: thread.isPinned ? '#fbbf24' : selectedAccent }"></lucide-icon>
-                                <span class="truncate text-[12.5px] font-medium">{{ thread.title || 'Phiên trò chuyện mới' }}</span>
+                            <div class="flex items-center gap-2">
+                                <span class="text-textMuted">{{ filteredThreads.length }}</span>
+                                <button type="button" @click="isBulkEditMode = !isBulkEditMode; selectedThreadIds.clear(); triggerHaptic('light')" class="btn-instant text-textMuted hover:text-white" title="Chọn nhiều để xoá">
+                                    <lucide-icon :name="isBulkEditMode ? 'x' : 'edit-3'" class="w-3.5 h-3.5"></lucide-icon>
+                                </button>
                             </div>
-                            <div class="flex items-center space-x-1 shrink-0" @click.stop>
+                        </div>
+                        
+                        <!-- Thanh công cụ Xoá hàng loạt -->
+                        <transition name="fade">
+                            <div v-if="isBulkEditMode" class="flex items-center justify-between p-2 mb-2 bg-surfaceElevated border border-white/10 rounded-xl shadow-md">
+                                <label class="flex items-center gap-2 cursor-pointer text-[11px] text-white select-none">
+                                    <input type="checkbox" :checked="selectedThreadIds.size === filteredThreads.length && filteredThreads.length > 0" @change="toggleSelectAllThreads" class="cursor-pointer">
+                                    <span class="font-medium">Chọn tất cả</span>
+                                </label>
+                                <button type="button" @click="confirmBulkDelete" :disabled="selectedThreadIds.size === 0" class="btn-instant px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/20 text-red-400 disabled:opacity-40 hover:bg-red-500/30 flex items-center gap-1.5 transition-all">
+                                    <lucide-icon name="trash-2" class="w-3.5 h-3.5"></lucide-icon> Xoá ({{ selectedThreadIds.size }})
+                                </button>
+                            </div>
+                        </transition>
+
+                        <div v-for="thread in filteredThreads" :key="thread.id" @click="isBulkEditMode ? toggleThreadSelection(thread.id) : loadThread(thread.id)" :class="['flex justify-between items-center p-2.5 rounded-xl border transition-all cursor-pointer relative min-h-[42px]', currentThreadId === thread.id && !isBulkEditMode ? 'bg-white/10 text-white shadow-md border-white/10' : 'bg-surfaceElevated/60 text-textMuted hover:text-white hover:bg-white/5 border-white/5', isBulkEditMode && selectedThreadIds.has(thread.id) ? '!border-red-500/50 bg-red-500/15' : '']">
+                            <div class="flex items-center space-x-2.5 truncate flex-1 pr-1 min-w-0">
+                                <input v-if="isBulkEditMode" type="checkbox" :checked="selectedThreadIds.has(thread.id)" class="pointer-events-none shrink-0" style="margin:0; width:14px; height:14px;">
+                                <lucide-icon v-else :name="thread.isPinned ? 'pin' : 'message-square'" class="w-3.5 h-3.5 shrink-0" :style="{ color: thread.isPinned ? '#fbbf24' : selectedAccent }"></lucide-icon>
+                                <span class="truncate text-[12.5px] font-medium" :class="isBulkEditMode && selectedThreadIds.has(thread.id) ? 'text-red-300' : ''">{{ thread.title || 'Phiên trò chuyện mới' }}</span>
+                            </div>
+                            <div v-if="!isBulkEditMode" class="flex items-center space-x-1 shrink-0" @click.stop>
                                 <button type="button" @click="togglePinThread(thread)" :class="['btn-instant w-7 h-7 flex items-center justify-center rounded-lg', thread.isPinned ? 'text-amber-400' : 'text-textMuted hover:text-white']">
                                    <lucide-icon name="pin" class="w-3.5 h-3.5"></lucide-icon>
                                 </button>
@@ -9186,6 +9206,70 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     const gems = ref([]);
                     const activeGemId = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.ACTIVE_GEM_ID, 'default'));
                     
+                    // State cho tính năng Chọn nhiều (Bulk Edit)
+                    const isBulkEditMode = ref(false);
+                    const selectedThreadIds = ref(new Set());
+
+                    const toggleThreadSelection = (id) => {
+                        if (selectedThreadIds.value.has(id)) selectedThreadIds.value.delete(id);
+                        else selectedThreadIds.value.add(id);
+                        triggerHaptic('light');
+                    };
+
+                    const toggleSelectAllThreads = (e) => {
+                        if (e.target.checked) {
+                            filteredThreads.value.forEach(t => selectedThreadIds.value.add(t.id));
+                        } else {
+                            selectedThreadIds.value.clear();
+                        }
+                        triggerHaptic('light');
+                    };
+
+                    const confirmBulkDelete = () => {
+                        if (selectedThreadIds.value.size === 0) return;
+                        triggerHaptic('heavy');
+                        confirmMessage.value = `Bạn có chắc chắn muốn xoá ${selectedThreadIds.value.size} phiên trò chuyện đã chọn? Dữ liệu sẽ bị xóa vĩnh viễn.`;
+                        confirmActionCallback = async () => {
+                            const idsToDelete = Array.from(selectedThreadIds.value);
+                            
+                            // Dọn dẹp LocalStorage
+                            try {
+                                let backupList = JSON.parse(localStorage.getItem('gdeep_threads_backup') || '[]');
+                                backupList = backupList.filter(t => !idsToDelete.includes(t.id));
+                                localStorage.setItem('gdeep_threads_backup', JSON.stringify(backupList));
+                                
+                                for (const id of idsToDelete) {
+                                    localStorage.removeItem(`gdeep_msg_backup_${id}`);
+                                    localStorage.removeItem(`gdeep_ledger_${id}`);
+                                }
+                            } catch (_) {}
+
+                            // Dọn dẹp IndexedDB (Dexie)
+                            if (db) {
+                                try {
+                                    await db.messages.where('threadId').anyOf(idsToDelete).delete();
+                                    await db.threads.bulkDelete(idsToDelete);
+                                } catch (_) {}
+                            }
+
+                            // Cập nhật State RAM giao diện
+                            threads.value = threads.value.filter(t => !idsToDelete.includes(t.id));
+                            
+                            // Nếu phiên đang mở cũng bị xóa thì tự động nhảy sang phiên khác
+                            if (idsToDelete.includes(currentThreadId.value)) {
+                                currentMessages.value = [];
+                                const gemThreads = threads.value.filter(t => (t.gemId || 'default') === activeGemId.value);
+                                if (gemThreads.length > 0) await loadThread(gemThreads[0].id);
+                                else await createNewThread();
+                            }
+                            
+                            isBulkEditMode.value = false;
+                            selectedThreadIds.value.clear();
+                            notify(`Đã dọn dẹp sạch sẽ ${idsToDelete.length} phiên trò chuyện.`);
+                        };
+                        showConfirmModal.value = true;
+                    };
+                    
                     const inputText = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.DRAFT_INPUT, ''));
                     const isGenerating = ref(false);
                     const searchStatusText = ref("");
@@ -12224,6 +12308,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 
                     return SynapticNeuralMesh.intercept('AppAction', {
                         threads, currentMessages, visibleMessages, currentThreadId, gems, activeGemId, currentActiveGemObj,
+                        isBulkEditMode, selectedThreadIds, toggleThreadSelection, toggleSelectAllThreads, confirmBulkDelete, // <-- Bổ sung hàm Xóa hàng loạt
                         switchGemTab, inputText, isGenerating, searchStatusText, formattedStatusText, isSidebarOpen, activeTab, showScrollBtn, messageInput, chatContainer,
                         fileInput, renameInput, importFileInput, importSingleThreadInput, sandboxIframe, sandboxKey, models,
                         currentModelIndex, currentModel, pendingAttachments, accentColors, selectedAccent, currentAccentGradient,
