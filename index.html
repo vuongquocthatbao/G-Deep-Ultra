@@ -1465,6 +1465,14 @@
 
                             <!-- ================= PHẦN 1: CẤU HÌNH & THIẾT KẾ TOPOLOGY ================= -->
                             <div v-show="workflowStudio.viewMode === 'builder'" class="space-y-3">
+                                <!-- NÚT MỞ RỘNG TOÀN MÀN HÌNH WORKFLOW MODAL -->
+                                <div class="flex items-center justify-between px-1">
+                                    <span class="text-[10px] font-bold text-textMuted uppercase tracking-wider">A2A Pipeline</span>
+                                    <button type="button" @click="openWorkflowStudio" class="btn-instant text-[10px] text-indigo-300 hover:text-white font-bold flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-500/15 border border-indigo-500/25">
+                                        <lucide-icon name="external-link" class="w-3 h-3"></lucide-icon> Phóng To Xưởng
+                                    </button>
+                                </div>
+
                                 <!-- BỘ CHỌN ĐỊNH DẠNG ĐẦU RA MỤC TIÊU -->
                                 <div class="bg-surfaceElevated p-3 rounded-2xl border border-white/5 space-y-2">
                                     <div class="flex items-center justify-between">
@@ -4095,11 +4103,13 @@ self.onmessage = async function(e) {
                     );
                     history = sanitizeHistoryForGemini(history, false);
 
-                    // HỖ TRỢ TÌM KIẾM BẢN ĐỊA & ĐIỆN TOÁN ĐỘC LẬP TỰ ĐỘNG
+                    // HỖ TRỢ TÌM KIẾM BẢN ĐỊA & ĐIỆN TOÁN ĐỘC LẬP TỰ ĐỘNG (NGĂN XUNG ĐỘT 400)
                     const activeTools = [];
-                    if (enableCodeExecution) activeTools.push({ codeExecution: {} });
-                    if (enableGoogleSearch && (!serperApiKeys || !serperApiKeys.length)) {
-                        activeTools.push({ googleSearch: {} }); // KÍCH HOẠT NATIVE SEARCH NẾU THIẾU SERPER KEY
+                    if (enableCodeExecution) {
+                        activeTools.push({ codeExecution: {} });
+                    } else if (enableGoogleSearch && (!serperApiKeys || !serperApiKeys.length)) {
+                        // Gemini API cấm kết hợp đồng thời codeExecution và googleSearch trong cùng request
+                        activeTools.push({ googleSearch: {} });
                     }
 
                     const initialPayload = {
@@ -8817,23 +8827,36 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 }`;
 
         let masterScript = null;
-        while (!masterScript) {
+        let directorAttempts = 0;
+        const maxDirectorAttempts = 5;
+
+        while (!masterScript && directorAttempts < maxDirectorAttempts) {
+            if (!isGenerating || !isGenerating.value) break; // Thoát ngay nếu người dùng ấn nút Dừng
+            directorAttempts++;
+
             while (typeof navigator !== 'undefined' && 'onLine' in navigator && !navigator.onLine) {
+                if (!isGenerating.value) break;
                 if (searchStatusText) searchStatusText.value = "Đang chờ kết nối mạng để khởi tạo kịch bản...";
                 await new Promise(r => setTimeout(r, 2000));
             }
 
-            const res = await dispatchBackgroundTask({
-                        contents: [{ role: 'user', parts: [{ text: masterDirectorPrompt }] }],
-                        generationConfig: { temperature: 0.25, maxOutputTokens: 65536 }
-                    });
-                    const rawDirectorOutput = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                    masterScript = SearchIntelligenceEngine.robustJsonRepair(rawDirectorOutput);
+            try {
+                const res = await dispatchBackgroundTask({
+                    contents: [{ role: 'user', parts: [{ text: masterDirectorPrompt }] }],
+                    generationConfig: { temperature: 0.25, maxOutputTokens: 65536 }
+                });
+                const rawDirectorOutput = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                masterScript = SearchIntelligenceEngine.robustJsonRepair(rawDirectorOutput);
+            } catch (_) {}
 
-            if (!masterScript) {
-                if (searchStatusText) searchStatusText.value = "Tổng Đạo Diễn đang trau chuốt lại cấu trúc...";
-                await new Promise(r => setTimeout(r, 2500));
+            if (!masterScript && isGenerating.value) {
+                if (searchStatusText) searchStatusText.value = `Tổng Đạo Diễn đang trau chuốt kịch bản (${directorAttempts}/${maxDirectorAttempts})...`;
+                await new Promise(r => setTimeout(r, 2000));
             }
+        }
+
+        if (!masterScript) {
+            throw new Error("Không thể khởi tạo kịch bản điện ảnh sau nhiều lần thử. Vui lòng thử lại với nội dung ngắn gọn hơn.");
         }
 
         masterScript.base_seed = userSeed;
@@ -8920,6 +8943,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
             const workflowStudio = reactive({
                 show: false,
                 viewMode: 'builder', // 'builder' | 'results'
+                activeTab: 'builder', // 'builder' | 'execution' (đồng bộ với Modal giao diện lớn)
                 outputFormat: 'pptx', // 'text' | 'pptx' | 'image' | 'video'
                 userGoal: '',
                 inputFiles: [],
@@ -9886,8 +9910,20 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         downloadAllArtifactsZip,
                         downloadPptxFile
                     } = workflowModule;
-                    const openWorkflowStudio = () => { if (workflowStudio) workflowStudio.viewMode = 'builder'; activeTab.value = 'agents'; isSidebarOpen.value = true; };
-                    const closeWorkflowStudio = () => { isSidebarOpen.value = false; };
+                    const openWorkflowStudio = () => { 
+                        if (workflowStudio) {
+                            workflowStudio.show = true;
+                            workflowStudio.activeTab = 'builder';
+                            workflowStudio.viewMode = 'builder';
+                        }
+                        document.body.classList.add('modal-open');
+                        triggerHaptic('light');
+                    };
+                    const closeWorkflowStudio = () => { 
+                        if (workflowStudio) workflowStudio.show = false;
+                        document.body.classList.remove('modal-open');
+                        triggerHaptic('light');
+                    };
 
                     // =========================================================================
                     // 7. TIỆN ÍCH TẢI VỀ (MEDIA & HÌNH ẢNH)
@@ -12219,6 +12255,16 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 promptText: intakePlan.cleanPrompt,
                                 imageRef: primaryImage || null
                             });
+                            return;
+                        }
+
+                        // Phân luồng Multi-Agent Workflow độc lập (Xử lý khi người dùng gõ /agent, /workflow)
+                        if (intakePlan.route === 'EXECUTE_MULTI_AGENT_WORKFLOW') {
+                            workflowStudio.userGoal = intakePlan.cleanPrompt || text;
+                            if (attachments && attachments.length > 0) {
+                                workflowStudio.inputFiles = [...attachments];
+                            }
+                            await executeAutonomousWorkflow();
                             return;
                         }
 
