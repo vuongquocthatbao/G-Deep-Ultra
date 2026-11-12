@@ -8129,9 +8129,9 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     const matrix = this.loadMatrix();
                     let entry = matrix.find(item => Array.isArray(item) && item[0] === modelId);
                     if (entry) {
-                        if (!entry[1].includes(keyString)) {
-                            entry[1].push(keyString);
-                        }
+                        // Xoay tua hàng đợi LRU: đưa key vừa dùng thành công xuống cuối danh sách
+                        entry[1] = entry[1].filter(k => k !== keyString);
+                        entry[1].push(keyString);
                     } else {
                         matrix.push([modelId, [keyString]]);
                     }
@@ -8266,6 +8266,9 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                         lastUsed: now
                     };
                     try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(JSON.parse(JSON.stringify(apiKeyPool.value)))); } catch (_) {}
+                    if (modelId && modelId !== 'global' && k.key && typeof ModelKeyMatrixManager !== 'undefined') {
+                        ModelKeyMatrixManager.recordSuccess(modelId, k.key);
+                    }
                 };
 
                 // GHI NHỚ VÀO MA TRẬN KHI MODEL GẶP LỖI (SMART PENALTY ENGINE)
@@ -8277,12 +8280,18 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     if (statusCode === 401) {
                         k.status = 'invalid';
                         k.cooldownUntil = now + 86400000; // Khóa 24h
+                        if (modelId && k.key && typeof ModelKeyMatrixManager !== 'undefined') {
+                            ModelKeyMatrixManager.recordFailure(modelId, k.key);
+                        }
                         console.warn(`[G-Deep Matrix] Key [${k.key.slice(-6)}] dính 401 (Invalid). Khóa toàn cục 24h.`);
                     } 
                     else if (statusCode === 404 || statusCode === 403) {
                         // VẬN MỆNH VĨNH CỬU: Lỗi 403/404 đồng nghĩa Key này vĩnh viễn không phục vụ được Model này.
                         k.models[modelId] = { status: 'unsupported', reason: statusCode, lockedAt: now };
-                        console.warn(`[G-Deep Matrix] Đã khóa vĩnh viễn Key [${k.key.slice(-6)}] đối với Model [${modelId}]. Nó sẽ chỉ phục vụ các Model khác.`);
+                        if (modelId && k.key && typeof ModelKeyMatrixManager !== 'undefined') {
+                            ModelKeyMatrixManager.recordFailure(modelId, k.key);
+                        }
+                        console.warn(`[G-Deep Matrix] Đã khóa vĩnh viễn Key [${k.key.slice(-6)}] đối với Model [${modelId}].`);
                     } 
                     else if (statusCode === 429) {
                         const mFail = (k.models[modelId]?.failCount || 0) + 1;
@@ -8298,7 +8307,6 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     } 
                     else {
                         k.failCount = (k.failCount || 0) + 1;
-                        // Nếu lỗi không xác định quá 10 lần liên tục, khóa tạm thời 30s toàn cục
                         if (k.failCount > 10) {
                             k.status = 'cooldown';
                             k.cooldownUntil = now + 30000;
@@ -8344,13 +8352,13 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                         tier.apiEndpointIds.forEach(id => allModels.add(id));
                     });
                     Object.values(GDeepSystemConfig.Models.BACKGROUND).forEach(id => allModels.add(id));
-                    const targetModels = Array.from(allModels); // Chứa đầy đủ gemini-3.6-flash, 2.5-flash, 3.5-flash-lite, v.v.
+                    const targetModels = Array.from(allModels);
                     
                     let totalActiveKeys = 0;
 
                     for (const k of apiKeyPool.value) {
                         if (!k.models) k.models = {};
-                        if (k.status === 'invalid') continue; // Bỏ qua nếu đã bị khóa toàn cục từ trước
+                        if (k.status === 'invalid') continue;
 
                         let isGloballyDead = false;
                         let supportedCount = 0;
@@ -8367,27 +8375,32 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                                 
                                 if (res.ok) { 
                                     k.models[testModel] = { status: 'supported', lastUsed: Date.now() };
+                                    if (typeof ModelKeyMatrixManager !== 'undefined') {
+                                        ModelKeyMatrixManager.recordSuccess(testModel, k.key);
+                                    }
                                     supportedCount++;
                                 } else {
                                     const errData = await res.json().catch(() => ({}));
                                     const errMsg = String(errData?.error?.message || '').toLowerCase();
                                     
-                                    // Lỗi 400 có thông điệp API key not valid hoặc 401 -> Khóa chết toàn cục
                                     if (res.status === 401 || (res.status === 400 && errMsg.includes('api key'))) { 
                                         isGloballyDead = true;
+                                        if (typeof ModelKeyMatrixManager !== 'undefined') {
+                                            ModelKeyMatrixManager.recordFailure(testModel, k.key);
+                                        }
                                     } else if (res.status === 404 || res.status === 403) {
                                         k.models[testModel] = { status: 'unsupported', reason: res.status, lockedAt: Date.now() };
+                                        if (typeof ModelKeyMatrixManager !== 'undefined') {
+                                            ModelKeyMatrixManager.recordFailure(testModel, k.key);
+                                        }
                                     } else if (res.status === 429) {
                                         k.models[testModel] = { status: 'cooldown', failCount: 1, cooldownUntil: Date.now() + 15000, lastUpdated: Date.now() };
                                         supportedCount++;
                                     }
                                 }
-                            } catch (_) {
-                                // Lỗi mạng (timeout), bỏ qua không ghi đè trạng thái
-                            }
+                            } catch (_) {}
                         }));
 
-                        // Tổng kết sinh tồn cho Key sau đợt quét
                         if (isGloballyDead) {
                             k.status = 'invalid';
                             k.cooldownUntil = Date.now() + 86400000;
@@ -11924,48 +11937,69 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             return req;
                         };
 
-                        // 1. FAST-PATH: Ưu tiên chìa khóa đã được kiểm chứng với Model
+                        // 1. FAST-PATH: Ưu tiên xoay tua các chìa khóa đã kiểm chứng với Model (Round-Robin)
                         for (let mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
                             const modelId = modelsToTry[mIdx];
-                            const verifiedKeys = ModelKeyMatrixManager.getVerifiedKeys(modelId);
-                            const available = verifiedKeys.filter(kStr => {
-                                const kObj = pool.find(p => p.key === kStr);
-                                return !kObj || (kObj.status !== 'invalid' && (!kObj.cooldownUntil || kObj.cooldownUntil <= now));
+                            const verifiedKeyStrings = new Set(ModelKeyMatrixManager.getVerifiedKeys(modelId));
+                            
+                            // Tập hợp tất cả các key từ pool đã được kiểm chứng (qua Matrix hoặc qua testAllApiKeys)
+                            const candidateKeys = pool.filter(k => {
+                                if (k.status === 'invalid') return false;
+                                if (k.cooldownUntil && k.cooldownUntil > now) return false;
+                                const mInfo = k.models?.[modelId];
+                                if (mInfo) {
+                                    if (mInfo.status === 'unsupported') return false;
+                                    if (mInfo.status === 'cooldown' && mInfo.cooldownUntil > now) return false;
+                                    if (mInfo.status === 'supported') return true;
+                                }
+                                return verifiedKeyStrings.has(k.key);
                             });
 
-                            if (available.length > 0) {
-                                const chosenKey = available[0];
-                                const keyObj = pool.find(p => p.key === chosenKey) || { key: chosenKey };
-                                const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${modelId}:streamGenerateContent?alt=sse&key=${chosenKey}`;
-                                const reqPayload = preparePayload(modelId);
+                            if (candidateKeys.length > 0) {
+                                // SẮP XẾP ROUND-ROBIN THỰC THỤ: Key có lastUsed nhỏ nhất (lâu nhất chưa gọi) đứng đầu
+                                candidateKeys.sort((a, b) => {
+                                    const aLast = a.models?.[modelId]?.lastUsed || a.lastUsed || 0;
+                                    const bLast = b.models?.[modelId]?.lastUsed || b.lastUsed || 0;
+                                    return aLast - bLast;
+                                });
 
-                                try {
-                                    const res = await fetch(endpoint, {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-                                        body: JSON.stringify(reqPayload),
-                                        signal
-                                    });
+                                // DUYỆT LẦN LƯỢT TỪNG KEY ĐÃ KIỂM CHỨNG: Nếu key trước dính 429/lỗi mạng, tự động xoay sang key tiếp theo
+                                for (let kIdx = 0; kIdx < candidateKeys.length; kIdx++) {
+                                    if (signal?.aborted) return { success: false, isMidStreamDrop: false };
+                                    const keyObj = candidateKeys[kIdx];
+                                    const chosenKey = keyObj.key;
+                                    const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${modelId}:streamGenerateContent?alt=sse&key=${chosenKey}`;
+                                    const reqPayload = preparePayload(modelId);
 
-                                    if (res.ok) {
-                                        markKeyModelSuccess(keyObj, modelId);
-                                        if (typeof onModelChange === 'function') onModelChange(modelId, mIdx);
-                                        let received = false;
-
-                                        await readSSEStream(res, signal, (chunk) => {
-                                            if (chunk.isHeartbeat) return;
-                                            received = true;
-                                            onChunk(chunk);
+                                    try {
+                                        const res = await fetch(endpoint, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                                            body: JSON.stringify(reqPayload),
+                                            signal
                                         });
 
-                                        if (received) return { success: true, activeModel: modelId, isMidStreamDrop: false };
-                                    } else {
-                                        if (res.status === 401 || res.status === 404) ModelKeyMatrixManager.recordFailure(modelId, chosenKey);
-                                        markKeyModelFailure(keyObj, modelId, res.status);
+                                        if (res.ok) {
+                                            markKeyModelSuccess(keyObj, modelId);
+                                            ModelKeyMatrixManager.recordSuccess(modelId, chosenKey);
+                                            if (typeof onModelChange === 'function') onModelChange(modelId, mIdx);
+                                            let received = false;
+
+                                            await readSSEStream(res, signal, (chunk) => {
+                                                if (chunk.isHeartbeat) return;
+                                                received = true;
+                                                onChunk(chunk);
+                                            });
+
+                                            if (received) return { success: true, activeModel: modelId, isMidStreamDrop: false };
+                                        } else {
+                                            if (res.status === 401 || res.status === 404) ModelKeyMatrixManager.recordFailure(modelId, chosenKey);
+                                            markKeyModelFailure(keyObj, modelId, res.status);
+                                        }
+                                    } catch (e) {
+                                        if (signal?.aborted) return { success: false, isMidStreamDrop: false };
+                                        markKeyModelFailure(keyObj, modelId, null, e.message);
                                     }
-                                } catch (e) {
-                                    if (signal?.aborted) return { success: false, isMidStreamDrop: false };
-                                    markKeyModelFailure(keyObj, modelId, null, e.message);
                                 }
                             }
                         }
@@ -11975,7 +12009,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         const candidatePool = availablePool.length > 0 ? availablePool : pool;
                         const raceContenders = [];
                         for (const m of modelsToTry) {
-                            for (const k of candidatePool) raceContenders.push({ modelId: m, keyObj: k, keyStr: k.key });
+                            for (const k of candidatePool) {
+                                if (k.models?.[m]?.status === 'unsupported') continue;
+                                raceContenders.push({ modelId: m, keyObj: k, keyStr: k.key });
+                            }
                         }
 
                         if (!raceContenders.length) return { success: false, errorMessage: "Không còn chìa khóa khả dụng." };
