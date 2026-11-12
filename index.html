@@ -3903,9 +3903,10 @@ self.onmessage = async function(e) {
                         thoughtMsg.isThinking = false;
                         thoughtMsg.thoughtTime = ((Date.now() - (thoughtMsg.createdAt || Date.now())) / 1000).toFixed(1);
                         thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
-                        scheduleDbSave(thoughtMsg);
+                        scheduleDbSave(thoughtMsg, true);
                     }
-                    if (executionMsg) scheduleDbSave(executionMsg);
+                    if (executionMsg) scheduleDbSave(executionMsg, true);
+                    scheduleDbSave(botMsg, true); // LƯU TỨC THÌ PHẢN HỒI AI HOÀN CHỈNH VÀO ĐĨA
 
                     // KỊCH BẢN KHÔI PHỤC: LƯU PHÂN NHÁNH PHIÊN LÀM VIỆC (BRANCHING VERSIONS NAVIGATOR)
                     if (!botMsg.versions || botMsg.versions.length === 0) {
@@ -7608,39 +7609,33 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                 const raw = (typeof toRaw === 'function') ? toRaw(obj) : obj;
                 const copy = Array.isArray(raw) ? [] : {};
                 for (const key of Object.keys(raw)) {
-                    // Loại bỏ các trường timer, vị trí chạm hoặc thuộc tính DOM không thể tuần tự hóa
                     if (key === 'longPressTimer' || key === 'longPressStartPos' || key === 'isLongPressTriggered' || (key === 'videoBlob' && !(raw[key] instanceof Blob))) {
                         continue;
                     }
                     const val = raw[key];
                     if (val instanceof Blob || val instanceof File) {
                         copy[key] = val;
+                    } else if (key === 'attachments' && Array.isArray(val)) {
+                        // ƯU TIÊN GỌT BỎ DỮ LIỆU NẶNG ĐỂ CHỐNG LỖI QUOTA TRÊN LOCALSTORAGE & INDEXEDDB
+                        copy[key] = val.map(a => {
+                            const aCopy = { ...a };
+                            if (aCopy.mimeType && (aCopy.mimeType.startsWith('video/') || aCopy.mimeType.startsWith('audio/'))) {
+                                delete aCopy.data; 
+                            } else if (aCopy.data && aCopy.data.length > 2 * 1024 * 1024) {
+                                delete aCopy.data;
+                            }
+                            return aCopy;
+                        });
                     } else if (val && typeof val === 'object') {
                         try {
                             copy[key] = JSON.parse(JSON.stringify(val));
                         } catch (_) {
-                            // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Chống sập DataCloneError trên IndexedDB
-                            // Tuyệt đối không gán thô đối tượng hỏng val vào copy. Ép kiểu an toàn để bảo toàn Transaction.
                             copy[key] = Array.isArray(val) ? [] : null;
                         }
                     } else if (typeof val === 'function' || typeof val === 'symbol') {
-                        // Bỏ qua hoàn toàn hàm và biểu tượng
                         continue;
                     } else {
-                        // BẢO VỆ DỮ LIỆU ĐÍNH KÈM: Giữ lại ảnh nhẹ (<= 2MB) cho IndexedDB, chỉ loại bỏ stream video/audio dung lượng lớn
-                        if (key === 'attachments' && Array.isArray(val)) {
-                            copy[key] = val.map(a => {
-                                const aCopy = { ...a };
-                                if (aCopy.mimeType && (aCopy.mimeType.startsWith('video/') || aCopy.mimeType.startsWith('audio/'))) {
-                                    delete aCopy.data; 
-                                } else if (aCopy.data && aCopy.data.length > 3 * 1024 * 1024) {
-                                    delete aCopy.data;
-                                }
-                                return aCopy;
-                            });
-                        } else {
-                            copy[key] = val;
-                        }
+                        copy[key] = val;
                     }
                 }
                 return copy;
@@ -9332,44 +9327,41 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     const saveTimersMap = new Map();
                     let lsBackupDebounceTimer = null;
 
+                    const saveBackupToLocalStorageSync = (threadId) => {
+                        if (!threadId) return;
+                        try {
+                            const backupKey = `gdeep_msg_backup_${threadId}`;
+                            const threadMsgs = currentMessages.value
+                                .filter(m => m.threadId === threadId)
+                                .map(m => {
+                                    const c = cleanForDb(m);
+                                    if (c.attachments && Array.isArray(c.attachments)) {
+                                        c.attachments = c.attachments.map(a => {
+                                            const ac = { ...a };
+                                            delete ac.data; 
+                                            return ac;
+                                        });
+                                    }
+                                    return c;
+                                });
+                            if (threadMsgs.length > 0) {
+                                localStorage.setItem(backupKey, JSON.stringify(threadMsgs));
+                            }
+                        } catch (_) {}
+                    };
+
                     const scheduleDbSave = (msg, forceImmediate = false) => {
                         if (!msg?.id || !msg?.threadId) return;
 
-                        // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Chống nghẽn cổ chai Main Thread
-                        // Thay vì JSON.parse/stringify toàn bộ lịch sử mỗi 65ms khi AI gõ chữ (gây đơ UI, O(N^2) complexity),
-                        // Gom nhóm tác vụ ghi LocalStorage và dùng debounce 1500ms, lấy state từ RAM (currentMessages).
-                        if (lsBackupDebounceTimer) clearTimeout(lsBackupDebounceTimer);
-                        lsBackupDebounceTimer = setTimeout(() => {
-                            try {
-                                const backupKey = `gdeep_msg_backup_${msg.threadId}`;
-                                const threadMsgs = currentMessages.value
-                                    .filter(m => m.threadId === msg.threadId)
-                                    .map(m => {
-                                        const c = cleanForDb(m);
-                                        // BƯỚC NHẢY VỌT LOGIC 3: Gọt sạch toàn bộ Base64 (kể cả Ảnh) khỏi LocalStorage.
-                                        // Đảm bảo Backup Text luôn an toàn tuyệt đối khỏi lỗi 5MB QuotaExceededError. Dexie sẽ lo phần hình ảnh.
-                                        if (c.attachments && Array.isArray(c.attachments)) {
-                                            c.attachments = c.attachments.map(a => {
-                                                const ac = { ...a };
-                                                delete ac.data; 
-                                                return ac;
-                                            });
-                                        }
-                                        return c;
-                                    });
-                                if (threadMsgs.length > 0) {
-                                    localStorage.setItem(backupKey, JSON.stringify(threadMsgs));
-                                }
-                            } catch (_) {}
-                        }, 1500);
-
                         pendingSaveMap.set(msg.id, msg);
 
+                        // NẾU LÀ YÊU CẦU LƯU NGAY LẬP TỨC: GHI THẲNG VÀO LOCALSTORAGE VÀ HÀNG ĐỢI DB TỨC THÌ
                         if (forceImmediate || !isGenerating.value) {
                             if (saveTimersMap.has(msg.id)) {
                                 clearTimeout(saveTimersMap.get(msg.id));
                                 saveTimersMap.delete(msg.id);
                             }
+                            saveBackupToLocalStorageSync(msg.threadId);
                             dbWriteQueue.enqueue(async () => {
                                 const latestSnapshot = pendingSaveMap.get(msg.id);
                                 if (latestSnapshot) {
@@ -9379,6 +9371,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             }, { priority: 1 });
                             return;
                         }
+
+                        // Khi đang stream thì dùng debounce để chống nghẽn CPU
+                        if (lsBackupDebounceTimer) clearTimeout(lsBackupDebounceTimer);
+                        lsBackupDebounceTimer = setTimeout(() => {
+                            saveBackupToLocalStorageSync(msg.threadId);
+                        }, 1000);
 
                         if (saveTimersMap.has(msg.id)) {
                             clearTimeout(saveTimersMap.get(msg.id));
@@ -9393,12 +9391,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 }
                             }, { priority: 2 });
                             saveTimersMap.delete(msg.id);
-                        }, 1200);
+                        }, 800);
                         
                         saveTimersMap.set(msg.id, timerId);
                     };
 
                     const flushAllPendingDbWrites = async () => {
+                        if (currentThreadId.value) {
+                            saveBackupToLocalStorageSync(currentThreadId.value);
+                        }
                         for (const [msgId, timerId] of saveTimersMap.entries()) {
                             clearTimeout(timerId);
                             const snapshot = pendingSaveMap.get(msgId);
@@ -9410,8 +9411,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         saveTimersMap.clear();
 
                         const start = Date.now();
-                        // BƯỚC NHẢY VỌT LOGIC 3: Mở rộng vòng xuyến thời gian lên 3000ms để đảm bảo mọi Transaction ghi đĩa được hoàn tất nguyên vẹn
-                        while ((dbWriteQueue.activeCount > 0 || dbWriteQueue.queue.length > 0) && (Date.now() - start < 3000)) {
+                        while ((dbWriteQueue.activeCount > 0 || dbWriteQueue.queue.length > 0) && (Date.now() - start < 1500)) {
                             await new Promise(r => setTimeout(r, 16));
                         }
                     };
@@ -9915,13 +9915,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         await flushAllPendingDbWrites();
                         if (window.speechSynthesis) { window.speechSynthesis.cancel(); isSpeaking.value = false; }
                         
-                        // [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Chống Race Condition đảo lộn Thread ID khi click nhanh
-                        // Chỉ truy vấn trước, tuyệt đối không gán currentThreadId.value khi chưa vượt qua Lock Guard
                         let rawMsgs = [];
                         if (db) {
                             try {
-                                rawMsgs = await db.messages.where('threadId').equals(id).sortBy('createdAt');
-                            } catch (_) {}
+                                // SỬA LỖI DEXIE: DÙNG .toArray() THAY VÌ .sortBy() TRÊN COLLECTION
+                                rawMsgs = await db.messages.where('threadId').equals(id).toArray();
+                                rawMsgs.sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+                            } catch (dbErr) {
+                                console.warn("[Dexie] Không đọc được dữ liệu tin nhắn:", dbErr);
+                            }
                         }
 
                         // Nếu người dùng đã click sang Thread khác trong lúc truy vấn, huỷ ngay lập tức
@@ -11673,7 +11675,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 htmlContent: compileMarkdownSync(prefix ? `**${prefix}** ${intakePlan.cleanPrompt || (primaryImage ? 'Tài liệu tham chiếu' : '')}` : promptRender, true)
                             });
                             currentMessages.value.push(userMsg);
-                            scheduleDbSave(userMsg);
+                            scheduleDbSave(userMsg, true); // LƯU TỨC THÌ TIN NHẮN NGƯỜI DÙNG VÀO ĐĨA
+                            
+                            // CẬP NHẬT THỜI GIAN VÀ ĐẨY PHIÊN LÊN ĐẦU DANH SÁCH NGAY LẬP TỨC
+                            const activeTh = threads.value.find(t => t.id === currentThreadId.value);
+                            if (activeTh) {
+                                activeTh.updatedAt = Date.now();
+                                saveThreadToLocalStorageBackup(activeTh);
+                                if (db) db.threads.put(cleanForDb(activeTh)).catch(() => {});
+                            }
                             scrollToBottom();
 
                             if (currentMessages.value.filter(m => m.role === 'user').length === 1) {
