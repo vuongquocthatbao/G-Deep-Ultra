@@ -2142,12 +2142,12 @@
                 <div class="flex items-end w-full min-w-0 px-1 gap-1.5 transition-all duration-300">
                     <div class="relative flex items-center shrink-0">
                         <div v-if="showInputMenu" @click="showInputMenu = false" class="fixed inset-0 z-40"></div>
-                        <button type="button" @click="showInputMenu = !showInputMenu; triggerHaptic('light')"
+                        <button type="button" @click="isListening ? toggleVoiceInput() : (showInputMenu = !showInputMenu); triggerHaptic('light')"
                                 class="btn-instant relative rounded-full shrink-0 cursor-pointer bg-white/[0.05] hover:bg-white/[0.1] w-9 h-9 md:w-10 md:h-10 flex items-center justify-center border border-white/[0.08] shadow-sm z-50 transition-all hover:scale-105 active:scale-95"
-                                title="Công cụ nâng cao">
+                                :title="isListening ? 'Dừng thu âm' : 'Công cụ nâng cao'">
                             <lucide-icon v-if="!isListening" :name="showInputMenu ? 'x' : 'plus'" class="w-4.5 h-4.5" :style="{ color: (enableDeepThinking || enableCodeExecution || enableGoogleSearch || enableImageGen || enableCinemaStudio) ? selectedAccent : '#8e96a8' }"></lucide-icon>
-                                                        <div v-else class="mic-wave-container">
-                                <span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span> <!-- Đã bổ sung thanh sóng âm thứ 4 -->
+                            <div v-else class="mic-wave-container" title="Bấm để dừng ghi âm">
+                                <span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span><span class="mic-wave-bar"></span>
                             </div>
                         </button>
 
@@ -3689,6 +3689,21 @@ self.onmessage = async function(e) {
 
                         const parts = candidate.content?.parts || [];
                         for (const rawPart of parts) {
+                            // KÊNH 0: BẮT KẾT QUẢ TÍNH TOÁN ĐÁM MÂY TỪ MÁY CHỦ GOOGLE
+                            if (rawPart.codeExecutionResult) {
+                                executionMsg = ensureMsg(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
+                                const serverOut = String(rawPart.codeExecutionResult.output || '');
+                                const isSuccess = rawPart.codeExecutionResult.outcome === 'OUTCOME_OK';
+                                executionMsg.rawExecutionParts.push({
+                                    type: 'output',
+                                    content: serverOut || (isSuccess ? 'Thực thi thành công.' : 'Thực thi gặp lỗi.'),
+                                    outcome: isSuccess ? 'COMPLETED' : 'ERROR'
+                                });
+                                executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+                                scheduleDbSave(executionMsg);
+                                continue;
+                            }
+
                             // KÊNH 1: SUY LUẬN NGẦM (THINKING BUFFER)
                             if (rawPart.thought === true || rawPart.reasoning) {
                                 thoughtMsg = ensureMsg(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
@@ -3761,10 +3776,10 @@ self.onmessage = async function(e) {
                                 });
                             }
 
-                            // KÊNH 3: VĂN BẢN TRẢ LỜI CHÍNH THỨC (CÓ BỘ LỌC CẮT BỎ ĐOẠN LẶP NỐI TIẾP)
+                            // KÊNH 3: VĂN BẢN TRẢ LỜI CHÍNH THỨC (LÀM SẠCH 100% THẺ SUY LUẬN & ĐOẠN LẶP)
                             let chunkText = String(rawPart.text || '');
-                            if (chunkText.includes('<think>')) {
-                                chunkText = chunkText.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<\/?(?:think|thought)>/gi, '');
+                            if (chunkText.includes('<think>') || chunkText.includes('<thought>')) {
+                                chunkText = chunkText.replace(/<(think|thought)>[\s\S]*?<\/(think|thought)>/gi, '').replace(/<\/?(?:think|thought)>/gi, '');
                             }
                             if (chunkText) {
                                 if (thoughtMsg && thoughtMsg.isThinking) {
@@ -3809,16 +3824,33 @@ self.onmessage = async function(e) {
                     );
                     history = sanitizeHistoryForGemini(history, false);
 
+                    // HỖ TRỢ TÌM KIẾM BẢN ĐỊA & ĐIỆN TOÁN ĐỘC LẬP TỰ ĐỘNG
+                    const activeTools = [];
+                    if (enableCodeExecution) activeTools.push({ codeExecution: {} });
+                    if (enableGoogleSearch && (!serperApiKeys || !serperApiKeys.length)) {
+                        activeTools.push({ googleSearch: {} }); // KÍCH HOẠT NATIVE SEARCH NẾU THIẾU SERPER KEY
+                    }
+
                     const initialPayload = {
                         systemInstruction: { parts: [{ text: systemPrompt }] },
                         contents: history,
                         generationConfig: { temperature: 0.2, maxOutputTokens: 65536, thinkingConfig: resolveThinking(activeModelId) },
                         safetySettings: SAFETY_SETTINGS
                     };
-                    if (enableCodeExecution) initialPayload.tools = [{ codeExecution: {} }];
+                    if (activeTools.length > 0) initialPayload.tools = activeTools;
 
                     const streamResult = await performStream(initialPayload);
                     if (streamResult?.isMidStreamDrop) streamDropped = true;
+
+                    // BẮT LỖI MẠNG / KHÓA API: Không đánh lừa người dùng bằng câu "Đã hoàn tất phân tích"
+                    if (!streamResult || !streamResult.success) {
+                        if (!rawMarkdownBuffer && (!thoughtMsg || !thoughtMsg.content)) {
+                            botMsg.content = streamResult?.errorMessage || '*(Không thể kết nối đến máy chủ AI. Vui lòng kiểm tra lại chìa khóa API trong Cài đặt)*';
+                            botMsg.htmlContent = compileMarkdownSync(botMsg.content, true);
+                            scheduleDbSave(botMsg);
+                            return { rawMarkdownBuffer: '', botMsg };
+                        }
+                    }
 
                     // VÒNG LẶP TIẾP NỐI VÔ HẠN PHẪU THUẬT (SURGICAL CONTINUATION SPLICER)
                     let continueSteps = 0;
@@ -3834,6 +3866,7 @@ self.onmessage = async function(e) {
                         continueSteps++;
                         botMsg.isContinuing = true;
                         botMsg.continuationStep = continueSteps;
+                        botMsg._continuationChunkReceived = false; // RESET CỜ ĐỂ KHỬ TRÙNG LẶP CHO TỪNG BƯỚC NỐI TIẾP
                         streamDropped = false;
                         lastFinishReason = null;
 
@@ -4009,10 +4042,16 @@ self.onmessage = async function(e) {
 
         function buildTurnParts(textContent, attachments = []) {
             const parts = [];
-            const cleanText = (textContent || '').trim();
+            let cleanText = (textContent || '').trim();
+
+            // Nếu người dùng chỉ gửi tệp mà không nhập câu hỏi, tự tạo chỉ dẫn phân tích chuẩn
+            if (!cleanText && attachments.length > 0) {
+                cleanText = "Hãy phân tích chi tiết toàn bộ nội dung và dữ liệu từ các tệp đính kèm này.";
+            }
             if (cleanText) parts.push({ text: cleanText });
 
             for (const att of attachments) {
+                // 1. Luồng dữ liệu tệp chính (Hình ảnh, Video, PDF)
                 if (att.data && att.mimeType) {
                     parts.push({
                         inlineData: {
@@ -4023,6 +4062,16 @@ self.onmessage = async function(e) {
                 } else if (att.textContent) {
                     parts.push({
                         text: `\n[NỘI DUNG TỆP: ${att.name}]\n${att.textContent}\n[HẾT TỆP ${att.name}]\n`
+                    });
+                }
+
+                // 2. KHÔI PHỤC KÊNH ÂM THANH VIDEO: Gửi kèm âm thanh gốc để Model nghe được lời thoại
+                if (att.audioTrack && att.audioTrack.data) {
+                    parts.push({
+                        inlineData: {
+                            mimeType: att.audioTrack.mimeType || 'audio/wav',
+                            data: cleanBase64Data(att.audioTrack.data)
+                        }
                     });
                 }
             }
@@ -4598,11 +4647,17 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                 // 2. KHI ĐẠT NGƯỠNG VÔ HẠN: KÍCH HOẠT HỒ SƠ KÝ ỨC VĨNH CỬU
                 const assembledPayload = [];
 
-                // A. Lượt mở đầu cuộc hội thoại (Genesis Turn)
+                // A. Lượt mở đầu cuộc hội thoại (Genesis Turn - Cắt tỉa media cũ chống phình payload)
                 const rootTurn = fullTurns[0];
                 const isRootAlreadyInRecent = recentMsgIds.has(rootTurn.rawId);
                 if (!isRootAlreadyInRecent) {
-                    assembledPayload.push({ role: rootTurn.role, parts: rootTurn.parts });
+                    const sanitizedRootParts = rootTurn.parts.map(p => {
+                        if (p.inlineData && (p.inlineData.mimeType.startsWith('video/') || p.inlineData.mimeType.startsWith('audio/'))) {
+                            return { text: `[Tệp đa phương tiện đã phân tích ở lượt mở đầu: ${p.inlineData.mimeType}]` };
+                        }
+                        return p;
+                    });
+                    assembledPayload.push({ role: rootTurn.role, parts: sanitizedRootParts });
                 }
 
                 // B. Khắc sâu Sổ Ký Ức Vĩnh Cửu (Living Ledger)
@@ -4649,8 +4704,17 @@ HÃY CẬP NHẬT VÀ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH (K
                 }
                 for (const mTurn of lightlyCompressedMiddle) assembledPayload.push({ role: mTurn.role, parts: mTurn.parts });
 
-                // E. Cửa sổ ngữ cảnh nóng gần nhất (Recent Window - Giữ 100% độ chi tiết)
-                for (const rTurn of recentWindow) assembledPayload.push({ role: rTurn.role, parts: rTurn.parts });
+                // E. Cửa sổ ngữ cảnh nóng gần nhất (Chỉ giữ media nguyên bản cho lượt cuối cùng)
+                recentWindow.forEach((rTurn, rIdx) => {
+                    const isLatestTurn = (rIdx === recentWindow.length - 1);
+                    const safeRecentParts = rTurn.parts.map(p => {
+                        if (!isLatestTurn && p.inlineData && (p.inlineData.mimeType.startsWith('video/') || p.inlineData.mimeType.startsWith('audio/'))) {
+                            return { text: `[Tệp đa phương tiện đã phân tích ở lượt trước: ${p.inlineData.mimeType}]` };
+                        }
+                        return p;
+                    });
+                    assembledPayload.push({ role: rTurn.role, parts: safeRecentParts });
+                });
 
                 return assembledPayload;
             }
@@ -8226,16 +8290,16 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     notify(enableDeepThinking.value ? "Đã bật Suy Luận Chuyên Sâu" : "Đã tắt Suy Luận Chuyên Sâu");
                 };
 
-                const toggleGoogleSearch = (onRequireConfig) => {
-                    if (!enableGoogleSearch.value && !serperApiKeys.value.length) {
-                        notify("Vui lòng cấu hình chìa khóa tra cứu toàn cầu", true);
-                        if (typeof onRequireConfig === 'function') onRequireConfig();
-                        return;
-                    }
+                const toggleGoogleSearch = () => {
                     enableGoogleSearch.value = !enableGoogleSearch.value;
                     StorageManager.set(GDeepSystemConfig.StorageKeys.FEAT_WEB_SEARCH, enableGoogleSearch.value);
                     triggerHaptic('light');
-                    notify(enableGoogleSearch.value ? "Đã bật Tra Cứu Dữ Liệu Web" : "Đã tắt Tra Cứu Dữ Liệu Web");
+                    if (enableGoogleSearch.value) {
+                        const hasSerper = serperApiKeys.value && serperApiKeys.value.length > 0;
+                        notify(hasSerper ? "Đã bật Tra Cứu Web Toàn Cầu (Serper Engine)" : "Đã bật Tra Cứu Trực Tuyến (Gemini Native Search)");
+                    } else {
+                        notify("Đã tắt Tra Cứu Dữ Liệu Web");
+                    }
                 };
 
                 // 4. Danh mục Mô hình & Giao diện Theme
@@ -8412,6 +8476,13 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
 // =========================================================================
 const rawExecuteCinemaProduction = async (msg, customPrompt = '', directImageInput = null, inputTextRef = null, pendingAttachmentsRef = null) => {
     if (isGenerating && isGenerating.value) return;
+    
+    // KIỂM TRA PHẦN CỨNG CLIENT NGAY TỨC THÌ ĐỂ TRÁNH LÃNG PHÍ TOKEN QUOTA
+    if (typeof window.VideoEncoder === 'undefined') {
+        notify("Trình duyệt chưa hỗ trợ WebCodecs. Vui lòng dùng Chrome, Edge hoặc Safari mới nhất.", true);
+        return;
+    }
+
     if (isGenerating) isGenerating.value = true;
     if (typeof triggerHaptic === 'function') triggerHaptic('heavy');
 
@@ -9169,6 +9240,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 
                     const scrollToBottom = (force = false) => {
                         if (!chatContainer.value) return;
+                        if (force) {
+                            userIsScrolledUp = false; // MỞ KHÓA TỰ ĐỘNG BÁM ĐUỔI KHI NGƯỜI DÙNG BẤM NÚT XUỐNG ĐÁY
+                            showScrollBtn.value = false;
+                        }
                         requestAnimationFrame(() => {
                             if (chatContainer.value && (force || !userIsScrolledUp)) {
                                 chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
@@ -10485,6 +10560,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 const keepIds = new Set(currentMessages.value.map(m => m.id));
                                 const existing = JSON.parse(localStorage.getItem(backupKey) || '[]').filter(m => keepIds.has(m.id));
                                 localStorage.setItem(backupKey, JSON.stringify(existing));
+                                
+                                // XÓA KÝ ỨC MA: Reset Sổ Ký Ức Vĩnh Cửu vì các tin nhắn tương lai đã bị xóa
+                                localStorage.removeItem(`gdeep_ledger_${msg.threadId}`);
+                                if (db) {
+                                    db.threads.update(msg.threadId, { permanentLedger: null }).catch(() => {});
+                                }
                             } catch (_) {}
                             if (db) dbWriteQueue.enqueue(async () => {
                                 for (const m of toDelete) await db.messages.delete(m.id);
@@ -11371,8 +11452,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                             req.generationConfig.maxOutputTokens = 65536;
 
                             const isThinkingOn = enableDeepThinking && (enableDeepThinking.value === true || enableDeepThinking === true);
-                            if (isThinkingOn) {
-                                req.generationConfig.thinkingConfig = /gemini-(?:3|4)/i.test(modelId)
+                            // CHỈ GỬI THINKING CONFIG CHO CÁC MODEL THỰC SỰ HỖ TRỢ (GEMINI 2.5, 3.X, 4.X HOẶC CÓ ĐUÔI THINKING)
+                            const supportsThinking = /thinking|gemini-(?:2\.5|[3-9])/i.test(modelId);
+
+                            if (isThinkingOn && supportsThinking) {
+                                req.generationConfig.thinkingConfig = /gemini-(?:3|[4-9])/i.test(modelId)
                                     ? { thinkingLevel: "HIGH", includeThoughts: true }
                                     : { thinkingBudget: 24576, includeThoughts: true };
                             } else {
