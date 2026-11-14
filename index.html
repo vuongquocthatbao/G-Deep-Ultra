@@ -9876,11 +9876,17 @@ print("DECOMPOSITION_OK")
                             };
                         }
 
-                        // Nếu Agent xuất mã GLSL đã được tối ưu, ghi nhận làm mã kết xuất cuối cùng
-                        if (lastAgentOutput.includes('```glsl') && workflowStudio.resultData.image) {
-                            const glslMatch = lastAgentOutput.match(/```glsl([\s\S]*?)```/i);
-                            if (glslMatch && glslMatch[1]) {
-                                workflowStudio.resultData.image.glsl = glslMatch[1].trim();
+                        // BẮT CHÍNH XÁC MÃ GLSL TỪ MỌI ĐỊNH DẠNG KHỐI MÃ CỦA AI
+                        if (workflowStudio.resultData.image && lastAgentOutput) {
+                            const glslBlocks = Array.from(lastAgentOutput.matchAll(/```(?:glsl|shader|c|cpp|frag)?\s*([\s\S]*?)```/gi));
+                            if (glslBlocks.length > 0) {
+                                for (let b = glslBlocks.length - 1; b >= 0; b--) {
+                                    const codeCandidate = glslBlocks[b][1].trim();
+                                    if (codeCandidate.includes('vec4') || codeCandidate.includes('render_scene') || codeCandidate.includes('mainImage') || codeCandidate.includes('gl_FragColor')) {
+                                        workflowStudio.resultData.image.glsl = codeCandidate;
+                                        break;
+                                    }
+                                }
                             }
                         }
 
@@ -9909,42 +9915,84 @@ print("DECOMPOSITION_OK")
                         if (pyOut) accumulatedContext += `[KẾT QUẢ WASM]:\n${pyOut}\n`;
                     }
 
-                    // HÀM BIÊN DỊCH VÀ KẾT XUẤT TRỰC TIẾP MÃ GLSL THÀNH DATAURL ẢNH PNG
+                    // HÀM BIÊN DỊCH VÀ KẾT XUẤT GLSL TOÀN NĂNG (TỰ ĐỘNG KHỬ TRÙNG LẶP & ĐỒNG BỘ SHADERTOY)
                     const renderGlslToDataUrl = async (glslCode, width = 1024, height = 1024) => {
-                        if (!glslCode) return null;
-                        const clean = glslCode.replace(/```(?:glsl)?/gi, '').replace(/```/g, '').trim();
+                        if (!glslCode || typeof glslCode !== 'string') return null;
+                        
+                        // 1. Dọn dẹp triệt để markdown và khoảng trắng
+                        let rawCode = glslCode.replace(/```(?:glsl|shader|c|cpp|frag)?/gi, '').replace(/```/g, '').trim();
+                        if (!rawCode) return null;
+
+                        // 2. Loại bỏ các khai báo trùng lặp gây lỗi Compile Error
+                        rawCode = rawCode.replace(/^[ \t]*precision[ \t]+(?:highp|mediump|lowp)[ \t]+float[ \t]*;/gm, '');
+                        rawCode = rawCode.replace(/^[ \t]*uniform[ \t]+(?:vec2|vec3|float)[ \t]+(?:uResolution|uTime|iResolution|iTime|u_resolution|u_time)[ \t]*;/gm, '');
+                        rawCode = rawCode.replace(/^[ \t]*varying[ \t]+vec2[ \t]+(?:vUv|uv)[ \t]*;/gm, '');
 
                         const canvas = document.createElement('canvas');
                         canvas.width = width;
                         canvas.height = height;
-                        const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true }) || canvas.getContext('experimental-webgl', { preserveDrawingBuffer: true });
-                        if (!gl) return null;
+                        
+                        // Khởi tạo context với WebGL2 ưu tiên (hỗ trợ ép kiểu int-float linh hoạt)
+                        const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true }) ||
+                                   canvas.getContext('webgl', { preserveDrawingBuffer: true }) ||
+                                   canvas.getContext('experimental-webgl', { preserveDrawingBuffer: true });
+                        if (!gl) throw new Error("Trình duyệt không hỗ trợ WebGL");
 
                         const vsSource = "attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }";
-                        const fsSource = clean.includes('void main()')
-                            ? `precision highp float;\nuniform vec2 uResolution;\nuniform float uTime;\n${clean}`
-                            : `precision highp float;\nuniform vec2 uResolution;\nuniform float uTime;\n${clean}\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\n    gl_FragColor = render_scene(uv, uTime);\n}`;
+                        
+                        // Chuẩn hóa Header điều phối vạn năng (hỗ trợ cả iResolution, iTime, uResolution, uTime)
+                        const commonHeader = [
+                            "precision highp float;",
+                            "uniform vec2 uResolution;",
+                            "uniform float uTime;",
+                            "#define iResolution vec3(uResolution, 1.0)",
+                            "#define iTime uTime",
+                            "#define u_resolution uResolution",
+                            "#define u_time uTime",
+                            "varying vec2 vUv;"
+                        ].join('\n');
 
-                        const createShader = (type, src) => {
-                            const s = gl.createShader(type);
-                            gl.shaderSource(s, src);
-                            gl.compileShader(s);
-                            if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-                                const log = gl.getShaderInfoLog(s);
-                                gl.deleteShader(s);
-                                throw new Error(log);
+                        let fsSource = '';
+                        // Nhận diện chuẩn Shadertoy
+                        if (rawCode.includes('mainImage')) {
+                            fsSource = `${commonHeader}\n${rawCode}\nvoid main() {\n    mainImage(gl_FragColor, gl_FragCoord.xy);\n    gl_FragColor.a = 1.0;\n}`;
+                        }
+                        // Nhận diện chuẩn render_scene
+                        else if (rawCode.includes('render_scene')) {
+                            fsSource = `${commonHeader}\n${rawCode}\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\n    gl_FragColor = render_scene(uv, uTime);\n    gl_FragColor.a = 1.0;\n}`;
+                        }
+                        // Nhận diện chuẩn void main
+                        else if (rawCode.includes('void main')) {
+                            fsSource = `${commonHeader}\n${rawCode}`;
+                        }
+                        // Fallback: Bao bọc đoạn mã thành thân hàm render_scene
+                        else {
+                            fsSource = `${commonHeader}\nvec4 render_scene(vec2 uv, float time) {\n${rawCode}\n}\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\n    gl_FragColor = render_scene(uv, uTime);\n    gl_FragColor.a = 1.0;\n}`;
+                        }
+
+                        const compileShader = (type, src) => {
+                            const shader = gl.createShader(type);
+                            gl.shaderSource(shader, src);
+                            gl.compileShader(shader);
+                            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                                const log = gl.getShaderInfoLog(shader);
+                                gl.deleteShader(shader);
+                                throw new Error(`Lỗi Shader: ${log}`);
                             }
-                            return s;
+                            return shader;
                         };
 
-                        const vs = createShader(gl.VERTEX_SHADER, vsSource);
-                        const fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+                        const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+                        const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
                         const prog = gl.createProgram();
                         gl.attachShader(prog, vs);
                         gl.attachShader(prog, fs);
                         gl.linkProgram(prog);
 
-                        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+                        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+                            throw new Error(gl.getProgramInfoLog(prog));
+                        }
+
                         gl.useProgram(prog);
 
                         const buf = gl.createBuffer();
@@ -9984,41 +10032,58 @@ print("DECOMPOSITION_OK")
                         };
                     }
 
-                    // ĐẦU RA 2: KẾT XUẤT THỰC SỰ MÃ GLSL THÀNH HÌNH ẢNH WEBGL NGUYÊN BẢN
+                    // ĐẦU RA 2: KẾT XUẤT CHÍNH XÁC MÃ GLSL THÀNH HÌNH ẢNH PNG
                     if (workflowStudio.outputFormat === 'image' && workflowStudio.resultData.image) {
-                        workflowStudio.statusMessage = "🎨 Đang dùng WebGL biên dịch mã GLSL thành hình ảnh nghệ thuật thực tế...";
-                        const finalGlslCode = workflowStudio.resultData.image.glsl || workflowStudio.resultData.image.baseGlsl;
+                        workflowStudio.statusMessage = "🎨 Đang dùng WebGL biên dịch mã GLSL thành hình ảnh thực tế...";
                         
+                        // Lấy mã GLSL cuối cùng (Ưu tiên mã AI nâng cấp, nếu chưa có thì lấy mã Python phân rã)
+                        let activeGlsl = workflowStudio.resultData.image.glsl || workflowStudio.resultData.image.baseGlsl || '';
+                        
+                        // Bắt lại từ accumulatedContext nếu trước đó bị bỏ sót
+                        if (!activeGlsl || activeGlsl.length < 20) {
+                            const matchAnyGlsl = accumulatedContext.match(/```(?:glsl|shader|c|cpp|frag)?([\s\S]*?)```/gi);
+                            if (matchAnyGlsl && matchAnyGlsl.length > 0) {
+                                const lastBlock = matchAnyGlsl[matchAnyGlsl.length - 1].replace(/```(?:glsl|shader|c|cpp|frag)?/gi, '').replace(/```/g, '').trim();
+                                if (lastBlock.includes('vec') || lastBlock.includes('render_scene') || lastBlock.includes('main')) {
+                                    activeGlsl = lastBlock;
+                                    workflowStudio.resultData.image.glsl = lastBlock;
+                                }
+                            }
+                        }
+
+                        let renderedPng = null;
                         try {
-                            // Render GLSL thành ảnh PNG kích thước lớn
-                            const renderedDataUrl = await renderGlslToDataUrl(finalGlslCode, 1024, 1024);
-                            workflowStudio.resultData.image.renderedUrl = renderedDataUrl;
+                            renderedPng = await renderGlslToDataUrl(activeGlsl, 1024, 1024);
+                        } catch (err1) {
+                            console.warn("[WebGL] Lỗi shader chính, kích hoạt shader dự phòng:", err1.message);
+                            if (workflowStudio.resultData.image.baseGlsl) {
+                                try {
+                                    renderedPng = await renderGlslToDataUrl(workflowStudio.resultData.image.baseGlsl, 1024, 1024);
+                                } catch (_) {}
+                            }
+                        }
+
+                        // Gán ảnh PNG render thực tế từ GLSL làm kết quả hiển thị chính
+                        if (renderedPng) {
+                            workflowStudio.resultData.image.renderedUrl = renderedPng;
                             workflowStudio.resultData.image.viewMode = 'rendered';
 
-                            // Đóng gói ảnh PNG kết xuất từ GLSL vào danh sách tệp thành phẩm để tải về
-                            const pngBase64 = renderedDataUrl.split(',')[1];
+                            const b64Data = renderedPng.split(',')[1];
                             workflowStudio.artifacts.push({
                                 name: `GLSL_Rendered_${Date.now()}.png`,
                                 mime: 'image/png',
-                                data: pngBase64,
-                                size: Math.round(pngBase64.length * 0.75)
+                                data: b64Data,
+                                size: Math.round(b64Data.length * 0.75)
                             });
                             workflowStudio.artifacts.push({
                                 name: `Parametric_Shader_${Date.now()}.glsl`,
                                 mime: 'text/plain',
-                                data: btoa(unescape(encodeURIComponent(finalGlslCode))),
-                                size: finalGlslCode.length
+                                data: btoa(unescape(encodeURIComponent(activeGlsl))),
+                                size: activeGlsl.length
                             });
-                        } catch (glslErr) {
-                            console.warn("[WebGL Renderer] Lỗi biên dịch GLSL:", glslErr.message);
-                            // Nếu shader của AI bị lỗi cú pháp, thử tự động render mã GLSL cơ sở từ Python
-                            try {
-                                const fallbackUrl = await renderGlslToDataUrl(workflowStudio.resultData.image.baseGlsl, 1024, 1024);
-                                workflowStudio.resultData.image.renderedUrl = fallbackUrl;
-                                workflowStudio.resultData.image.viewMode = 'rendered';
-                            } catch (_) {
-                                workflowStudio.resultData.image.renderedUrl = workflowStudio.resultData.image.url;
-                            }
+                        } else {
+                            // Nếu WebGL thiết bị không thể khởi tạo, fallback an toàn về ảnh phác thảo
+                            workflowStudio.resultData.image.renderedUrl = workflowStudio.resultData.image.url;
                         }
                     }
 
