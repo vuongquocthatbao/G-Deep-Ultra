@@ -1433,6 +1433,12 @@
                                     <span v-if="activeGemId === gem.id" :style="{ color: selectedAccent }" class="text-[8.5px] bg-white/5 px-1.5 py-0.5 rounded font-mono shrink-0">Đang dùng</span>
                                 </div>
                                 <div class="text-[11px] text-textMuted truncate mt-0.5 markdown-body" v-html="compileMarkdown(gem.description || 'Chuyên gia trợ lý')"></div>
+                                <div v-if="gem.knowledgeFiles && gem.knowledgeFiles.length > 0" class="mt-1 flex items-center gap-1">
+                                    <span class="text-[9px] px-1.5 py-0.2 rounded-md bg-indigo-500/15 text-indigo-300 font-mono flex items-center gap-1 border border-indigo-500/25">
+                                        <lucide-icon name="database" class="w-2.5 h-2.5"></lucide-icon>
+                                        {{ gem.knowledgeFiles.length }} tệp tri thức
+                                    </span>
+                                </div>
                             </div>
                             <div class="flex items-center space-x-1 shrink-0" @click.stop>
                                 <button type="button" @click="openGemModal(gem)" class="btn-instant w-7 h-7 flex items-center justify-center text-textMuted hover:text-white rounded-lg bg-white/5"><lucide-icon name="edit-3" class="w-3.5 h-3.5"></lucide-icon></button>
@@ -2910,6 +2916,40 @@
                                 <div class="markdown-body text-xs" v-html="compileMarkdown(gemForm.instruction || '*Chưa có chỉ dẫn*')"></div>
                             </div>
                         </div>
+
+                        <!-- MỤC TẢI LÊN TỆP TRI THỨC CHUYÊN GIA -->
+                        <div class="space-y-2 pt-2 border-t border-white/5">
+                            <div class="flex items-center justify-between">
+                                <label class="flex items-center gap-1.5 font-bold text-white uppercase text-[10px] tracking-wider">
+                                    <lucide-icon name="database" class="w-3.5 h-3.5 text-indigo-400"></lucide-icon>
+                                    Kho Tri Thức Nền ({{ (gemForm.knowledgeFiles || []).length }})
+                                </label>
+                                <button type="button" @click="$refs.gemKnowledgeFileInput?.click()" class="btn-instant text-[10.5px] text-indigo-300 hover:text-white flex items-center gap-1 font-semibold px-2.5 py-1 rounded-lg bg-indigo-500/15 border border-indigo-500/25">
+                                    <lucide-icon name="upload" class="w-3 h-3"></lucide-icon> Thêm Tệp Tri Thức
+                                </button>
+                                <input type="file" ref="gemKnowledgeFileInput" @change="handleGemKnowledgeUpload" multiple class="hidden" accept=".txt,.md,.pdf,.json,.csv,.py,.js,.html,.ts">
+                            </div>
+
+                            <!-- Danh sách tệp tri thức đã nạp -->
+                            <div v-if="gemForm.knowledgeFiles && gemForm.knowledgeFiles.length > 0" class="space-y-1.5 max-h-[125px] overflow-y-auto custom-scrollbar pr-0.5">
+                                <div v-for="(file, fIdx) in gemForm.knowledgeFiles" :key="fIdx" class="p-2 rounded-xl bg-surfaceElevated border border-white/5 flex items-center justify-between text-xs">
+                                    <div class="flex items-center gap-2 min-w-0 flex-1">
+                                        <lucide-icon name="file-text" class="w-3.5 h-3.5 text-indigo-400 shrink-0"></lucide-icon>
+                                        <div class="truncate">
+                                            <div class="text-[11.5px] text-white font-medium truncate">{{ file.name }}</div>
+                                            <div class="text-[9.5px] text-textMuted font-mono">{{ file.size }}</div>
+                                        </div>
+                                    </div>
+                                    <button type="button" @click="removeGemKnowledgeFile(fIdx)" class="btn-instant p-1 text-textMuted hover:text-red-400 rounded-lg hover:bg-white/5 shrink-0">
+                                        <lucide-icon name="x" class="w-3.5 h-3.5"></lucide-icon>
+                                    </button>
+                                </div>
+                            </div>
+                            <div v-else class="p-3 rounded-xl bg-black/30 border border-dashed border-white/10 text-center text-textMuted text-[10px]">
+                                Tải lên tệp PDF, Markdown, Text, CSV hoặc Mã nguồn để làm tài liệu tri thức độc quyền cho chuyên gia này.
+                            </div>
+                        </div>
+
                         <footer class="flex space-x-2 pt-1">
                             <button type="button" @click="closeGemModal" class="btn-instant flex-1 py-2 rounded-xl bg-surfaceElevated text-textMuted font-medium text-xs hover:bg-white/10">Hủy</button>
                             <button type="submit" :style="{ background: selectedAccent }" class="btn-instant flex-1 py-2 rounded-xl text-zinc-950 font-bold text-xs shadow-md">Lưu Chuyên Gia</button>
@@ -4064,6 +4104,14 @@ self.onmessage = async function(e) {
                         `Bạn là G-Deep ${targetModelObj.name}. BẮT BUỘC tuân thủ nguyên tắc lập luận logic khép kín, minh bạch và chuyên nghiệp.`,
                         (activeGem.instruction || "").trim()
                     ].join('\n');
+
+                    // NẠP TRỰC TIẾP KHO TRI THỨC ĐỘC QUYỀN CỦA CHUYÊN GIA VÀO ATTENTION CỐT LÕI
+                    if (activeGem.knowledgeFiles && Array.isArray(activeGem.knowledgeFiles) && activeGem.knowledgeFiles.length > 0) {
+                        systemPrompt += `\n\n========================================================\n` +
+                            `[KHO TÀI LIỆU TRI THỨC ĐỘC QUYỀN CỦA CHUYÊN GIA ${(activeGem.name || '').toUpperCase()}]:\n` +
+                            activeGem.knowledgeFiles.map((f, i) => `--- [Tài liệu #${i+1}: ${f.name}] ---\n${f.content}\n[HẾT TÀI LIỆU #${i+1}]`).join('\n\n') +
+                            `\n[CHỈ DẪN ATTENTION BẮT BUỘC: Bạn đại diện cho Chuyên gia này, phải nắm vững và ưu tiên sử dụng toàn bộ dữ kiện, tài liệu trong kho tri thức trên để trả lời.]\n========================================================`;
+                    }
 
                     // KHẮC SÂU KÝ ỨC VĨNH CỬU TRỰC TIẾP VÀO ATTENTION CỦA SYSTEM PROMPT
                     const permanentMemoryText = EpistemicMemoryEngine.getFormattedSystemInstructionMemory(targetThreadId);
@@ -10654,7 +10702,45 @@ MỆNH LỆNH:
 
                     const showGemModal = ref(false);
                     const editingGemId = ref(null);
-                    const gemForm = reactive({ name: '', description: '', instruction: '', showPreview: false });
+                    const gemKnowledgeFileInput = ref(null);
+                    const gemForm = reactive({ name: '', description: '', instruction: '', knowledgeFiles: [], showPreview: false });
+
+                    const handleGemKnowledgeUpload = async (e) => {
+                        const files = Array.from(e.target.files || []);
+                        if (!files.length) return;
+                        for (const file of files) {
+                            try {
+                                const sizeStr = (file.size / 1024).toFixed(1) + ' KB';
+                                let content = '';
+                                if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+                                    notify(`Đang giải mã PDF: ${file.name}...`);
+                                    const buf = await file.arrayBuffer();
+                                    content = await extractPdfText(buf);
+                                } else {
+                                    content = await readFileAsText(file.slice(0, 10 * 1024 * 1024));
+                                }
+                                if (!gemForm.knowledgeFiles) gemForm.knowledgeFiles = [];
+                                gemForm.knowledgeFiles.push({
+                                    name: file.name,
+                                    size: sizeStr,
+                                    content: content.slice(0, 100000), // Lưu trữ an toàn 100.000 ký tự cho mỗi tài liệu
+                                    type: file.type || 'text/plain'
+                                });
+                            } catch (err) {
+                                notify(`Lỗi nạp tệp tri thức: ${err.message}`, true);
+                            }
+                        }
+                        e.target.value = '';
+                        notify(`Đã nạp ${files.length} tệp tri thức`);
+                        triggerHaptic('light');
+                    };
+
+                    const removeGemKnowledgeFile = (index) => {
+                        if (gemForm.knowledgeFiles) {
+                            gemForm.knowledgeFiles.splice(index, 1);
+                            triggerHaptic('light');
+                        }
+                    };
                     const showRenameModal = ref(false);
                     const renameThreadTarget = ref(null);
                     const renameTitle = ref('');
@@ -11895,6 +11981,7 @@ QUY TẮC PHẢN HỒI:
                         gemForm.name = g?.name || '';
                         gemForm.description = g?.description || '';
                         gemForm.instruction = g?.instruction || '';
+                        gemForm.knowledgeFiles = g?.knowledgeFiles ? JSON.parse(JSON.stringify(g.knowledgeFiles)) : [];
                         gemForm.showPreview = false;
                         showGemModal.value = true;
                     };
@@ -11907,7 +11994,8 @@ QUY TẮC PHẢN HỒI:
                                 id: editingGemId.value || generateUUID(),
                                 name: gemForm.name.trim(),
                                 description: gemForm.description.trim(),
-                                instruction: gemForm.instruction.trim()
+                                instruction: gemForm.instruction.trim(),
+                                knowledgeFiles: toRaw(gemForm.knowledgeFiles || [])
                             };
                             if (editingGemId.value) {
                                 const idx = gems.value.findIndex(g => g.id === editingGemId.value);
@@ -13844,7 +13932,7 @@ QUY TẮC PHẢN HỒI:
                         currentModelIndex, currentModel, pendingAttachments, accentColors, selectedAccent, currentAccentGradient,
                         changeAccentColor, availableVoices, selectedVoiceName, isInputExpanded, disablePagination, enableCodeExecution,
                         toggleCodeExecution, enableDeepThinking, toggleDeepThinking, enableGoogleSearch, toggleGoogleSearch,
-                        handleThoughtToggle, handleExecutionToggle, handleSearchToggle, handleUrlSourcesToggle, resizeEditInput, showGemModal, editingGemId,
+                        handleThoughtToggle, handleExecutionToggle, handleSearchToggle, handleUrlSourcesToggle, resizeEditInput, showGemModal, editingGemId, gemKnowledgeFileInput, handleGemKnowledgeUpload, removeGemKnowledgeFile,
                         gemForm, showRenameModal, renameTitle, showConfirmModal, confirmMessage, searchQuery, filteredThreads,
                         isOnline, isDraggingFile, currentStreamingMsg, showCmdPalette, cmdQuery, cmdInput,
                         fullTextSearchResults, openCmdPalette, executeCmd, jumpToSearchResult, handleKeydown, handlePaste,
