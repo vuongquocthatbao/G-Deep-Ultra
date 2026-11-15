@@ -3703,7 +3703,7 @@ self.onmessage = async function(e) {
             },
             Models: {
                 AVAILABLE: [
-                    { id: "gdeep-ultra-tier", apiEndpointIds: ["gemini-3.6-flash", "gemini-3.5-flash"], name: "Ultra", maxContextTokens: 1048576 },
+                    { id: "gdeep-ultra-tier", apiEndpointIds: ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.6-flash"], name: "Ultra", maxContextTokens: 1048576 },
                     { id: "gdeep-pro-tier", apiEndpointIds: ["gemini-3-flash-preview", "gemini-2.5-flash"], name: "Pro", maxContextTokens: 1048576 },
                     { id: "gdeep-lite-tier", apiEndpointIds: ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"], name: "Lite", maxContextTokens: 1048576 }
                 ],
@@ -3717,6 +3717,11 @@ self.onmessage = async function(e) {
                         'gif': 'image/gif', 'svg': 'image/svg+xml', 'mp3': 'audio/mpeg', 'wav': 'audio/wav',
                         'mp4': 'video/mp4', 'webm': 'video/webm', 'pdf': 'application/pdf', 'txt': 'text/plain',
                         'json': 'application/json', 'csv': 'text/csv', 'py': 'text/x-python', 'js': 'text/javascript'
+                    },
+                    ALIASES: {
+                        'image/jpg': 'image/jpeg', 'audio/mp3': 'audio/mpeg', 'audio/x-wav': 'audio/wav',
+                        'audio/x-m4a': 'audio/mp4', 'video/quicktime': 'video/mp4', 'text/x-json': 'application/json',
+                        'application/x-javascript': 'text/javascript', 'text/x-python-script': 'text/x-python'
                     }
                 }),
                 CodeLangs: Object.freeze({
@@ -3849,12 +3854,30 @@ self.onmessage = async function(e) {
             get(id) { return this.neurons.get(id); },
             autoWrapObject(prefix, obj) {
                 if (!obj || typeof obj !== 'object') return obj;
+                const hotSkip = new Set(['compileMarkdown', 'getImgSrc', 'checkScroll', 'getFileIconName', 'isLongUserMsg', 'getExecutionLogsHtml', 'getExecutionLogsText']);
                 for (const k of Object.getOwnPropertyNames(obj)) {
+                    if (hotSkip.has(k)) continue;
                     const orig = obj[k];
-                    if (typeof orig === 'function') {
+                    if (typeof orig === 'function' && !orig.__synapticWrapped) {
                         const isAsync = orig.constructor.name === 'AsyncFunction';
-                        const n = this.register(`${prefix}_${k}`, () => true, isAsync ? async (args) => await orig.apply(obj, args) : (args) => orig.apply(obj, args), () => null);
-                        obj[k] = (...args) => isAsync ? n.fire(args) : n.fireSync(args);
+                        const wrapped = isAsync
+                            ? async (...args) => {
+                                try { return await orig.apply(obj, args); }
+                                catch (err) {
+                                    if (err?.name === 'AbortError') throw err;
+                                    console.warn(`[${prefix}.${k}]`, err);
+                                    return null;
+                                }
+                            }
+                            : (...args) => {
+                                try { return orig.apply(obj, args); }
+                                catch (err) {
+                                    console.warn(`[${prefix}.${k}]`, err);
+                                    return null;
+                                }
+                            };
+                        wrapped.__synapticWrapped = true;
+                        obj[k] = wrapped;
                     }
                 }
                 return obj;
@@ -4008,16 +4031,6 @@ self.onmessage = async function(e) {
                     scheduleDbSave(targetMsg);
                     scrollToBottom(true);
 
-                    const lastTs = Number(localStorage.getItem('gdeep_last_flux_gen_ts') || 0);
-                    const elapsed = Date.now() - lastTs;
-                    if (elapsed >= 0 && elapsed < this.COOLDOWN_MS) {
-                        let waitMs = this.COOLDOWN_MS - elapsed;
-                        while (waitMs > 0) {
-                            if (abortController?.signal?.aborted) return;
-                            await new Promise(r => setTimeout(r, Math.min(1000, waitMs)));
-                            waitMs -= 1000;
-                        }
-                    }
                     if (abortController?.signal?.aborted) return;
 
                     const styleKey = imageConfig.style || 'photorealistic';
@@ -4033,16 +4046,24 @@ self.onmessage = async function(e) {
                     try {
                         let finalDataUrl = fluxUrl;
                         let blob = null;
-                        try {
-                            const res = await fetch(fluxUrl, { signal: abortController?.signal });
-                            if (res.ok) blob = await res.blob();
-                        } catch (_) {}
-
-                        if (!blob) {
+                        for (let attempt = 0; attempt < 2 && !blob; attempt++) {
+                            if (abortController?.signal?.aborted) return;
+                            try {
+                                const res = await fetch(fluxUrl, { signal: abortController?.signal });
+                                if (res.ok) { blob = await res.blob(); break; }
+                                if (res.status === 429 || res.status === 503) {
+                                    await new Promise(r => setTimeout(r, 3500));
+                                    continue;
+                                }
+                            } catch (e) {
+                                if (e?.name === 'AbortError') return;
+                            }
                             try {
                                 const proxyRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(fluxUrl)}`, { signal: abortController?.signal });
-                                if (proxyRes.ok) blob = await proxyRes.blob();
-                            } catch (_) {}
+                                if (proxyRes.ok) { blob = await proxyRes.blob(); break; }
+                            } catch (e) {
+                                if (e?.name === 'AbortError') return;
+                            }
                         }
 
                         if (blob && blob.size > 0) {
@@ -4123,26 +4144,42 @@ self.onmessage = async function(e) {
                         systemPrompt += `\n\n[TIÊN ĐỀ SỞ THÍCH NGƯỜI DÙNG]:\n${globalUserAxioms}`;
                     }
 
-                    // KỊCH BẢN KHÔI PHỤC: URL GROUNDING ĐỐI CHIẾU NGUỒN TRỰC TIẾP
+                    // CHẠY SONG SONG URL GROUNDING + GOOGLE SEARCH GROUNDING (LOẠI BỎ CHỜ TUẦN TỰ)
                     const detectedUrls = (typeof UrlGroundingEngine !== 'undefined') ? UrlGroundingEngine.extractUrls(text) : [];
-                    if (detectedUrls.length > 0) {
-                        searchStatusText.value = "Đang giải mã liên kết trực tiếp...";
-                        const fetchedSources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => { searchStatusText.value = st; });
-                        const validSources = fetchedSources.filter(s => s.success);
+                    const needSerper = Boolean(enableGoogleSearch && serperApiKeys.length > 0);
+                    if (detectedUrls.length > 0 || needSerper) {
+                        searchStatusText.value = detectedUrls.length > 0 && needSerper
+                            ? "Đang đối soát liên kết và tra cứu trực tuyến song song..."
+                            : (detectedUrls.length > 0 ? "Đang giải mã liên kết trực tiếp..." : "Đang tra cứu dữ liệu thời gian thực...");
+
+                        const [fetchedSources, searchRes] = await Promise.all([
+                            detectedUrls.length > 0
+                                ? UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => { searchStatusText.value = st; })
+                                : Promise.resolve([]),
+                            needSerper
+                                ? performSerperSearch(text.slice(0, 160))
+                                : Promise.resolve(null)
+                        ]);
+
+                        const validSources = (fetchedSources || []).filter(s => s.success);
                         if (validSources.length > 0) {
                             botMsg.urlSources = validSources;
                             systemPrompt += "\n\n[DỮ LIỆU ĐỐI SOÁT LIÊN KẾT TRỰC TIẾP]:\n" + validSources.map((s, i) => `[${i+1}] ${s.title} (${s.url}): ${s.text.slice(0, 3500)}`).join('\n');
                         }
-                    }
 
-                    // KỊCH BẢN KHÔI PHỤC: GOOGLE SEARCH GROUNDING THỜI GIAN THỰC
-                    if (enableGoogleSearch && serperApiKeys.length > 0) {
-                        searchStatusText.value = "Đang tra cứu dữ liệu thời gian thực...";
-                        const searchRes = await performSerperSearch(text.slice(0, 100));
-                        if (searchRes?.organic?.length) {
-                            const topItems = searchRes.organic.slice(0, 5);
-                            botMsg.serperMetadata = { query: text, results: topItems };
-                            systemPrompt += "\n\n[DỮ LIỆU GOOGLE SEARCH]:\n" + topItems.map((r, i) => `[${i+1}] ${r.title} (${r.link}): ${r.snippet}`).join('\n');
+                        if (searchRes?.organic?.length || searchRes?.answerBox || searchRes?.knowledgeGraph) {
+                            const topItems = (searchRes.organic || []).slice(0, 5);
+                            const answerText = searchRes.answerBox?.answer || searchRes.answerBox?.snippet || '';
+                            const entities = [];
+                            if (searchRes.knowledgeGraph?.title) entities.push(searchRes.knowledgeGraph.title);
+                            if (Array.isArray(searchRes.relatedSearches)) {
+                                searchRes.relatedSearches.slice(0, 4).forEach(rs => { if (rs?.query) entities.push(rs.query); });
+                            }
+                            botMsg.serperMetadata = { query: text, results: topItems, answerBox: answerText, entities };
+                            if (answerText) systemPrompt += `\n\n[TÓM TẮT GOOGLE LIVE]: ${answerText}`;
+                            if (topItems.length) {
+                                systemPrompt += "\n\n[DỮ LIỆU GOOGLE SEARCH]:\n" + topItems.map((r, i) => `[${i+1}] ${r.title} (${r.link}): ${r.snippet}`).join('\n');
+                            }
                         }
                     }
 
@@ -4238,13 +4275,40 @@ self.onmessage = async function(e) {
                         return currentRef;
                     };
 
+                    // BỘ GỘP KHUNG HÌNH COALESCED RENDERER (CHỐNG NGHẼN MAIN THREAD KHI STREAM TỐC ĐỘ CAO)
+                    let renderPending = false;
+                    let lastRenderAt = 0;
+                    const flushStreamUi = (force = false) => {
+                        const now = performance.now();
+                        const minInterval = rawMarkdownBuffer.length > 15000 ? 90 : 40;
+                        if (!force && (now - lastRenderAt < minInterval)) {
+                            if (!renderPending) {
+                                renderPending = true;
+                                setTimeout(() => {
+                                    renderPending = false;
+                                    requestAnimationFrame(() => flushStreamUi(true));
+                                }, minInterval);
+                            }
+                            return;
+                        }
+                        lastRenderAt = now;
+                        if (thoughtMsg && thoughtMsg.isThinking) {
+                            thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
+                        }
+                        if (rawMarkdownBuffer) {
+                            botMsg.content = rawMarkdownBuffer;
+                            botMsg.lastRenderSeq = ++globalStreamSeq;
+                            botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
+                        }
+                        scrollToBottom();
+                    };
+
                     // BỘ PHÂN LUỒNG XỬ LÝ CHUNK SSE TOÀN DIỆN
                     const processChunk = (chunkJson) => {
                         const candidate = chunkJson.candidates?.[0];
                         if (!candidate) return;
                         if (candidate.finishReason) lastFinishReason = candidate.finishReason;
 
-                        // KỊCH BẢN KHÔI PHỤC: ĐO LƯỜNG CHÍNH XÁC TOKEN TỪ SERVER (USAGE METADATA)
                         if (chunkJson.usageMetadata) {
                             botMsg.exactTokens = Number(chunkJson.usageMetadata.candidatesTokenCount) || 0;
                             botMsg.promptTokens = Number(chunkJson.usageMetadata.promptTokenCount) || 0;
@@ -4274,7 +4338,7 @@ self.onmessage = async function(e) {
                                 const clean = String(rawPart.text || rawPart.reasoning || '').replace(/<\/?(?:think|thought)>/gi, '');
                                 thoughtMsg.content += clean;
                                 rawThoughtBuffer += clean;
-                                thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
+                                flushStreamUi(false);
                                 continue;
                             }
 
@@ -4295,7 +4359,6 @@ self.onmessage = async function(e) {
                                 }
                             }
 
-                            // KỊCH BẢN KHÔI PHỤC: TỰ ĐỘNG BẮT MẠCH REPO GITHUB & THỰC THI QUA WASM
                             if (pyCodeToRun && typeof PythonEngine !== 'undefined') {
                                 executionMsg = ensureMsg(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                 executionMsg.rawExecutionParts.push({ type: 'code', content: pyCodeToRun });
@@ -4308,14 +4371,15 @@ self.onmessage = async function(e) {
 
                                 PythonEngine.run(pyCodeToRun, 180000, attachments, repoToLoad).then(res => {
                                     if (executionMsg.rawExecutionParts[outIdx]) {
-                                        executionMsg.rawExecutionParts[outIdx] = { 
-                                            type: 'output', 
-                                            content: res.output, 
-                                            outcome: res.outcome, 
-                                            plotBase64: res.plotBase64 
+                                        executionMsg.rawExecutionParts[outIdx] = {
+                                            type: 'output',
+                                            content: res.output,
+                                            outcome: res.outcome,
+                                            plotBase64: res.plotBase64,
+                                            artifacts: res.artifacts || []
                                         };
                                         executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
-                                        scheduleDbSave(executionMsg);
+                                        scheduleDbSave(executionMsg, true);
                                     }
                                 });
                             }
@@ -4340,7 +4404,7 @@ self.onmessage = async function(e) {
                                 });
                             }
 
-                            // KÊNH 3: VĂN BẢN TRẢ LỜI CHÍNH THỨC (LÀM SẠCH 100% THẺ SUY LUẬN & ĐOẠN LẶP)
+                            // KÊNH 3: VĂN BẢN TRẢ LỜI CHÍNH THỨC
                             let chunkText = String(rawPart.text || '');
                             if (chunkText.includes('<think>') || chunkText.includes('<thought>')) {
                                 chunkText = chunkText.replace(/<(think|thought)>[\s\S]*?<\/(think|thought)>/gi, '').replace(/<\/?(?:think|thought)>/gi, '');
@@ -4352,18 +4416,14 @@ self.onmessage = async function(e) {
                                     thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
                                     scheduleDbSave(thoughtMsg);
                                 }
-                                
-                                // Nếu đang ở bước viết tiếp và là mẩu tin đầu tiên, khử đoạn lặp
+
                                 if (botMsg.isContinuing && !botMsg._continuationChunkReceived) {
                                     chunkText = stripDuplicateContinuationPrefix(rawMarkdownBuffer, chunkText);
                                     botMsg._continuationChunkReceived = true;
                                 }
 
                                 rawMarkdownBuffer += chunkText;
-                                botMsg.content = rawMarkdownBuffer;
-                                botMsg.lastRenderSeq = ++globalStreamSeq;
-                                botMsg.htmlContent = compileMarkdownSync(rawMarkdownBuffer, false);
-                                scrollToBottom();
+                                flushStreamUi(false);
                             }
                         }
                     };
@@ -4716,6 +4776,15 @@ self.onmessage = async function(e) {
                         html += `<div class="mt-2.5 p-2 rounded-xl bg-black/60 border border-white/5 text-center">` +
                                 `<img src="data:image/png;base64,${part.plotBase64}" class="max-h-[360px] mx-auto rounded-lg shadow-lg cursor-zoom-in" alt="Biểu đồ Matplotlib" />` +
                                 `</div>`;
+                    }
+                    if (Array.isArray(part.artifacts) && part.artifacts.length > 0) {
+                        html += `<div class="mt-2.5 flex flex-wrap gap-2">` +
+                            part.artifacts.map(art => {
+                                const safeName = escapeHTML(art.name || 'artifact.bin');
+                                const safeMime = escapeHTML(art.mime || 'application/octet-stream');
+                                const b64 = cleanBase64Data(art.data || '');
+                                return `<a href="data:${safeMime};base64,${b64}" download="${safeName}" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:text-white text-[11px] font-semibold no-underline">⬇ Tải ${safeName}</a>`;
+                            }).join('') + `</div>`;
                     }
                     html += `</div>`;
                 }
@@ -5318,16 +5387,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
                     }
 
-                    // Chuyển đổi thành Base64 an toàn tuyệt đối với mảng dung lượng lớn
+                    // Chuyển đổi thành Base64 tốc độ cao theo block 16KB (tránh O(N^2) nối từng ký tự)
                     const bytes = new Uint8Array(wavBuffer);
-                    const CHUNK_SIZE = 0x4000; // 16KB per slice an toàn cho mọi Call Stack
-                    let binary = '';
+                    const CHUNK_SIZE = 0x4000;
+                    const parts = [];
                     for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
-                        const chunk = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
-                        for (let j = 0; j < chunk.length; j++) {
-                            binary += String.fromCharCode(chunk[j]);
-                        }
+                        parts.push(String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length))));
                     }
+                    const binary = parts.join('');
 
                     return {
                         mimeType: 'audio/wav',
@@ -5366,11 +5433,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     video.playsInline = true;
                     video.crossOrigin = "anonymous";
 
-                    // Watchdog chống treo: Cưỡng bức giải phóng sau tối đa 45 giây
-                    const watchdog = setTimeout(() => {
+                    // Watchdog động: Cho phép kéo giãn theo thời lượng video thực tế khi loadedmetadata
+                    let watchdog = setTimeout(() => {
                         cleanup();
                         resolve(null);
-                    }, 45000);
+                    }, 60000);
 
                     let drawInterval = null;
                     let recorder = null;
@@ -5389,6 +5456,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     video.onloadedmetadata = async () => {
                         try {
                             const duration = video.duration || 5;
+                            clearTimeout(watchdog);
+                            watchdog = setTimeout(() => {
+                                cleanup();
+                                resolve(null);
+                            }, Math.max(60000, Math.ceil((duration + 20) * 1000)));
                             const targetWidth = 640;
                             const targetHeight = Math.round((video.videoHeight / video.videoWidth) * targetWidth) || 360;
 
@@ -5695,9 +5767,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
             },
 
             /**
-             * Mạng lưới dự phòng 6 tầng chuyển vùng linh hoạt: Bẻ gãy mọi rào cản CORS & Định dạng
+             * Mạng lưới dự phòng 6 tầng đua song song theo đợt (Zero-Stall Parallel Gateway)
              */
-            async fetchWithSixTierFallback(targetUrl, timeoutMs = 12000) {
+            async fetchWithSixTierFallback(targetUrl, timeoutMs = 8000) {
                 const fetchWithTimeout = async (url, options = {}) => {
                     const ctrl = new AbortController();
                     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -5711,80 +5783,70 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     }
                 };
 
-                // TẦNG 1: Jina AI Reader Engine (Đã làm sạch metadata rác phần đầu)
-                try {
+                const tier1Jina = async () => {
                     const res = await fetchWithTimeout(`https://r.jina.ai/${targetUrl}`, {
                         headers: { 'Accept': 'text/plain', 'X-Return-Format': 'markdown' }
                     });
-                    if (res.ok) {
-                        let md = await res.text();
-                        if (md && md.trim().length > 60 && !md.includes('Captcha') && !md.includes('Access Denied')) {
-                            md = md.replace(/^(?:Title|URL Source|Published Time|Markdown Content):[^\n]*\n+/gmi, '').trim();
-                            return { text: md, method: 'Jina Engine (Markdown)' };
-                        }
-                    }
-                } catch (_) {}
+                    if (!res.ok) throw new Error('Jina fail');
+                    let md = await res.text();
+                    if (!md || md.trim().length <= 60 || md.includes('Captcha') || md.includes('Access Denied')) throw new Error('Jina blocked');
+                    md = md.replace(/^(?:Title|URL Source|Published Time|Markdown Content):[^\n]*\n+/gmi, '').trim();
+                    return { text: md, method: 'Jina Engine (Markdown)' };
+                };
 
-                // TẦNG 2: Direct Fetch Native (Đối với máy chủ mở CORS hoặc file tĩnh, API trực tiếp)
-                try {
+                const tier2Direct = async () => {
                     const res = await fetchWithTimeout(targetUrl, {
                         headers: { 'Accept': 'text/html,text/plain,application/json,text/markdown,*/*' }
                     });
-                    if (res.ok) {
-                        const raw = await res.text();
-                        if (raw && raw.trim().length > 60) {
-                            return { text: this.cleanExtractedText(raw), method: 'Direct Stream' };
-                        }
-                    }
-                } catch (_) {}
+                    if (!res.ok) throw new Error('Direct fail');
+                    const raw = await res.text();
+                    if (!raw || raw.trim().length <= 60) throw new Error('Direct empty');
+                    return { text: this.cleanExtractedText(raw), method: 'Direct Stream' };
+                };
 
-                // TẦNG 3: CorsProxy.io (Cực nhanh và độ tin cậy cao)
-                try {
+                const tier3Cors = async () => {
                     const res = await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
-                    if (res.ok) {
-                        const raw = await res.text();
-                        if (raw && raw.trim().length > 60) {
-                            return { text: this.cleanExtractedText(raw), method: 'CorsProxy HighSpeed' };
-                        }
-                    }
-                } catch (_) {}
+                    if (!res.ok) throw new Error('CorsProxy fail');
+                    const raw = await res.text();
+                    if (!raw || raw.trim().length <= 60) throw new Error('CorsProxy empty');
+                    return { text: this.cleanExtractedText(raw), method: 'CorsProxy HighSpeed' };
+                };
 
-                // TẦNG 4: AllOrigins API (Bỏ bọc JSON contents, xử lý tốt các trang chặn trình cào)
-                try {
+                const tier4AllOrigins = async () => {
                     const res = await fetchWithTimeout(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
-                    if (res.ok) {
-                        const data = await res.json();
-                        if (data?.contents && data.contents.trim().length > 60) {
-                            return { text: this.cleanExtractedText(data.contents), method: 'AllOrigins Mesh' };
-                        }
-                    }
-                } catch (_) {}
+                    if (!res.ok) throw new Error('AllOrigins fail');
+                    const data = await res.json();
+                    if (!data?.contents || data.contents.trim().length <= 60) throw new Error('AllOrigins empty');
+                    return { text: this.cleanExtractedText(data.contents), method: 'AllOrigins Mesh' };
+                };
 
-                // TẦNG 5: CodeTabs CORS Service
-                try {
+                const tier5CodeTabs = async () => {
                     const res = await fetchWithTimeout(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`);
-                    if (res.ok) {
-                        const raw = await res.text();
-                        if (raw && raw.trim().length > 60) {
-                            return { text: this.cleanExtractedText(raw), method: 'CodeTabs Gateway' };
-                        }
-                    }
+                    if (!res.ok) throw new Error('CodeTabs fail');
+                    const raw = await res.text();
+                    if (!raw || raw.trim().length <= 60) throw new Error('CodeTabs empty');
+                    return { text: this.cleanExtractedText(raw), method: 'CodeTabs Gateway' };
+                };
+
+                const tier6Wayback = async () => {
+                    const waybackRes = await fetchWithTimeout(`https://archive.org/wayback/available?url=${encodeURIComponent(targetUrl)}`);
+                    if (!waybackRes.ok) throw new Error('Wayback fail');
+                    const wbJson = await waybackRes.json();
+                    const snapshotUrl = wbJson?.archived_snapshots?.closest?.url;
+                    if (!snapshotUrl) throw new Error('Wayback none');
+                    const snapRes = await fetchWithTimeout(`https://r.jina.ai/${snapshotUrl}`);
+                    if (!snapRes.ok) throw new Error('Wayback fetch fail');
+                    return { text: await snapRes.text(), method: 'Internet Archive Wayback Backup' };
+                };
+
+                // ĐỢT 1: Đua song song 3 cổng tốc độ cao
+                try {
+                    return await Promise.any([tier1Jina(), tier2Direct(), tier3Cors()]);
                 } catch (_) {}
 
-                // TẦNG 6: Wayback Machine Snapshot (Cứu cánh cuối cùng nếu web bị sập/chặn hoàn toàn IP)
+                // ĐỢT 2: Đua song song 3 cổng dự phòng sâu
                 try {
-                    const waybackRes = await fetchWithTimeout(`https://archive.org/wayback/available?url=${encodeURIComponent(targetUrl)}`);
-                    if (waybackRes.ok) {
-                        const wbJson = await waybackRes.json();
-                        const snapshotUrl = wbJson?.archived_snapshots?.closest?.url;
-                        if (snapshotUrl) {
-                            const snapRes = await fetchWithTimeout(`https://r.jina.ai/${snapshotUrl}`);
-                            if (snapRes.ok) {
-                                const snapText = await snapRes.text();
-                                return { text: snapText, method: 'Internet Archive Wayback Backup' };
-                            }
-                        }
-                    }
+                    return await Promise.any([tier4AllOrigins(), tier5CodeTabs(), tier6Wayback()]);
                 } catch (_) {}
 
                 throw new Error("Không thể kết nối đến máy chủ qua mọi cổng dữ liệu.");
@@ -6326,9 +6388,9 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
          */
         const normalizeMimeType = function(mimeType, fileName = '') {
             let mime = (typeof mimeType === 'string' ? mimeType : '').toLowerCase().trim();
-            const { EXT_MAP, ALIASES } = GDeepDataProtocol.Mimes;
+            const { EXT_MAP = {}, ALIASES = {} } = GDeepDataProtocol.Mimes || {};
 
-            if (ALIASES[mime]) mime = ALIASES[mime];
+            if (ALIASES && ALIASES[mime]) mime = ALIASES[mime];
 
             if (!mime || mime === 'application/octet-stream' || mime === 'binary/octet-stream') {
                 const ext = String(fileName || '').split('.').pop()?.toLowerCase();
@@ -7167,16 +7229,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 // =========================================================================
 // [TẦNG 3: NETWORK TRANSPORT] BỘ ĐỆM SSE CHUẨN XÁC TUYỆT ĐỐI (ZERO-FREEZE BUFFER)
 // =========================================================================
-const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
+const rawReadSSEWorker = async ({ response, signal, onChunk, preRead = null }) => {
     if (!response || !response.body) {
         throw new Error('[readSSEStream] Phản hồi rỗng hoặc không tồn tại.');
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    let buffer = '';
+    const reader = preRead?.reader || response.body.getReader();
+    const decoder = preRead?.decoder || new TextDecoder('utf-8', { fatal: false });
+    let buffer = preRead?.initialBuffer || '';
 
-    // Watchdog thích ứng: 35s cho chunk đầu tiên, 18s cho các chunk kế tiếp
     let streamStallTimeout = null;
     const resetWatchdog = (timeoutMs = 18000) => {
         if (streamStallTimeout) clearTimeout(streamStallTimeout);
@@ -7185,79 +7246,76 @@ const rawReadSSEWorker = async ({ response, signal, onChunk }) => {
         }, timeoutMs);
     };
 
+    const onAbort = () => { try { reader.cancel(); } catch (_) {} };
+    if (signal) {
+        if (signal.aborted) { onAbort(); throw new DOMException('Bị hủy bởi người dùng', 'AbortError'); }
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const dispatchRawEvent = (rawEvent) => {
+        if (!rawEvent) return;
+        if (rawEvent.startsWith(':')) {
+            if (typeof onChunk === 'function') onChunk({ isHeartbeat: true });
+            return;
+        }
+        const lines = rawEvent.split('\n');
+        const dataLines = [];
+        for (const line of lines) {
+            if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+        }
+        const dataString = dataLines.join('\n').trim();
+        if (!dataString || dataString === '[DONE]') return;
+
+        let parsed = null;
+        try { parsed = JSON.parse(dataString); } catch (_) { return; }
+        if (parsed && parsed.error) throw new Error(parsed.error.message || 'Lỗi từ máy chủ Google');
+        if (parsed && typeof onChunk === 'function') onChunk(parsed);
+    };
+
     try {
-        resetWatchdog(35000); // Đặt thời gian chờ chunk đầu tiên
+        resetWatchdog(35000);
+        // Xử lý ngay phần đệm đã đọc trước (nếu bàn giao từ Parallel Race)
+        if (buffer) {
+            let norm = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            let bIdx;
+            while ((bIdx = norm.indexOf('\n\n')) !== -1) {
+                dispatchRawEvent(norm.slice(0, bIdx).trim());
+                norm = norm.slice(bIdx + 2);
+            }
+            buffer = norm;
+        }
+
         while (true) {
             if (signal?.aborted) throw new DOMException('Bị hủy bởi người dùng', 'AbortError');
-            
+
             const { done, value } = await reader.read();
-            resetWatchdog(18000); // Nhận dữ liệu thành công -> Reset watchdog
+            resetWatchdog(18000);
             if (value) {
                 buffer += decoder.decode(value, { stream: !done });
             }
 
             let normalized = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
             let eventBoundary;
             while ((eventBoundary = normalized.indexOf('\n\n')) !== -1) {
-                const rawEvent = normalized.slice(0, eventBoundary).trim();
+                dispatchRawEvent(normalized.slice(0, eventBoundary).trim());
                 normalized = normalized.slice(eventBoundary + 2);
-
-                if (!rawEvent) continue;
-
-                // BẢO CHỨNG GOOGLE SSE: Nhận diện gói keep-alive comment (dấu :) để reset Watchdog không bao giờ ngắt luồng
-                if (rawEvent.startsWith(':')) {
-                    if (typeof onChunk === 'function') onChunk({ isHeartbeat: true });
-                    continue;
-                }
-
-                const lines = rawEvent.split('\n');
-                let dataLines = [];
-
-                for (const line of lines) {
-                    if (line.startsWith('data:')) {
-                        dataLines.push(line.slice(5).trimStart());
-                    }
-                }
-
-                const dataString = dataLines.join('\n').trim();
-                if (!dataString || dataString === '[DONE]') continue;
-
-                let parsed = null;
-                try {
-                    parsed = JSON.parse(dataString);
-                } catch (jsonErr) {
-                    continue;
-                }
-
-                if (parsed && parsed.error) {
-                    throw new Error(parsed.error.message || 'Lỗi từ máy chủ Google');
-                }
-
-                if (parsed && typeof onChunk === 'function') {
-                    onChunk(parsed);
-                }
             }
 
+            if (done) {
+                if (normalized.trim()) dispatchRawEvent(normalized.trim());
+                break;
+            }
             buffer = normalized;
-            if (done) break;
         }
     } finally {
         if (streamStallTimeout) clearTimeout(streamStallTimeout);
+        if (signal) signal.removeEventListener('abort', onAbort);
         try { reader.releaseLock(); } catch (_) {}
     }
 };
 
-const SSEStreamNeuron = SynapticNeuralMesh.register(
-    'SSEStreamNeuron',
-    (p) => p && p.response && p.response.body,
-    async (p) => await rawReadSSEWorker(p),
-    null,
-    { tags: ['network', 'streaming', 'sse'] }
-);
-
-async function readSSEStream(response, signal, onChunk) {
-    return await SSEStreamNeuron.fire({ response, signal, onChunk }, 'NetworkPipeline');
+async function readSSEStream(response, signal, onChunk, preRead = null) {
+    return await rawReadSSEWorker({ response, signal, onChunk, preRead });
 }
 
         // =========================================================================================
@@ -7731,7 +7789,8 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     '        const py = await getPy();',
                     '        if (repoUrl) {',
                     '            self.postMessage({ id, status: "progress", text: "Đang nạp GitHub Repository..." });',
-                    '            await py.runPythonAsync(\'await load_repo("""\' + repoUrl + \'""")\');',
+                    '            py.globals.set("_repo_url", String(repoUrl));',
+                    '            await py.runPythonAsync("await load_repo(_repo_url)");',
                     '        }',
                     '        if (Array.isArray(inputFiles) && inputFiles.length > 0) {',
                     '            for (const f of inputFiles) {',
@@ -7757,7 +7816,7 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     '            const pkg = PKG_ALIASES[m] || m;',
                     '            self.postMessage({ id, status: "progress", text: "Đang cài đặt thư viện: " + pkg });',
                     '            try { await py.loadPackage(pkg); } catch(_) {',
-                    '                try { await py.runPythonAsync(\'await micropip.install("""\' + pkg + \'""")\'); } catch(_) {}',
+                    '                try { py.globals.set("_pkg_name", String(pkg)); await py.runPythonAsync("await micropip.install(_pkg_name)"); } catch(_) {}',
                     '            }',
                     '        }',
                     '        const runScript = [',
@@ -7767,7 +7826,7 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     '            "sys.stdout = io.StringIO(); sys.stderr = io.StringIO()",',
                     '            "_gdeep_plot_base64 = \'\'; _gdeep_all_plots = []",',
                     '            "try:",',
-                    '            String(code).split("\\n").map(l => "    " + l).join("\\n"),',
+                    '            "    exec(compile(_user_code, \'<gdeep_wasm>\', \'exec\'), globals())",',
                     '            "    for _f in plt.get_fignums():",',
                     '            "        _fig = plt.figure(_f)",',
                     '            "        b = io.BytesIO(); _fig.savefig(b, format=\'png\', bbox_inches=\'tight\', facecolor=\'#08090d\'); b.seek(0)",',
@@ -8238,239 +8297,6 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                             }
                         } catch (_) {}
                     };
-
-            // =========================================================================
-            // [HẠ TẦNG XỬ LÝ ĐA PHƯƠNG THỨC & TIỆN ÍCH LÕI BỔ SUNG NGUYÊN KHỐI]
-            // =========================================================================
-            const SearchIntelligenceEngine = {
-                robustJsonRepair(rawString) {
-                    if (!rawString || typeof rawString !== 'string') return null;
-                    let clean = rawString.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-                    try { return JSON.parse(clean); } catch (_) {}
-                    clean = clean.replace(/,\s*([\]}])/g, '$1');
-                    try { return JSON.parse(clean); } catch (_) {}
-                    const firstBrace = clean.indexOf('{'), lastBrace = clean.lastIndexOf('}');
-                    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                        try { return JSON.parse(clean.slice(firstBrace, lastBrace + 1)); } catch (_) {}
-                    }
-                    const firstBracket = clean.indexOf('['), lastBracket = clean.lastIndexOf(']');
-                    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-                        try { return JSON.parse(clean.slice(firstBracket, lastBracket + 1)); } catch (_) {}
-                    }
-                    return null;
-                }
-            };
-
-            async function extractPdfText(arrayBuffer) {
-                if (!window.pdfjsLib) return "";
-                try {
-                    const loadingPdf = window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer.slice(0)) });
-                    const pdfDoc = await loadingPdf.promise;
-                    let fullText = "";
-                    const maxPages = Math.min(pdfDoc.numPages, 30);
-                    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-                        const page = await pdfDoc.getPage(pageNum);
-                        const textContent = await page.getTextContent();
-                        const pageString = textContent.items.map(item => item.str).join(' ');
-                        if (pageString.trim()) fullText += `\n--- [Trang ${pageNum}] ---\n` + pageString;
-                    }
-                    return fullText.trim();
-                } catch (e) {
-                    return "";
-                }
-            }
-
-            async function compressImage(file, maxDimension = 1600, quality = 0.85) {
-                return new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        const img = new Image();
-                        img.onload = () => {
-                            let w = img.width, h = img.height;
-                            if (w > maxDimension || h > maxDimension) {
-                                if (w > h) { h = Math.round((h * maxDimension) / w); w = maxDimension; }
-                                else { w = Math.round((w * maxDimension) / h); h = maxDimension; }
-                            }
-                            const canvas = document.createElement('canvas');
-                            canvas.width = w;
-                            canvas.height = h;
-                            const ctx = canvas.getContext('2d');
-                            ctx.drawImage(img, 0, 0, w, h);
-                            const mime = (file.type === 'image/png') ? 'image/png' : 'image/jpeg';
-                            const dataUrl = canvas.toDataURL(mime, quality);
-                            resolve({
-                                data: cleanBase64Data(dataUrl),
-                                mimeType: mime,
-                                width: w,
-                                height: h
-                            });
-                        };
-                        img.onerror = () => resolve({ data: cleanBase64Data(e.target.result), mimeType: file.type || 'image/jpeg' });
-                        img.src = e.target.result;
-                    };
-                    reader.readAsDataURL(file);
-                });
-            }
-
-            function readFileAsText(file) {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result || '');
-                    reader.onerror = reject;
-                    reader.readAsText(file, 'UTF-8');
-                });
-            }
-
-            function readFileAsBase64(file) {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(cleanBase64Data(reader.result));
-                    reader.onerror = reject;
-                    reader.readAsDataURL(file);
-                });
-            }
-
-            async function isBinaryFile(file) {
-                const slice = file.slice(0, 1024);
-                const buffer = await slice.arrayBuffer();
-                const bytes = new Uint8Array(buffer);
-                for (let i = 0; i < bytes.length; i++) {
-                    if (bytes[i] === 0) return true;
-                }
-                return false;
-            }
-
-            function buildTurnParts(textContent, attachments = []) {
-                const parts = [];
-                const cleanText = (textContent || '').trim();
-                if (cleanText) parts.push({ text: cleanText });
-
-                for (const att of attachments) {
-                    if (att.data && att.mimeType) {
-                        parts.push({
-                            inlineData: {
-                                mimeType: normalizeMimeType(att.mimeType, att.name),
-                                data: cleanBase64Data(att.data)
-                            }
-                        });
-                    } else if (att.textContent) {
-                        parts.push({
-                            text: `\n[NỘI DUNG TỆP: ${att.name}]\n${att.textContent}\n[HẾT TỆP ${att.name}]\n`
-                        });
-                    }
-                }
-                return parts.length > 0 ? parts : [{ text: " " }];
-            }
-
-            function getExecutionLogsHtml(msg) {
-                if (!msg || !Array.isArray(msg.rawExecutionParts) || msg.rawExecutionParts.length === 0) {
-                    return '<div class="p-3 text-textMuted italic">Chưa có dữ liệu tính toán.</div>';
-                }
-                let html = '<div class="space-y-2 p-2">';
-                msg.rawExecutionParts.forEach((part) => {
-                    if (part.type === 'code') {
-                        html += `<div class="rounded-xl overflow-hidden border border-emerald-500/20 bg-[#040609]">` +
-                                `<div class="px-3 py-1.5 bg-emerald-950/30 text-emerald-400 font-mono text-[10px] font-bold uppercase tracking-wider flex items-center justify-between border-b border-emerald-500/10">` +
-                                `<span>Python WASM Input</span>` +
-                                `</div><pre class="p-3 text-[12px] font-mono text-[#a8f0e6] overflow-x-auto m-0 leading-relaxed">${escapeHTML(part.content)}</pre></div>`;
-                    } else if (part.type === 'output') {
-                        const isErr = part.outcome === 'ERROR';
-                        html += `<div class="rounded-xl overflow-hidden border ${isErr ? 'border-rose-500/25 bg-rose-950/15' : 'border-white/5 bg-black/40'} p-3 font-mono text-[11.5px] leading-relaxed">` +
-                                `<div class="text-[9.5px] font-bold ${isErr ? 'text-rose-400' : 'text-emerald-400'} uppercase mb-1">Kết quả thực thi:</div>` +
-                                `<div class="${isErr ? 'text-rose-200' : 'text-zinc-300'} whitespace-pre-wrap">${escapeHTML(part.content || '')}</div>`;
-                        if (part.plotBase64) {
-                            html += `<div class="mt-2.5 p-2 rounded-xl bg-black/60 border border-white/5 text-center">` +
-                                    `<img src="data:image/png;base64,${part.plotBase64}" class="max-h-[360px] mx-auto rounded-lg shadow-lg cursor-zoom-in" alt="Biểu đồ Matplotlib" />` +
-                                    `</div>`;
-                        }
-                        html += `</div>`;
-                    }
-                });
-                html += '</div>';
-                return html;
-            }
-
-            function getExecutionLogsText(msg) {
-                if (!msg || !Array.isArray(msg.rawExecutionParts)) return '';
-                return msg.rawExecutionParts.map(p => p.content || '').join('\n');
-            }
-
-            let mermaidRenderSeq = 0;
-            function renderMermaidDiagrams() {
-                if (typeof window === 'undefined' || !window.mermaid) return;
-                const containers = document.querySelectorAll('.mermaid-container[data-mermaid-code]');
-                if (!containers.length) return;
-
-                containers.forEach((el) => {
-                    if (el.dataset.rendered === 'true') return;
-                    const rawCode = decodeURIComponent(el.getAttribute('data-mermaid-code') || '');
-                    if (!rawCode.trim()) return;
-
-                    const id = 'mermaid_svg_' + (++mermaidRenderSeq);
-                    try {
-                        window.mermaid.render(id, rawCode, (svgGraph) => {
-                            el.innerHTML = svgGraph;
-                            el.dataset.rendered = 'true';
-                            const svg = el.querySelector('svg');
-                            if (svg) {
-                                svg.style.maxWidth = '100%';
-                                svg.style.height = 'auto';
-                            }
-                        });
-                    } catch (err) {
-                        el.innerHTML = `<div class="text-rose-400 text-xs font-mono p-2 bg-rose-950/20 border border-rose-500/20 rounded-lg">Không thể hiển thị sơ đồ: ${escapeHTML(err.message || 'Cú pháp Mermaid không hợp lệ')}</div><pre class="text-[11px] font-mono text-zinc-400 mt-2 p-2 bg-black/40 rounded-lg overflow-x-auto">${escapeHTML(rawCode)}</pre>`;
-                        el.dataset.rendered = 'true';
-                    }
-                });
-            }
-
-            // KHỞI TẠO ĐỐI TƯỢNG TIN NHẮN PHẢN HỒI (REACTIVE MESSAGE FACTORY)
-            function createMessageRecord(data = {}) {
-                const now = getMonotonicTimestamp();
-                const initialContent = data.content !== undefined && data.content !== null ? String(data.content) : '';
-                const initialVersions = Array.isArray(data.versions) && data.versions.length > 0
-                    ? data.versions
-                    : (initialContent ? [{ content: initialContent, thought: data.thought || '', rawExecutionParts: data.rawExecutionParts || [] }] : []);
-
-                return reactive({
-                    id: data.id || generateUUID(),
-                    threadId: data.threadId || null,
-                    role: data.role || 'user',
-                    content: initialContent,
-                    promptContent: data.promptContent || initialContent || '',
-                    attachments: Array.isArray(data.attachments) ? data.attachments : [],
-                    versions: initialVersions,
-                    activeVersionIndex: Number(data.activeVersionIndex) || 0,
-                    htmlContent: data.htmlContent || (initialContent ? compileMarkdownSync(initialContent, true) : ''),
-                    createdAt: data.createdAt || now,
-                    isThinking: Boolean(data.isThinking),
-                    userOpenedThought: data.userOpenedThought !== undefined ? Boolean(data.userOpenedThought) : (data.role === 'system_thought'),
-                    thoughtTime: data.thoughtTime || null,
-                    rawExecutionParts: Array.isArray(data.rawExecutionParts) ? data.rawExecutionParts : [],
-                    executionExpanded: data.executionExpanded !== undefined ? Boolean(data.executionExpanded) : (data.role === 'system_execution'),
-                    serperMetadata: data.serperMetadata || null,
-                    urlSources: Array.isArray(data.urlSources) ? data.urlSources : [],
-                    urlSourcesExpanded: data.urlSourcesExpanded !== undefined ? Boolean(data.urlSourcesExpanded) : true,
-                    searchExpanded: data.searchExpanded !== undefined ? Boolean(data.searchExpanded) : true,
-                    isTruncated: Boolean(data.isTruncated),
-                    interruptionReason: data.interruptionReason || null,
-                    isContinuing: Boolean(data.isContinuing),
-                    continuationStep: data.continuationStep || 1,
-                    maxContinuationSteps: data.maxContinuationSteps || 25,
-                    expanded: Boolean(data.expanded),
-                    userExpanded: Boolean(data.userExpanded),
-                    showActions: false,
-                    isEditing: false,
-                    editContent: data.editContent || initialContent || '',
-                    reaction: data.reaction || null,
-                    isBookmarked: Boolean(data.isBookmarked),
-                    renderedVideoUrl: data.renderedVideoUrl || null,
-                    longPressTimer: null,
-                    longPressStartPos: { x: 0, y: 0 },
-                    isLongPressTriggered: false,
-                    lastRenderSeq: 0
-                });
-            }
 
             // =========================================================================
             // [BỘ QUẢN LÝ MA TRẬN MODEL - KEY KHẢ DỤNG VĨNH VIỄN (PERSISTENT AFFINITY MATRIX)]
@@ -9645,15 +9471,20 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 for (const file of files) {
                     try {
                         const isText = file.type.startsWith('text/') || /\.(csv|json|py|txt|md|html|js|ts|css|xml|yaml|sh)$/i.test(file.name);
+                        const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
                         let base64 = "", textContent = "";
                         if (isText) {
                             textContent = await readFileAsText(file.slice(0, 15 * 1024 * 1024));
+                        } else if (isPdf) {
+                            const buf = await file.arrayBuffer();
+                            textContent = await extractPdfText(buf);
+                            if (file.size <= 20 * 1024 * 1024) base64 = await readFileAsBase64(file);
                         } else {
                             base64 = await readFileAsBase64(file);
                         }
                         workflowStudio.inputFiles.push({
                             name: file.name,
-                            mimeType: file.type || 'application/octet-stream',
+                            mimeType: normalizeMimeType(file.type, file.name),
                             size: file.size,
                             data: base64,
                             textContent: textContent
@@ -9666,12 +9497,19 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 notify(`Đã nạp ${files.length} tệp`);
             };
 
-            // HÀM GỌI MODEL AI VỚI MA TRẬN ĐIỀU PHỐI CHÌA KHÓA
-            const runAgentWithSystemKeyRotation = async (agent, promptText, signal) => {
+            // HÀM GỌI MODEL AI ĐA PHƯƠNG THỨC VỚI MA TRẬN ĐIỀU PHỐI CHÌA KHÓA
+            const runAgentWithSystemKeyRotation = async (agent, promptText, signal, attachments = []) => {
                 const requestedModel = agent.modelId || 'gemini-3.6-flash';
                 const modelCascade = Array.from(new Set([
-                    requestedModel, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'
+                    requestedModel, 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'
                 ]));
+
+                const parts = [{ text: promptText }];
+                for (const att of (attachments || [])) {
+                    if (att?.data && att?.mimeType && !att.textContent) {
+                        parts.push({ inlineData: { mimeType: normalizeMimeType(att.mimeType, att.name), data: cleanBase64Data(att.data) } });
+                    }
+                }
 
                 let lastError = null;
 
@@ -9682,7 +9520,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     if (!candidateKeys.length) candidateKeys = (apiKeyPool?.value || []).filter(k => k.status !== 'invalid');
                     if (!candidateKeys.length) continue;
 
-                    for (let attempt = 0; attempt < Math.min(3, candidateKeys.length); attempt++) {
+                    for (let attempt = 0; attempt < candidateKeys.length; attempt++) {
                         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
                         const keyObj = candidateKeys[attempt];
                         if (!keyObj || !keyObj.key) continue;
@@ -9692,8 +9530,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
-                                    contents: [{ role: 'user', parts: [{ text: promptText }] }],
-                                    generationConfig: { temperature: 0.2, maxOutputTokens: 6500 }
+                                    contents: [{ role: 'user', parts }],
+                                    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
                                 }),
                                 signal
                             });
@@ -9710,28 +9548,28 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                     if (typeof ModelKeyMatrixManager !== 'undefined') ModelKeyMatrixManager.recordFailure(modelId, keyObj.key);
                                 }
                                 lastError = new Error(`[${modelId}] HTTP ${res.status}: ${errData?.error?.message || res.statusText}`);
-                                if (res.status === 429) await new Promise(r => setTimeout(r, 600));
+                                if (res.status === 429) await new Promise(r => setTimeout(r, 500));
                             }
                         } catch (netErr) {
                             if (netErr.name === 'AbortError') throw netErr;
                             if (typeof markKeyModelFailure === 'function') markKeyModelFailure(keyObj, modelId, null, netErr.message);
                             lastError = netErr;
-                            await new Promise(r => setTimeout(r, 400));
+                            await new Promise(r => setTimeout(r, 350));
                         }
                     }
                 }
                 throw lastError || new Error("Mọi tuyến kết nối AI đều bận hoặc hết hạn mức.");
             };
 
-            // BỘ PHÂN TÍCH CẤU TRÚC SLIDE
+            // BỘ PHÂN TÍCH CẤU TRÚC SLIDE ĐA ĐỊNH DẠNG
             const parseSlideDeckStructure = (rawText) => {
                 const slides = [];
                 const lines = (rawText || '').split('\n');
                 let cur = null;
                 for (const line of lines) {
                     const trimmed = line.trim();
-                    const match = trimmed.match(/^(?:###|##|#)?\s*(?:Slide|Trang)?\s*(\d+)[:\s.-]+(.*)/i) ||
-                                  trimmed.match(/^(?:###|##)\s+(?:Slide|Trang\s+)?(\d+)?[:\s-]*(.+)/i);
+                    const match = trimmed.match(/^(?:###|##|#|\*\*)?\s*(?:Slide|Trang)\s*(\d+)[:\s.\-*]+(.+?)(?:\*\*)?$/i) ||
+                                  trimmed.match(/^(?:###|##)\s+(?:(\d+)[:.\s-]+)?(.+)/i);
                     if (match) {
                         if (cur) slides.push(cur);
                         const num = match[1] || (slides.length + 1);
@@ -9905,7 +9743,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     // 1. REACT TOOL-CALL TRƯỚC LƯỢT: TỰ ĐỘNG CÀO DỮ LIỆU
                     let crawlContext = "";
                     if (agent.tools.crawler && typeof UrlGroundingEngine !== 'undefined') {
-                        const detectedUrls = UrlGroundingEngine.extractUrls(blackboard.goal + ' ' + blackboard.findings.join(' '));
+                        const findingsText = blackboard.findings.map(f => f.output || '').join(' ');
+                        const detectedUrls = UrlGroundingEngine.extractUrls(blackboard.goal + ' ' + findingsText);
                         if (detectedUrls.length > 0) {
                             workflowStudio.statusMessage = `[${agent.name}] đang đối soát ${detectedUrls.length} liên kết...`;
                             const sources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => {
@@ -9930,8 +9769,10 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         }
                     }
 
-                    // 3. TỔNG HỢP GÓI TIN BÀN GIAO THỰC THỂ (STATE PACKET)
-                    const previousContext = blackboard.findings.map((f, idx) => `### Bàn giao từ ${workflowStudio.agents[idx]?.name || 'Agent trước'}:\n${f}`).join('\n\n');
+                    // 3. TỔNG HỢP GÓI TIN BÀN GIAO THỰC THỂ (STATE PACKET - GIỮ ĐÚNG TÊN AGENT QUA MỌI VÒNG LẶP)
+                    const previousContext = blackboard.findings
+                        .map((f) => `### Bàn giao từ ${f.agentName} (Vòng #${f.loop}):\n${f.output}`)
+                        .join('\n\n');
 
                     const a2aEnvelope = [
                         `[G-DEEP OMEGA A2A AUTONOMOUS PROTOCOL]`,
@@ -9940,15 +9781,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         `ĐỊNH DẠNG ĐẦU RA MỤC TIÊU: ${blackboard.format}`,
                         `CHỈ THỊ CỐT LÕI: ${agent.systemPrompt}`,
                         directiveModifier ? `\n[CHỈ THỊ ĐẶC BIỆT / YÊU CẦU PHẢN TƯ]:\n${directiveModifier}` : '',
-                        blackboard.fileContents ? `\n[DỮ LIỆU TỆP ĐÍNH KÈM WORKSPACE]:\n${blackboard.fileContents.slice(0, 5000)}` : '',
+                        blackboard.fileContents ? `\n[DỮ LIỆU TỆP ĐÍNH KÈM WORKSPACE]:\n${blackboard.fileContents.slice(0, 12000)}` : '',
                         crawlContext ? `\n${crawlContext}` : '',
                         searchContext ? `\n${searchContext}` : '',
                         previousContext ? `\n[TIẾN TRÌNH & BÀN GIAO TỪ CÁC CHUYÊN GIA TRƯỚC]:\n${previousContext}` : '',
                         `\nHÃY THỰC THI NHIỆM VỤ, TƯ DUY PHẢN BIỆN VÀ XUẤT KẾT QUẢ CHUYÊN MÔN:`
                     ].filter(Boolean).join('\n');
 
-                    // 4. GỌI AI THÔNG QUA HỆ THỐNG PHÂN BỔ CHÌA KHÓA
-                    const callResult = await runAgentWithSystemKeyRotation(agent, a2aEnvelope, workflowStudio.abortCtrl.signal);
+                    // 4. GỌI AI ĐA PHƯƠNG THỨC THÔNG QUA HỆ THỐNG PHÂN BỔ CHÌA KHÓA
+                    const callResult = await runAgentWithSystemKeyRotation(agent, a2aEnvelope, workflowStudio.abortCtrl.signal, workflowStudio.inputFiles);
                     let agentOutputText = callResult.text;
 
                     let pyCode = null, pyOut = null, pyPlot = null;
@@ -10099,10 +9940,14 @@ export_artifact("flux_base.glsl", glsl_code)
                         }
                     }
 
-                    // 7. XƯỞNG PHIM ĐIỆN ẢNH THỰC TẾ
+                    // 7. XƯỞNG PHIM ĐIỆN ẢNH THỰC TẾ & ĐỒNG BỘ VÀO KẾT QUẢ MULTI-AGENT
                     if (agent.tools.cinema && workflowStudio.outputFormat === 'video' && typeof rawExecuteCinemaProduction === 'function') {
                         workflowStudio.statusMessage = "🎬 Đang kích hoạt xưởng phim kết xuất MP4 60 FPS...";
                         await rawExecuteCinemaProduction(null, blackboard.goal);
+                        const lastVideoMsg = [...(currentMessages?.value || [])].reverse().find(m => m.renderedVideoUrl);
+                        if (lastVideoMsg) {
+                            workflowStudio.resultData.video = { url: lastVideoMsg.renderedVideoUrl, blob: lastVideoMsg.videoBlob || null };
+                        }
                     }
 
                     const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
@@ -10148,7 +9993,7 @@ export_artifact("flux_base.glsl", glsl_code)
                             }
 
                             const output = await runSingleAgentPass(agent, directiveModifier, nextAgent);
-                            blackboard.findings.push(output);
+                            blackboard.findings.push({ agentName: agent.name, loop: loopCount, output });
 
                             // KIỂM TRA PHẢN HỒI TỪ CHUYÊN GIA THẨM ĐỊNH (CRITIC VERDICT)
                             if (agent.role === 'critic') {
@@ -10182,7 +10027,7 @@ export_artifact("flux_base.glsl", glsl_code)
 
                     // ĐẦU RA 1: TỆP POWERPOINT (.PPTX) CHUẨN 16:9
                     if (workflowStudio.outputFormat === 'pptx') {
-                        const allContext = blackboard.findings.join('\n\n');
+                        const allContext = blackboard.findings.map(f => f.output).join('\n\n');
                         const parsedSlides = parseSlideDeckStructure(allContext);
                         const finalSlides = parsedSlides.length ? parsedSlides : [
                             { num: 1, title: 'Slide 1: Đề Án Chiến Lược', bullets: ['Đã hoàn tất báo cáo tổng hợp từ Hội đồng Multi-Agents'] }
@@ -10242,7 +10087,7 @@ export_artifact("flux_base.glsl", glsl_code)
                         `**Cấu trúc thực thi:** Graph Swarm (${workflowStudio.topologyMode.toUpperCase()}) · Vòng lặp: ${workflowStudio.currentIteration}`,
                         `**Thời gian hoàn thành:** ${new Date().toLocaleString('vi-VN')}`,
                         `\n---\n`,
-                        blackboard.findings.join('\n\n---\n\n')
+                        blackboard.findings.map(f => `### ${f.agentName} (Vòng #${f.loop})\n\n${f.output}`).join('\n\n---\n\n')
                     ].join('\n');
 
                     workflowStudio.resultData.text = fullDossier;
@@ -10263,7 +10108,8 @@ export_artifact("flux_base.glsl", glsl_code)
                             finalReport += `📊 **Bài thuyết trình PowerPoint:** Đã thiết kế hoàn thiện ${workflowStudio.resultData.pptx.slides.length} slide chuẩn 16:9.\n\n`;
                         }
 
-                        finalReport += `**Báo cáo tổng hợp chi tiết:**\n\n${blackboard.findings[blackboard.findings.length - 1]}`;
+                        const latestFinding = blackboard.findings[blackboard.findings.length - 1]?.output || '';
+                        finalReport += `**Báo cáo tổng hợp chi tiết:**\n\n${latestFinding}`;
 
                         const botMsg = createMessageRecord({
                             threadId: currentThreadId.value,
@@ -10455,7 +10301,7 @@ export_artifact("flux_base.glsl", glsl_code)
         resize();
 
         const vsSource = "attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }";
-        const commonHeader = "precision highp float;\\nuniform sampler2D uTexture;\\nuniform vec2 uResolution;\\nuniform float uTime;\\n#define iChannel0 uTexture\\n#define u_image uTexture\\n#define iResolution vec3(uResolution, 1.0)\\n#define iTime uTime;\\nvarying vec2 vUv;";
+        const commonHeader = "precision highp float;\nuniform sampler2D uTexture;\nuniform vec2 uResolution;\nuniform float uTime;\n#define iChannel0 uTexture\n#define u_image uTexture\n#define iResolution vec3(uResolution, 1.0)\n#define iTime uTime\nvarying vec2 vUv;";
         
         let rawCode = \`${clean}\`;
         let fsSource = '';
@@ -10957,13 +10803,16 @@ MỆNH LỆNH:
 
                         pendingSaveMap.set(msg.id, msg);
 
-                        // NẾU LÀ YÊU CẦU LƯU NGAY LẬP TỨC: GHI THẲNG VÀO LOCALSTORAGE VÀ HÀNG ĐỢI DB TỨC THÌ
+                        // NẾU LÀ YÊU CẦU LƯU NGAY LẬP TỨC: GHI O(1) VÀO INDEXEDDB NGAY, DEBOUNCE LOCALSTORAGE TRÁNH ĐƠ MAIN THREAD
                         if (forceImmediate || !isGenerating.value) {
                             if (saveTimersMap.has(msg.id)) {
                                 clearTimeout(saveTimersMap.get(msg.id));
                                 saveTimersMap.delete(msg.id);
                             }
-                            saveBackupToLocalStorageSync(msg.threadId);
+                            if (lsBackupDebounceTimer) clearTimeout(lsBackupDebounceTimer);
+                            lsBackupDebounceTimer = setTimeout(() => {
+                                saveBackupToLocalStorageSync(msg.threadId);
+                            }, 400);
                             dbWriteQueue.enqueue(async () => {
                                 const latestSnapshot = pendingSaveMap.get(msg.id);
                                 if (latestSnapshot) {
@@ -13328,19 +13177,29 @@ QUY TẮC PHẢN HỒI:
                                             if (typeof onModelChange === 'function') onModelChange(modelId, mIdx);
                                             let received = false;
 
-                                            await readSSEStream(res, signal, (chunk) => {
-                                                if (chunk.isHeartbeat) return;
-                                                received = true;
-                                                onChunk(chunk);
-                                            });
-
-                                            if (received) return { success: true, activeModel: modelId, isMidStreamDrop: false };
+                                            try {
+                                                await readSSEStream(res, signal, (chunk) => {
+                                                    if (chunk.isHeartbeat) return;
+                                                    received = true;
+                                                    onChunk(chunk);
+                                                });
+                                                if (received) return { success: true, activeModel: modelId, isMidStreamDrop: false };
+                                            } catch (streamErr) {
+                                                if (signal?.aborted || streamErr?.name === 'AbortError') {
+                                                    return { success: false, isMidStreamDrop: false };
+                                                }
+                                                if (received) {
+                                                    // Đã nhận được dữ liệu dở dang -> Bàn giao ngay cho Surgical Continuation Splicer nối tiếp
+                                                    return { success: true, activeModel: modelId, isMidStreamDrop: true };
+                                                }
+                                                throw streamErr;
+                                            }
                                         } else {
                                             if (res.status === 401 || res.status === 404) ModelKeyMatrixManager.recordFailure(modelId, chosenKey);
                                             markKeyModelFailure(keyObj, modelId, res.status);
                                         }
                                     } catch (e) {
-                                        if (signal?.aborted) return { success: false, isMidStreamDrop: false };
+                                        if (signal?.aborted || e?.name === 'AbortError') return { success: false, isMidStreamDrop: false };
                                         markKeyModelFailure(keyObj, modelId, null, e.message);
                                     }
                                 }
@@ -13365,17 +13224,32 @@ QUY TẮC PHẢN HỒI:
 
                         return new Promise((resolve) => {
                             let failureCount = 0;
+                            let resolved = false;
                             const total = raceContenders.length;
+                            const safeResolve = (val) => { if (!resolved) { resolved = true; resolve(val); } };
+
+                            const onUserAbort = () => {
+                                contenderControllers.forEach(ctrl => { try { ctrl.abort(); } catch (_) {} });
+                                safeResolve({ success: false, isMidStreamDrop: false });
+                            };
+                            if (signal) {
+                                if (signal.aborted) { onUserAbort(); return; }
+                                signal.addEventListener('abort', onUserAbort, { once: true });
+                            }
 
                             raceContenders.forEach((contender) => {
                                 const cCtrl = new AbortController();
                                 contenderControllers.push(cCtrl);
 
-                                const candidateSignal = signal ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, cCtrl.signal]) : signal) : cCtrl.signal;
+                                const candidateSignal = signal && typeof AbortSignal.any === 'function'
+                                    ? AbortSignal.any([signal, cCtrl.signal])
+                                    : cCtrl.signal;
                                 const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${contender.modelId}:streamGenerateContent?alt=sse&key=${contender.keyStr}`;
                                 const reqPayload = preparePayload(contender.modelId);
 
                                 (async () => {
+                                    let isWinner = false;
+                                    let receivedChunk = false;
                                     try {
                                         const res = await fetch(endpoint, {
                                             method: 'POST',
@@ -13391,53 +13265,56 @@ QUY TẮC PHẢN HỒI:
                                         }
 
                                         const reader = res.body.getReader();
-                                        const decoder = new TextDecoder('utf-8');
+                                        const decoder = new TextDecoder('utf-8', { fatal: false });
                                         const { done, value } = await reader.read();
 
                                         if (done || !value) {
-                                            reader.releaseLock();
+                                            try { reader.releaseLock(); } catch (_) {}
                                             throw new Error("Luồng rỗng.");
                                         }
 
-                                        if (signal?.aborted) {
-                                            reader.releaseLock();
+                                        if (signal?.aborted || raceWon) {
+                                            try { reader.cancel(); reader.releaseLock(); } catch (_) {}
                                             return;
                                         }
 
-                                        if (!raceWon) {
-                                            raceWon = true;
-                                            contenderControllers.forEach(ctrl => { if (ctrl !== cCtrl) { try { ctrl.abort(); } catch (_) {} } });
+                                        raceWon = true;
+                                        isWinner = true;
+                                        contenderControllers.forEach(ctrl => { if (ctrl !== cCtrl) { try { ctrl.abort(); } catch (_) {} } });
 
-                                            ModelKeyMatrixManager.recordSuccess(contender.modelId, contender.keyStr);
-                                            markKeyModelSuccess(contender.keyObj, contender.modelId);
-                                            if (typeof onModelChange === 'function') onModelChange(contender.modelId);
+                                        ModelKeyMatrixManager.recordSuccess(contender.modelId, contender.keyStr);
+                                        markKeyModelSuccess(contender.keyObj, contender.modelId);
+                                        if (typeof onModelChange === 'function') onModelChange(contender.modelId);
 
-                                            // Giải mã chunk đầu tiên
-                                            const firstChunk = decoder.decode(value, { stream: true });
-                                            const lines = firstChunk.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-                                            for (const line of lines) {
-                                                if (line.startsWith('data:')) {
-                                                    const jsonStr = line.slice(5).trim();
-                                                    if (jsonStr && jsonStr !== '[DONE]') {
-                                                        try { onChunk(JSON.parse(jsonStr)); } catch (_) {}
-                                                    }
-                                                }
-                                            }
+                                        // Bàn giao nguyên vẹn reader + initialBuffer cho readSSEStream (không mất/gãy JSON)
+                                        const initialBuffer = decoder.decode(value, { stream: true });
+                                        await readSSEStream(
+                                            res,
+                                            candidateSignal,
+                                            (chunk) => {
+                                                if (chunk.isHeartbeat) return;
+                                                receivedChunk = true;
+                                                onChunk(chunk);
+                                            },
+                                            { reader, initialBuffer, decoder }
+                                        );
 
-                                            reader.releaseLock();
-                                            await readSSEStream(res, candidateSignal, (chunk) => {
-                                                if (!chunk.isHeartbeat) onChunk(chunk);
-                                            });
-
-                                            resolve({ success: true, activeModel: contender.modelId, isMidStreamDrop: false });
-                                        } else {
-                                            reader.releaseLock();
-                                            try { cCtrl.abort(); } catch (_) {}
-                                        }
+                                        if (signal) signal.removeEventListener('abort', onUserAbort);
+                                        safeResolve({ success: true, activeModel: contender.modelId, isMidStreamDrop: false });
                                     } catch (_) {
+                                        if (isWinner) {
+                                            if (signal) signal.removeEventListener('abort', onUserAbort);
+                                            if (signal?.aborted) {
+                                                safeResolve({ success: false, isMidStreamDrop: false });
+                                            } else {
+                                                safeResolve({ success: receivedChunk, activeModel: contender.modelId, isMidStreamDrop: receivedChunk });
+                                            }
+                                            return;
+                                        }
                                         failureCount++;
                                         if (failureCount >= total && !raceWon) {
-                                            resolve({ success: false, isMidStreamDrop: false, errorMessage: "Mọi tuyến kết nối đều bị từ chối." });
+                                            if (signal) signal.removeEventListener('abort', onUserAbort);
+                                            safeResolve({ success: false, isMidStreamDrop: false, errorMessage: "Mọi tuyến kết nối đều bị từ chối." });
                                         }
                                     }
                                 })();
