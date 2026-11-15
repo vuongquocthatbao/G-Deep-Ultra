@@ -6163,24 +6163,37 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
         })();
 
         /**
-         * 6. LÀM SẠCH VÀ BẢO VỆ CHUỖI XSS CAO CẤP (CONFIG BOUND)
+         * 6. LÀM SẠCH VÀ BẢO VỆ CHUỖI XSS CAO CẤP (TỰ CHỨA BẢN ĐỒ MAP - KHÔNG PHỤ THUỘC UNDEFINED)
          */
-        const HTML_ESCAPE_MAP = GDeepMasterConfig.Security.HtmlEscapeMap;
-        const HTML_UNESCAPE_MAP = GDeepMasterConfig.Security.HtmlUnescapeMap;
+        const HTML_ESCAPE_MAP = Object.freeze({
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+            '/': '&#x2F;',
+            '`': '&#x60;'
+        });
 
-        const HtmlSanitizerNeuron = SynapticNeuralMesh.autoWrapObject('HtmlSanitizer', {
-            escape(str) {
-                if (str === null || str === undefined) return '';
-                return String(str).replace(/[&<>"'/`]/g, s => HTML_ESCAPE_MAP[s] || s);
-            },
-            unescape(str) {
-                if (str === null || str === undefined) return '';
-                return String(str).replace(/&(?:amp|lt|gt|quot|#39|#x2F|#x60);/g, s => HTML_UNESCAPE_MAP[s] || s);
-            }
-        }, ['security', 'sanitizer']);
+        const HTML_UNESCAPE_MAP = Object.freeze({
+            '&amp;': '&',
+            '&lt;': '<',
+            '&gt;': '>',
+            '&quot;': '"',
+            '&#39;': "'",
+            '&#x2F;': '/',
+            '&#x60;': '`'
+        });
 
-        function escapeHTML(str) { return HtmlSanitizerNeuron.escape(str); }
-        function unescapeHTML(str) { return HtmlSanitizerNeuron.unescape(str); }
+        function escapeHTML(str) {
+            if (str === null || str === undefined) return '';
+            return String(str).replace(/[&<>"'/`]/g, s => HTML_ESCAPE_MAP[s] || s);
+        }
+
+        function unescapeHTML(str) {
+            if (str === null || str === undefined) return '';
+            return String(str).replace(/&(?:amp|lt|gt|quot|#39|#x2F|#x60);/g, s => HTML_UNESCAPE_MAP[s] || s);
+        }
 
         /**
          * 7. NƠ-RON AI LÀM SẠCH VÀ CHUẨN HOÁ BASE64 (BASE64 SANITIZER NEURON)
@@ -7206,14 +7219,21 @@ async function readSSEStream(response, signal, onChunk) {
          */
         function createCustomRenderer(markedInstance) {
             return {
-                // RENDER KHỐI MÃ (CODE BLOCK)
+                // RENDER KHỐI MÃ (CODE BLOCK) - CHUẨN XÁC 100% KHÔNG BAO GIỜ BỊ NULL
                 code(tokenOrCode, infoString) {
-                    const textCode = (typeof tokenOrCode === 'object' && tokenOrCode !== null)
-                        ? (tokenOrCode.text ?? tokenOrCode.raw ?? '')
-                        : (typeof tokenOrCode === 'string' ? tokenOrCode : '');
-                    const rawLang = (typeof tokenOrCode === 'object' && tokenOrCode !== null)
-                        ? (tokenOrCode.lang || '')
-                        : (typeof infoString === 'string' ? infoString : '');
+                    let textCode = '';
+                    let rawLang = '';
+
+                    if (typeof tokenOrCode === 'object' && tokenOrCode !== null) {
+                        textCode = tokenOrCode.text !== undefined ? tokenOrCode.text : (tokenOrCode.raw || '');
+                        rawLang = tokenOrCode.lang || '';
+                    } else if (typeof tokenOrCode === 'string') {
+                        textCode = tokenOrCode;
+                        rawLang = typeof infoString === 'string' ? infoString : '';
+                    }
+
+                    textCode = String(textCode ?? '');
+                    rawLang = String(rawLang ?? '');
 
                     const validLang = (typeof MarkdownStreamProcessor !== 'undefined' && MarkdownStreamProcessor.extractExactLanguage)
                         ? MarkdownStreamProcessor.extractExactLanguage(rawLang)
@@ -7230,39 +7250,50 @@ async function readSSEStream(response, signal, onChunk) {
 
                     const isPreviewable = ['html', 'svg', 'xml', 'js', 'javascript'].includes(validLang);
 
-                    // Khai thác Cache cú pháp mã nguồn
+                    // Tránh lỗi bộ nhớ đệm với khóa cache
                     const cacheKey = `${validLang}:${textCode}`;
                     let highlightedCode = CodeHighlightCache.get(cacheKey);
 
                     if (!highlightedCode) {
-                        if (window.hljs && validLang !== 'plaintext' && window.hljs.getLanguage(validLang)) {
-                            try {
-                                highlightedCode = window.hljs.highlight(textCode, { language: validLang }).value;
-                            } catch (_) {
-                                highlightedCode = escapeHTML(textCode);
+                        let highlighted = '';
+                        if (window.hljs && validLang !== 'plaintext') {
+                            // Ánh xạ các định dạng tương đương vào các module có sẵn của Highlight.js
+                            const hljsLang = (validLang === 'html' || validLang === 'svg' || validLang === 'vue') ? 'xml'
+                                : ((validLang === 'js' || validLang === 'ts') ? 'javascript'
+                                : ((validLang === 'py') ? 'python'
+                                : (window.hljs.getLanguage(validLang) ? validLang : null)));
+
+                            if (hljsLang && window.hljs.getLanguage(hljsLang)) {
+                                try {
+                                    highlighted = window.hljs.highlight(textCode, { language: hljsLang }).value;
+                                } catch (_) {
+                                    highlighted = escapeHTML(textCode);
+                                }
+                            } else {
+                                highlighted = escapeHTML(textCode);
                             }
                         } else {
-                            highlightedCode = escapeHTML(textCode);
+                            highlighted = escapeHTML(textCode);
                         }
+
+                        highlightedCode = highlighted || escapeHTML(textCode) || '';
                         CodeHighlightCache.set(cacheKey, highlightedCode);
                     }
 
-                    // BƯỚC NHẢY VỌT LOGIC 1: Xóa bỏ data-raw-code để giải phóng hàng chục MB RAM khi AI sinh mã nguồn khổng lồ.
-                    // Hệ thống Copy/Download sẽ tự động fallback về việc đọc textContent siêu nhẹ từ DOM.
                     return `<div class="code-block-wrapper" data-lang="${validLang}">` +
-               `<header class="code-header">` +
-               `<span class="font-mono text-blue-300 font-bold shrink-0 uppercase tracking-wider">${validLang}</span>` +
-               `<menu class="flex items-center gap-1 shrink-0 flex-wrap m-0 p-0">` +
-               (isPreviewable ? `<button type="button" class="btn-instant action-btn hover:!text-purple-300" data-code-action="preview" title="Chạy thử giao diện (Live Preview)">` +
-                   `<svg class="w-3.5 h-3.5 pointer-events-none text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>` : '') +
-               `<button type="button" class="btn-instant action-btn hover:!text-emerald-300" data-code-action="download" title="Tải tệp mã nguồn về máy">` +
-                   `<svg class="w-3.5 h-3.5 pointer-events-none text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>` +
-               `<button type="button" class="btn-instant action-btn hover:!text-sky-300" data-code-action="copy" title="Sao chép toàn bộ mã nguồn">` +
-                   `<svg class="w-3.5 h-3.5 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg></button>` +
-               `<button type="button" class="btn-instant action-btn hover:!text-cyan-300 text-cyan-400" data-code-action="collapse" title="Thu gọn / Mở rộng khối mã">` +
-                   `<svg class="w-3.5 h-3.5 collapse-icon transition-transform duration-200 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>` +
-               `</menu></header>` +
-               `<div class="code-content-wrap custom-scrollbar"><pre><code class="hljs language-${validLang}">${highlightedCode}</code></pre></div></div>`;
+                           `<header class="code-header">` +
+                           `<span class="font-mono text-blue-300 font-bold shrink-0 uppercase tracking-wider">${validLang}</span>` +
+                           `<menu class="flex items-center gap-1 shrink-0 flex-wrap m-0 p-0">` +
+                           (isPreviewable ? `<button type="button" class="btn-instant action-btn hover:!text-purple-300" data-code-action="preview" title="Chạy thử giao diện (Live Preview)">` +
+                               `<svg class="w-3.5 h-3.5 pointer-events-none text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>` : '') +
+                           `<button type="button" class="btn-instant action-btn hover:!text-emerald-300" data-code-action="download" title="Tải tệp mã nguồn về máy">` +
+                               `<svg class="w-3.5 h-3.5 pointer-events-none text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>` +
+                           `<button type="button" class="btn-instant action-btn hover:!text-sky-300" data-code-action="copy" title="Sao chép toàn bộ mã nguồn">` +
+                               `<svg class="w-3.5 h-3.5 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg></button>` +
+                           `<button type="button" class="btn-instant action-btn hover:!text-cyan-300 text-cyan-400" data-code-action="collapse" title="Thu gọn / Mở rộng khối mã">` +
+                               `<svg class="w-3.5 h-3.5 collapse-icon transition-transform duration-200 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>` +
+                           `</menu></header>` +
+                           `<div class="code-content-wrap custom-scrollbar"><pre><code class="hljs language-${validLang}">${highlightedCode}</code></pre></div></div>`;
                 },
 
                 // RENDER BẢNG DỮ LIỆU MA TRẬN
