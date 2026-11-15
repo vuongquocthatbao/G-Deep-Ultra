@@ -3958,16 +3958,23 @@ self.onmessage = async function(e) {
                 "A49 [Groupthink Inquisitor]", "A50 [Supreme Architect]"
             ]);
 
-            // 2. BỘ ĐIỀU PHỐI Ý ĐỊNH TRỰC TIẾP (DETERMINISTIC ROUTER)
+            // 2. BỘ ĐIỀU PHỐI ĐA TÍN HIỆU & PHÂN LUỒNG TẢI TRỌNG 2026 (MULTI-LANE ADAPTIVE ROUTER)
             const DataIntakeRouter = {
                 parseAndRoute(promptText, attachments = [], flags = {}) {
                     const { enableCinema = false, enableImage = false, isWorkflowMode = false } = flags;
                     let cleanPrompt = (promptText || '').trim();
                     const lower = cleanPrompt.toLowerCase();
 
-                    const isSlashAgent = lower.startsWith('/agent') || lower.startsWith('/workflow') || lower.startsWith('/multiagent');
-                    const isSlashCinema = lower.startsWith('/cinema') || lower.startsWith('/video') || lower.startsWith('/phim');
-                    const isSlashImage = lower.startsWith('/image') || lower.startsWith('/draw') || lower.startsWith('/anh');
+                    const isSlashAgent = /^\/(?:agent|workflow|multiagent)\b/i.test(lower);
+                    const isSlashCinema = /^\/(?:cinema|video|phim)\b/i.test(lower);
+                    const isSlashImage = /^\/(?:image|draw|anh)\b/i.test(lower);
+
+                    const directives = {
+                        aspectRatio: null,
+                        durationSec: null,
+                        workflowOutputFormat: null,
+                        imageStyle: null
+                    };
 
                     let route = 'EXECUTE_STREAMING_CHAT';
                     let displayPrefix = '';
@@ -3975,25 +3982,54 @@ self.onmessage = async function(e) {
                     if (isWorkflowMode || isSlashAgent) {
                         route = 'EXECUTE_MULTI_AGENT_WORKFLOW';
                         cleanPrompt = cleanPrompt.replace(/^\/(?:agent|workflow|multiagent)\s*/i, '');
+                        const fmtMatch = cleanPrompt.match(/^(?:--format=|--?)(pptx|slides?|video|image|text|report)\b\s*/i);
+                        if (fmtMatch) {
+                            const rawFmt = fmtMatch[1].toLowerCase();
+                            directives.workflowOutputFormat = (rawFmt.startsWith('slide') || rawFmt === 'pptx') ? 'pptx'
+                                : (rawFmt === 'report' || rawFmt === 'text') ? 'text' : rawFmt;
+                            cleanPrompt = cleanPrompt.slice(fmtMatch[0].length).trim();
+                        }
                         displayPrefix = '⚡ Quy trình Multi-Agent:';
                     } else if (enableCinema || isSlashCinema) {
                         route = 'EXECUTE_CINEMA_PRODUCTION';
                         cleanPrompt = cleanPrompt.replace(/^\/(?:cinema|video|phim)\s*/i, '');
+                        // Bắt tham số inline tùy chọn ở đầu lệnh (ví dụ: /cinema 30s 9:16 ...)
+                        for (let p = 0; p < 2; p++) {
+                            const arMatch = cleanPrompt.match(/^(16:9|9:16|1:1|21:9)\b\s*/i);
+                            if (arMatch) { directives.aspectRatio = arMatch[1]; cleanPrompt = cleanPrompt.slice(arMatch[0].length).trim(); continue; }
+                            const durMatch = cleanPrompt.match(/^(\d{1,3})\s*(?:s|sec|giay|giây)\b\s*/i);
+                            if (durMatch) { directives.durationSec = Math.min(300, Math.max(5, parseInt(durMatch[1], 10))); cleanPrompt = cleanPrompt.slice(durMatch[0].length).trim(); continue; }
+                        }
                         displayPrefix = '🎬 Phân cảnh điện ảnh:';
                     } else if (enableImage || isSlashImage) {
                         route = 'EXECUTE_IMAGE_PARAMETRIC_GPU';
                         cleanPrompt = cleanPrompt.replace(/^\/(?:image|draw|anh)\s*/i, '');
+                        const arMatch = cleanPrompt.match(/^(1:1|16:9|9:16|4:3|3:4|21:9)\b\s*/i);
+                        if (arMatch) { directives.aspectRatio = arMatch[1]; cleanPrompt = cleanPrompt.slice(arMatch[0].length).trim(); }
                         displayPrefix = '🎨 Tạo hình ảnh:';
                     }
 
+                    // Phân loại hồ sơ tải trọng đa phương thức (Payload Workload Classifier)
                     const imgFiles = attachments.filter(a => a.mimeType?.startsWith('image/'));
+                    const videoFiles = attachments.filter(a => a.isFullVideo || a.mimeType?.startsWith('video/'));
+                    const audioFiles = attachments.filter(a => a.mimeType?.startsWith('audio/'));
+                    const dataFiles = attachments.filter(a => /\.(csv|tsv|json|xlsx|xls|parquet|py|ipynb|sql)$/i.test(a.name || '') || a.mimeType?.includes('csv'));
+                    const docFiles = attachments.filter(a => a.mimeType === 'application/pdf' || /\.(pdf|txt|md|docx?)$/i.test(a.name || ''));
+                    const detectedUrls = (typeof UrlGroundingEngine !== 'undefined') ? UrlGroundingEngine.extractUrls(cleanPrompt) : [];
+
                     return {
                         route,
                         displayPrefix,
                         cleanPrompt,
+                        directives,
                         profiles: {
-                            hasVideo: attachments.some(a => a.isFullVideo || a.mimeType?.startsWith('video/')),
+                            hasVideo: videoFiles.length > 0,
+                            hasAudio: audioFiles.length > 0,
                             hasImage: imgFiles.length > 0,
+                            hasStructuredData: dataFiles.length > 0,
+                            hasDocuments: docFiles.length > 0,
+                            hasUrls: detectedUrls.length > 0,
+                            urlCount: detectedUrls.length,
                             primaryImage: imgFiles[0] || null,
                             totalFiles: attachments.length
                         }
@@ -4208,17 +4244,20 @@ self.onmessage = async function(e) {
                     searchStatusText.value = "";
                     scrollToBottom();
 
-                    // KỊCH BẢN KHÔI PHỤC: BỘ CHÈN HUY HIỆU TRÍCH DẪN AN TOÀN AST (AST-SAFE CITATION MASKING)
-                    const injectCitationsSafely = (markdownText, urlSources) => {
-                        if (!markdownText || !urlSources || !urlSources.length) return markdownText;
+                    // BỘ CHÈN HUY HIỆU TRÍCH DẪN AN TOÀN AST LỒNG NHAU (CODEBLOCKLEXER-PROTECTED CITATION ENGINE)
+                    const injectCitationsSafely = (markdownText, urlSources, serperResults = []) => {
+                        const combinedSources = (urlSources && urlSources.length)
+                            ? urlSources
+                            : (Array.isArray(serperResults) ? serperResults.map(r => ({ url: r.link, title: r.title })) : []);
+                        if (!markdownText || !combinedSources.length) return markdownText;
+
                         const maskedBlocks = Object.create(null);
                         let maskCounter = 0;
 
-                        let masked = markdownText.replace(/(?:^|\n)```[\s\S]*?(?:\n```|$)/g, (m) => {
-                            const tok = `\uE003CB_${maskCounter++}\uE004`;
-                            maskedBlocks[tok] = m;
-                            return tok;
-                        });
+                        let masked = (typeof CodeBlockLexer !== 'undefined')
+                            ? CodeBlockLexer.maskProtectedRegions(markdownText, maskedBlocks, () => `\uE003CB_${maskCounter++}\uE004`)
+                            : markdownText;
+
                         masked = masked.replace(/\$\$[\s\S]*?\$\$/g, (m) => {
                             const tok = `\uE003MD_${maskCounter++}\uE004`;
                             maskedBlocks[tok] = m;
@@ -4229,16 +4268,14 @@ self.onmessage = async function(e) {
                             maskedBlocks[tok] = m;
                             return tok;
                         });
-                        masked = masked.replace(/`[^`\n]+`/g, (m) => {
-                            const tok = `\uE003IC_${maskCounter++}\uE004`;
-                            maskedBlocks[tok] = m;
-                            return tok;
-                        });
 
-                        urlSources.forEach((src, sIdx) => {
+                        combinedSources.forEach((src, sIdx) => {
+                            if (!src?.url) return;
                             const num = sIdx + 1;
+                            const safeHref = escapeHTML(src.url);
+                            const safeTitle = escapeHTML(src.title || src.url);
                             const citeRegex = new RegExp(`(?<!\\[)\\[${num}\\](?![\\(\\_\\:\\]])`, 'g');
-                            masked = masked.replace(citeRegex, ` <a href="${src.url}" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-family:var(--font-mono);font-weight:700;color:#38bdf8;background:rgba(56,189,248,0.14);border:1px solid rgba(56,189,248,0.3);padding:0 5px;border-radius:4px;text-decoration:none;vertical-align:super;margin:0 1.5px;" title="${src.title || src.url}">[${num}]</a>`);
+                            masked = masked.replace(citeRegex, ` <a href="${safeHref}" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;font-family:var(--font-mono);font-weight:700;color:#38bdf8;background:rgba(56,189,248,0.14);border:1px solid rgba(56,189,248,0.3);padding:0 5px;border-radius:4px;text-decoration:none;vertical-align:super;margin:0 1.5px;" title="${safeTitle}">[${num}]</a>`);
                         });
 
                         for (const tok in maskedBlocks) {
@@ -4275,9 +4312,14 @@ self.onmessage = async function(e) {
                         return currentRef;
                     };
 
-                    // BỘ GỘP KHUNG HÌNH COALESCED RENDERER (CHỐNG NGHẼN MAIN THREAD KHI STREAM TỐC ĐỘ CAO)
+                    // BỘ GỘP KHUNG HÌNH COALESCED RENDERER + MÁY TRẠNG THÁI PHÂN KÊNH LUỒNG 2026
                     let renderPending = false;
                     let lastRenderAt = 0;
+                    let inlineThinkState = false;
+                    let inlineTagCarry = '';
+                    let lastPythonScanLen = 0;
+                    const serverExecutedFingerprints = new Set();
+
                     const flushStreamUi = (force = false) => {
                         const now = performance.now();
                         const minInterval = rawMarkdownBuffer.length > 15000 ? 90 : 40;
@@ -4303,7 +4345,82 @@ self.onmessage = async function(e) {
                         scrollToBottom();
                     };
 
-                    // BỘ PHÂN LUỒNG XỬ LÝ CHUNK SSE TOÀN DIỆN
+                    // Tách <think>/<thought> xuyên ranh giới chunk, không rò rỉ suy luận ra luồng chính
+                    const demuxInlineThoughtTags = (incomingText) => {
+                        let buf = inlineTagCarry + incomingText;
+                        inlineTagCarry = '';
+                        let outThought = '';
+                        let outAnswer = '';
+
+                        while (buf.length > 0) {
+                            if (!inlineThinkState) {
+                                const openMatch = buf.match(/<(?:think|thought)>/i);
+                                if (!openMatch) {
+                                    // Giữ lại phần đuôi nếu có khả năng là thẻ mở cắt ngang (ví dụ "<thi")
+                                    const partialIdx = buf.lastIndexOf('<');
+                                    if (partialIdx !== -1 && buf.length - partialIdx < 12 && /^<\/?(?:t(?:h(?:i(?:n(?:k)?)?|o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?$/i.test(buf.slice(partialIdx))) {
+                                        outAnswer += buf.slice(0, partialIdx);
+                                        inlineTagCarry = buf.slice(partialIdx);
+                                    } else {
+                                        outAnswer += buf;
+                                    }
+                                    break;
+                                }
+                                outAnswer += buf.slice(0, openMatch.index);
+                                buf = buf.slice(openMatch.index + openMatch[0].length);
+                                inlineThinkState = true;
+                            } else {
+                                const closeMatch = buf.match(/<\/(?:think|thought)>/i);
+                                if (!closeMatch) {
+                                    const partialIdx = buf.lastIndexOf('<');
+                                    if (partialIdx !== -1 && buf.length - partialIdx < 12 && /^<\/(?:t(?:h(?:i(?:n(?:k)?)?|o(?:u(?:g(?:h(?:t)?)?)?)?)?)?)?$/i.test(buf.slice(partialIdx))) {
+                                        outThought += buf.slice(0, partialIdx);
+                                        inlineTagCarry = buf.slice(partialIdx);
+                                    } else {
+                                        outThought += buf;
+                                    }
+                                    break;
+                                }
+                                outThought += buf.slice(0, closeMatch.index);
+                                buf = buf.slice(closeMatch.index + closeMatch[0].length);
+                                inlineThinkState = false;
+                            }
+                        }
+                        return { outThought, outAnswer };
+                    };
+
+                    const dispatchPythonWasm = (pyCodeToRun) => {
+                        if (!pyCodeToRun || typeof PythonEngine === 'undefined') return;
+                        if (!botMsg._executedCodes) botMsg._executedCodes = new Set();
+                        const normalizedCode = pyCodeToRun.trim();
+                        if (!normalizedCode || botMsg._executedCodes.has(normalizedCode) || serverExecutedFingerprints.has(normalizedCode)) return;
+                        botMsg._executedCodes.add(normalizedCode);
+
+                        executionMsg = ensureMsg(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
+                        executionMsg.rawExecutionParts.push({ type: 'code', content: normalizedCode });
+                        const outIdx = executionMsg.rawExecutionParts.length;
+                        executionMsg.rawExecutionParts.push({ type: 'output', content: 'Máy ảo Python WASM đang thực thi...', outcome: 'RUNNING' });
+                        executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+
+                        const repoMatch = normalizedCode.match(/load_repo\(["']([^"']+)["']\)/);
+                        const repoToLoad = repoMatch ? repoMatch[1] : null;
+
+                        PythonEngine.run(normalizedCode, 180000, attachments, repoToLoad).then(res => {
+                            if (executionMsg.rawExecutionParts[outIdx]) {
+                                executionMsg.rawExecutionParts[outIdx] = {
+                                    type: 'output',
+                                    content: res.output,
+                                    outcome: res.outcome,
+                                    plotBase64: res.plotBase64,
+                                    artifacts: res.artifacts || []
+                                };
+                                executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
+                                scheduleDbSave(executionMsg, true);
+                            }
+                        });
+                    };
+
+                    // BỘ PHÂN LUỒNG XỬ LÝ CHUNK SSE ĐA KÊNH
                     const processChunk = (chunkJson) => {
                         const candidate = chunkJson.candidates?.[0];
                         if (!candidate) return;
@@ -4317,7 +4434,7 @@ self.onmessage = async function(e) {
 
                         const parts = candidate.content?.parts || [];
                         for (const rawPart of parts) {
-                            // KÊNH 0: BẮT KẾT QUẢ TÍNH TOÁN ĐÁM MÂY TỪ MÁY CHỦ GOOGLE
+                            // KÊNH 0: KẾT QUẢ ĐIỆN TOÁN CLOUD TỪ GEMINI
                             if (rawPart.codeExecutionResult) {
                                 executionMsg = ensureMsg(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
                                 const serverOut = String(rawPart.codeExecutionResult.output || '');
@@ -4332,7 +4449,7 @@ self.onmessage = async function(e) {
                                 continue;
                             }
 
-                            // KÊNH 1: SUY LUẬN NGẦM (THINKING BUFFER)
+                            // KÊNH 1: SUY LUẬN NGẦM CHÍNH THỨC (THINKING CHANNEL)
                             if (rawPart.thought === true || rawPart.reasoning) {
                                 thoughtMsg = ensureMsg(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
                                 const clean = String(rawPart.text || rawPart.reasoning || '').replace(/<\/?(?:think|thought)>/gi, '');
@@ -4342,49 +4459,24 @@ self.onmessage = async function(e) {
                                 continue;
                             }
 
-                            // KÊNH 2: MÃ PYTHON WASM (ACCUMULATOR & STREAMING DISPATCH)
-                            let pyCodeToRun = null;
+                            // KÊNH 2: MÃ THỰC THI SERVER (CODE EXECUTION CHANNEL)
                             if (rawPart.executableCode) {
-                                pyCodeToRun = String(rawPart.executableCode.code || '');
-                            } else if (rawPart.text) {
-                                const acc = rawMarkdownBuffer + String(rawPart.text);
-                                const matches = Array.from(acc.matchAll(/(?:^|\r?\n)```(?:python|py)\s*([\s\S]*?)```/gi));
-                                if (matches.length > 0) {
-                                    const latest = matches[matches.length - 1][1].trim();
-                                    if (!botMsg._executedCodes) botMsg._executedCodes = new Set();
-                                    if (latest && !botMsg._executedCodes.has(latest)) {
-                                        botMsg._executedCodes.add(latest);
-                                        pyCodeToRun = latest;
+                                const srvCode = String(rawPart.executableCode.code || '').trim();
+                                if (srvCode) {
+                                    // Đánh dấu vân tay; chỉ chạy WASM cục bộ nếu code dùng vẽ biểu đồ/xuất artifact hoặc không có server tool
+                                    if (!enableCodeExecution || /matplotlib|plt\.|export_artifact|load_repo/i.test(srvCode)) {
+                                        dispatchPythonWasm(srvCode);
+                                    } else {
+                                        serverExecutedFingerprints.add(srvCode);
+                                        executionMsg = ensureMsg(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
+                                        executionMsg.rawExecutionParts.push({ type: 'code', content: srvCode });
+                                        executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
                                     }
                                 }
+                                continue;
                             }
 
-                            if (pyCodeToRun && typeof PythonEngine !== 'undefined') {
-                                executionMsg = ensureMsg(GDeepDataProtocol.Roles.EXECUTION, executionMsg);
-                                executionMsg.rawExecutionParts.push({ type: 'code', content: pyCodeToRun });
-                                const outIdx = executionMsg.rawExecutionParts.length;
-                                executionMsg.rawExecutionParts.push({ type: 'output', content: 'Máy ảo Python WASM đang thực thi...', outcome: 'RUNNING' });
-                                executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
-
-                                const repoMatch = pyCodeToRun.match(/load_repo\(["']([^"']+)["']\)/);
-                                const repoToLoad = repoMatch ? repoMatch[1] : null;
-
-                                PythonEngine.run(pyCodeToRun, 180000, attachments, repoToLoad).then(res => {
-                                    if (executionMsg.rawExecutionParts[outIdx]) {
-                                        executionMsg.rawExecutionParts[outIdx] = {
-                                            type: 'output',
-                                            content: res.output,
-                                            outcome: res.outcome,
-                                            plotBase64: res.plotBase64,
-                                            artifacts: res.artifacts || []
-                                        };
-                                        executionMsg.htmlContent = getExecutionLogsHtml(executionMsg);
-                                        scheduleDbSave(executionMsg, true);
-                                    }
-                                });
-                            }
-
-                            // TỰ ĐỘNG THU THẬP NGUỒN TÌM KIẾM NỘI SINH TỪ GOOGLE SEARCH TOOL
+                            // KÊNH 3: THU THẬP NGUỒN GROUNDING TỪ GOOGLE SEARCH TOOL
                             if (candidate.groundingMetadata?.groundingChunks?.length) {
                                 if (!botMsg.urlSources) botMsg.urlSources = [];
                                 candidate.groundingMetadata.groundingChunks.forEach(chunk => {
@@ -4404,13 +4496,21 @@ self.onmessage = async function(e) {
                                 });
                             }
 
-                            // KÊNH 3: VĂN BẢN TRẢ LỜI CHÍNH THỨC
-                            let chunkText = String(rawPart.text || '');
-                            if (chunkText.includes('<think>') || chunkText.includes('<thought>')) {
-                                chunkText = chunkText.replace(/<(think|thought)>[\s\S]*?<\/(think|thought)>/gi, '').replace(/<\/?(?:think|thought)>/gi, '');
+                            // KÊNH 4: VĂN BẢN TRẢ LỜI CHÍNH THỨC + TÁCH LỌC THẺ THINKING ĐỨT QUÃNG + BÓC PYTHON QUA AST LEXER
+                            const rawTextDelta = String(rawPart.text || '');
+                            if (!rawTextDelta) continue;
+
+                            const { outThought, outAnswer } = demuxInlineThoughtTags(rawTextDelta);
+                            if (outThought) {
+                                thoughtMsg = ensureMsg(GDeepDataProtocol.Roles.THOUGHT, thoughtMsg, (m) => { m.isThinking = true; });
+                                thoughtMsg.content += outThought;
+                                rawThoughtBuffer += outThought;
+                                flushStreamUi(false);
                             }
+
+                            let chunkText = outAnswer;
                             if (chunkText) {
-                                if (thoughtMsg && thoughtMsg.isThinking) {
+                                if (thoughtMsg && thoughtMsg.isThinking && !inlineThinkState) {
                                     thoughtMsg.isThinking = false;
                                     thoughtMsg.thoughtTime = ((Date.now() - (thoughtMsg.createdAt || Date.now())) / 1000).toFixed(1);
                                     thoughtMsg.htmlContent = formatThoughtContentWithBadges(thoughtMsg.content);
@@ -4423,6 +4523,16 @@ self.onmessage = async function(e) {
                                 }
 
                                 rawMarkdownBuffer += chunkText;
+
+                                // Chỉ chạy Lexer bóc code block Python khi phần text mới có dấu hiệu kết thúc fence (``` hoặc ~~~)
+                                if ((chunkText.includes('```') || chunkText.includes('~~~') || rawMarkdownBuffer.length - lastPythonScanLen > 1200) && typeof CodeBlockLexer !== 'undefined') {
+                                    lastPythonScanLen = rawMarkdownBuffer.length;
+                                    const pyBlocks = CodeBlockLexer.extractBlocks(rawMarkdownBuffer, ['python', 'py'], true);
+                                    for (const blk of pyBlocks) {
+                                        if (blk.isClosed) dispatchPythonWasm(blk.code);
+                                    }
+                                }
+
                                 flushStreamUi(false);
                             }
                         }
@@ -4519,10 +4629,16 @@ self.onmessage = async function(e) {
                         if (contRes.isMidStreamDrop) streamDropped = true;
                     }
 
-                    // KỊCH BẢN KHÔI PHỤC: KẾT XUẤT CUỐI CÙNG VỚI HUY HIỆU TRÍCH DẪN AN TOÀN AST
+                    // KẾT XUẤT CUỐI CÙNG: BẢO TOÀN TRÍCH DẪN CHO CẢ URL GROUNDING VÀ GOOGLE SEARCH + ĐÓNG SẠCH PYTHON BLOCK CUỐI
                     botMsg.isContinuing = false;
+                    if (typeof CodeBlockLexer !== 'undefined') {
+                        const finalPyBlocks = CodeBlockLexer.extractBlocks(rawMarkdownBuffer, ['python', 'py'], true);
+                        for (const blk of finalPyBlocks) {
+                            if (blk.isClosed) dispatchPythonWasm(blk.code);
+                        }
+                    }
                     botMsg.content = rawMarkdownBuffer || 'Đã hoàn tất phân tích.';
-                    const finalCited = injectCitationsSafely(rawMarkdownBuffer, botMsg.urlSources);
+                    const finalCited = injectCitationsSafely(rawMarkdownBuffer, botMsg.urlSources, botMsg.serperMetadata?.results);
                     botMsg.htmlContent = compileMarkdownSync(finalCited, true);
 
                     if (thoughtMsg) {
@@ -4599,72 +4715,473 @@ self.onmessage = async function(e) {
         // [MODULE TOÀN CỤC]: CÔNG CỤ XỬ LÝ ĐA PHƯƠNG THỨC, PARSER & RENDER ĐỒ HỌA
         // =========================================================================================
         // =========================================================================================
-        // [ĐỘNG CƠ BÓC TÁCH & PHỤC HỒI DỮ LIỆU JSON LỒNG NHAU TOÀN NĂNG - STATE-MACHINE LEXER]
+        // [CỖ MÁY BÓC TÁCH CODE BLOCK LỒNG NHAU CHUẨN COMMONMARK + PYTHON-DOCSTRING 2026]
         // =========================================================================================
-        const SearchIntelligenceEngine = {
-            robustJsonRepair(rawString) {
-                if (!rawString || typeof rawString !== 'string') return null;
-                let clean = rawString.trim();
+        const CodeBlockLexer = {
+            /**
+             * Quét toàn bộ văn bản theo Máy Trạng Thái Hữu Hạn:
+             * - Hỗ trợ fence độ dài tùy ý (>= 3 ký tự ` hoặc ~)
+             * - Fence lồng bên trong độ dài nhỏ hơn hoặc có info-string không bao giờ đóng nhầm fence ngoài
+             * - Bảo vệ chuỗi """...""" / '''...''' trong Python chứa ``` ở dòng riêng
+             */
+            scan(text) {
+                if (!text || typeof text !== 'string') return { blocks: [], openFence: null };
+                const blocks = [];
+                let openFence = null;
+                let pyTripleQuote = null;
 
-                // 1. Thử phân giải trực tiếp
-                try { return JSON.parse(clean); } catch (_) {}
+                let pos = 0;
+                const len = text.length;
 
-                // 2. Tự động bóc tách khối markdown ```json ... ``` ngoài cùng nếu có
-                const fenceMatch = clean.match(/^([ \t]*)(`{3,}|~{3,})(?:json)?\s*\n([\s\S]*?)\n\1\2\s*$/i);
-                if (fenceMatch && fenceMatch[3]) {
-                    try { return JSON.parse(fenceMatch[3].trim()); } catch (_) {}
-                    clean = fenceMatch[3].trim();
-                }
+                while (pos < len) {
+                    const lineStart = pos;
+                    let lineEnd = text.indexOf('\n', pos);
+                    const hasNewline = (lineEnd !== -1);
+                    if (!hasNewline) lineEnd = len;
 
-                // Hàm khử trailing comma an toàn
-                const cleanTrailingCommas = (str) => str.replace(/,\s*([\]}])/g, '$1');
+                    const rawLine = text.slice(lineStart, lineEnd);
+                    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
-                // 3. MÁY TRẠNG THÁI CÂN BẰNG DẤU NGOẶC (BỎ QUA DẤU NGOẶC TRONG CHUỖI STRING ESCAPED)
-                const extractDeepestJson = (str, openCh, closeCh) => {
-                    let depth = 0;
-                    let start = -1;
-                    let inString = false;
-                    let escape = false;
+                    if (!openFence) {
+                        const m = line.match(/^([ \t]{0,6})(`{3,}|~{3,})(.*)$/);
+                        if (m) {
+                            const indent = m[1] || '';
+                            const fenceStr = m[2];
+                            const fenceChar = fenceStr[0];
+                            const fenceLen = fenceStr.length;
+                            const info = (m[3] || '').trim();
 
-                    for (let i = 0; i < str.length; i++) {
-                        const c = str[i];
-                        if (inString) {
-                            if (escape) {
-                                escape = false;
-                            } else if (c === '\\') {
-                                escape = true;
-                            } else if (c === '"') {
-                                inString = false;
+                            // Chuẩn CommonMark: Backtick fence không được chứa dấu ` trong info string (tránh nhầm inline code ở đầu dòng)
+                            if (!(fenceChar === '`' && info.includes('`'))) {
+                                const lang = info.split(/[\s:({[|;,]+/)[0].toLowerCase();
+                                openFence = {
+                                    lang,
+                                    info,
+                                    indent,
+                                    fenceChar,
+                                    fenceLen,
+                                    start: lineStart,
+                                    contentStart: hasNewline ? lineEnd + 1 : lineEnd
+                                };
+                                pyTripleQuote = null;
                             }
-                            continue;
+                        }
+                    } else {
+                        // Theo dõi docstring """ / ''' trong khối Python để không đóng nhầm khi có ``` nằm bên trong chuỗi
+                        if ((openFence.lang === 'python' || openFence.lang === 'py') && !/^([ \t]*)([`~]{3,})[ \t]*$/.test(line) === false) {
+                            // Kiểm tra đóng fence khi không ở trong docstring
                         }
 
-                        if (c === '"') {
-                            inString = true;
-                            continue;
-                        }
+                        const isClosingCandidate = (() => {
+                            const cm = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+                            if (!cm) return false;
+                            return cm[1][0] === openFence.fenceChar && cm[1].length >= openFence.fenceLen;
+                        })();
 
-                        if (c === openCh) {
-                            if (depth === 0) start = i;
-                            depth++;
-                        } else if (c === closeCh && depth > 0) {
-                            depth--;
-                            if (depth === 0 && start !== -1) {
-                                const candidate = cleanTrailingCommas(str.slice(start, i + 1));
-                                try { return JSON.parse(candidate); } catch (_) {}
+                        if (isClosingCandidate && pyTripleQuote === null) {
+                            const contentEnd = lineStart > openFence.contentStart && text[lineStart - 1] === '\n'
+                                ? (text[lineStart - 2] === '\r' ? lineStart - 2 : lineStart - 1)
+                                : lineStart;
+                            blocks.push({
+                                ...openFence,
+                                contentEnd: Math.max(openFence.contentStart, contentEnd),
+                                end: hasNewline ? lineEnd + 1 : lineEnd,
+                                code: text.slice(openFence.contentStart, Math.max(openFence.contentStart, contentEnd)),
+                                isClosed: true
+                            });
+                            openFence = null;
+                            pyTripleQuote = null;
+                        } else if (openFence.lang === 'python' || openFence.lang === 'py') {
+                            // Cập nhật trạng thái chuỗi """ hoặc ''' trên dòng hiện tại
+                            let i = 0;
+                            while (i < line.length) {
+                                const ch = line[i];
+                                if (ch === '\\') { i += 2; continue; }
+                                if (pyTripleQuote === null) {
+                                    if (ch === '#') break; // Comment Python ở ngoài chuỗi
+                                    if (line.startsWith('"""', i)) { pyTripleQuote = '"""'; i += 3; continue; }
+                                    if (line.startsWith("'''", i)) { pyTripleQuote = "'''"; i += 3; continue; }
+                                    if (ch === '"' || ch === "'") {
+                                        const q = ch;
+                                        i++;
+                                        while (i < line.length) {
+                                            if (line[i] === '\\') { i += 2; continue; }
+                                            if (line[i] === q) { i++; break; }
+                                            i++;
+                                        }
+                                        continue;
+                                    }
+                                } else if (line.startsWith(pyTripleQuote, i)) {
+                                    pyTripleQuote = null;
+                                    i += 3;
+                                    continue;
+                                }
+                                i++;
                             }
                         }
                     }
-                    return null;
-                };
 
-                const obj = extractDeepestJson(clean, '{', '}');
-                if (obj !== null) return obj;
+                    pos = hasNewline ? lineEnd + 1 : len;
+                }
 
-                const arr = extractDeepestJson(clean, '[', ']');
-                if (arr !== null) return arr;
+                if (openFence) {
+                    blocks.push({
+                        ...openFence,
+                        contentEnd: len,
+                        end: len,
+                        code: text.slice(openFence.contentStart),
+                        isClosed: false
+                    });
+                }
 
-                return null;
+                return { blocks, openFence };
+            },
+
+            /**
+             * Trích xuất các khối mã theo danh sách ngôn ngữ mục tiêu (hỗ trợ đệ quy bóc khối bọc ngoài markdown/txt)
+             */
+            extractBlocks(text, targetLangs = null, recurseNested = false) {
+                const { blocks } = this.scan(text);
+                if (!targetLangs || !targetLangs.length) return blocks;
+                const wanted = new Set(targetLangs.map(l => String(l).toLowerCase()));
+                const matched = blocks.filter(b => wanted.has(b.lang) || (wanted.has('') && b.lang === ''));
+
+                if (recurseNested) {
+                    for (const b of blocks) {
+                        if (b.lang === 'markdown' || b.lang === 'md' || b.lang === 'txt' || b.lang === '') {
+                            const inner = this.extractBlocks(b.code, targetLangs, false);
+                            for (const ib of inner) {
+                                if (!matched.some(m => m.code === ib.code)) matched.push(ib);
+                            }
+                        }
+                    }
+                }
+                return matched;
+            },
+
+            /**
+             * Thay thế an toàn toàn bộ Fenced Code Blocks (kể cả lồng nhau) và Inline Code Spans bằng token
+             * giúp KaTeX, Citation và XML Tag Detector không bao giờ chạm nhầm vào mã nguồn.
+             */
+            maskProtectedRegions(text, tokenStore, nextTokenFn, maskInline = true) {
+                if (!text || typeof text !== 'string') return '';
+                const { blocks } = this.scan(text);
+
+                // 1. Thay thế các Fenced Blocks từ cuối về đầu để giữ nguyên offset
+                let working = text;
+                for (let i = blocks.length - 1; i >= 0; i--) {
+                    const b = blocks[i];
+                    const tok = nextTokenFn();
+                    tokenStore[tok] = text.slice(b.start, b.end);
+                    working = working.slice(0, b.start) + tok + working.slice(b.end);
+                }
+
+                if (!maskInline) return working;
+
+                // 2. Thay thế các Inline Code Spans chuẩn CommonMark (`code`, ``code with ` inside``)
+                let out = '';
+                let i = 0;
+                const n = working.length;
+                while (i < n) {
+                    if (working[i] === '\\' && working[i + 1] === '`') {
+                        out += working.slice(i, i + 2);
+                        i += 2;
+                        continue;
+                    }
+                    if (working[i] === '`') {
+                        let tickCount = 0;
+                        while (i + tickCount < n && working[i + tickCount] === '`') tickCount++;
+                        const closer = '`'.repeat(tickCount);
+                        let searchPos = i + tickCount;
+                        let foundIdx = -1;
+                        while (searchPos < n) {
+                            const idx = working.indexOf(closer, searchPos);
+                            if (idx === -1) break;
+                            // Đảm bảo độ dài cụm đóng khớp chính xác
+                            let closeLen = tickCount;
+                            while (idx + closeLen < n && working[idx + closeLen] === '`') closeLen++;
+                            if (closeLen === tickCount) {
+                                // Không băng qua dòng trống (\n\n)
+                                const spanBody = working.slice(i + tickCount, idx);
+                                if (!/\r?\n\r?\n/.test(spanBody)) {
+                                    foundIdx = idx + tickCount;
+                                }
+                                break;
+                            }
+                            searchPos = idx + closeLen;
+                        }
+                        if (foundIdx !== -1) {
+                            const tok = nextTokenFn();
+                            tokenStore[tok] = working.slice(i, foundIdx);
+                            out += tok;
+                            i = foundIdx;
+                            continue;
+                        }
+                        out += closer;
+                        i += tickCount;
+                        continue;
+                    }
+                    out += working[i];
+                    i++;
+                }
+                return out;
+            }
+        };
+
+        // =========================================================================================
+        // [CỖ MÁY BÓC TÁCH & PHỤC HỒI DỮ LIỆU HỖN ĐỘN LỒNG NHAU 2026 - CHAOS DATA ENGINE]
+        // =========================================================================================
+        const SearchIntelligenceEngine = {
+            /**
+             * Chuẩn hóa JSON nới lỏng (JSON5 / Python Dict / Chuỗi gãy xuống dòng / Comment) bằng Finite-State Lexer
+             */
+            normalizeRelaxedJson(src) {
+                if (!src || typeof src !== 'string') return '';
+                let out = '';
+                let i = 0;
+                const n = src.length;
+                const ctxStack = []; // '{' hoặc '['
+                let lastSigChar = '';
+
+                while (i < n) {
+                    const ch = src[i];
+
+                    // 1. Bỏ qua comment // ... và /* ... */ ngoài chuỗi
+                    if (ch === '/' && src[i + 1] === '/') {
+                        i += 2;
+                        while (i < n && src[i] !== '\n') i++;
+                        continue;
+                    }
+                    if (ch === '/' && src[i + 1] === '*') {
+                        const closeC = src.indexOf('*/', i + 2);
+                        i = (closeC !== -1) ? closeC + 2 : n;
+                        continue;
+                    }
+
+                    // 2. Xử lý chuỗi nháy kép "..." (escape control chars thô bên trong chuỗi)
+                    if (ch === '"') {
+                        out += '"';
+                        i++;
+                        while (i < n) {
+                            const sc = src[i];
+                            if (sc === '\\') {
+                                out += sc + (src[i + 1] !== undefined ? src[i + 1] : '');
+                                i += 2;
+                                continue;
+                            }
+                            if (sc === '"') { out += '"'; i++; break; }
+                            if (sc === '\n') { out += '\\n'; i++; continue; }
+                            if (sc === '\r') { out += '\\r'; i++; continue; }
+                            if (sc === '\t') { out += '\\t'; i++; continue; }
+                            out += sc;
+                            i++;
+                        }
+                        lastSigChar = '"';
+                        continue;
+                    }
+
+                    // 3. Chuyển đổi chuỗi nháy đơn '...' thành "..."
+                    if (ch === "'") {
+                        out += '"';
+                        i++;
+                        while (i < n) {
+                            const sc = src[i];
+                            if (sc === '\\') {
+                                const next = src[i + 1];
+                                if (next === "'") out += "'";
+                                else out += '\\' + (next !== undefined ? next : '');
+                                i += 2;
+                                continue;
+                            }
+                            if (sc === "'") { out += '"'; i++; break; }
+                            if (sc === '"') { out += '\\"'; i++; continue; }
+                            if (sc === '\n') { out += '\\n'; i++; continue; }
+                            if (sc === '\r') { out += '\\r'; i++; continue; }
+                            if (sc === '\t') { out += '\\t'; i++; continue; }
+                            out += sc;
+                            i++;
+                        }
+                        lastSigChar = '"';
+                        continue;
+                    }
+
+                    // 4. Xử lý định danh không ngoặc (True/False/None/undefined/NaN/Infinity hoặc Object Key)
+                    if (/[a-zA-Z_$]/.test(ch)) {
+                        let startId = i;
+                        while (i < n && /[a-zA-Z0-9_$\-]/.test(src[i])) i++;
+                        const word = src.slice(startId, i);
+                        let lookahead = i;
+                        while (lookahead < n && /\s/.test(src[lookahead])) lookahead++;
+
+                        if (src[lookahead] === ':' && ctxStack[ctxStack.length - 1] === '{' && (lastSigChar === '{' || lastSigChar === ',')) {
+                            out += `"${word}"`;
+                            lastSigChar = '"';
+                        } else if (word === 'True') {
+                            out += 'true'; lastSigChar = 'e';
+                        } else if (word === 'False') {
+                            out += 'false'; lastSigChar = 'e';
+                        } else if (word === 'None' || word === 'undefined' || word === 'NaN' || word === 'Infinity') {
+                            out += 'null'; lastSigChar = 'l';
+                        } else {
+                            out += word;
+                            lastSigChar = word[word.length - 1];
+                        }
+                        continue;
+                    }
+
+                    // 5. Loại bỏ dấu phẩy thừa trước } hoặc ]
+                    if (ch === ',') {
+                        let lk = i + 1;
+                        while (lk < n && (/\s/.test(src[lk]) || (src[lk] === '/' && (src[lk + 1] === '/' || src[lk + 1] === '*')))) {
+                            if (src[lk] === '/' && src[lk + 1] === '/') { while (lk < n && src[lk] !== '\n') lk++; }
+                            else if (src[lk] === '/' && src[lk + 1] === '*') { const c = src.indexOf('*/', lk + 2); lk = c !== -1 ? c + 2 : n; }
+                            else lk++;
+                        }
+                        if (src[lk] === '}' || src[lk] === ']') {
+                            i++;
+                            continue;
+                        }
+                    }
+
+                    if (ch === '{' || ch === '[') ctxStack.push(ch);
+                    else if ((ch === '}' || ch === ']') && ctxStack.length > 0) ctxStack.pop();
+
+                    if (!/\s/.test(ch)) lastSigChar = ch;
+                    out += ch;
+                    i++;
+                }
+                return out;
+            },
+
+            /**
+             * Tự động đóng các chuỗi/ngoặc bị cắt cụt giữa chừng (Streaming Truncated JSON Recovery)
+             */
+            repairTruncatedJson(str) {
+                if (!str || typeof str !== 'string') return null;
+                const firstObj = str.indexOf('{');
+                const firstArr = str.indexOf('[');
+                let start = -1;
+                if (firstObj !== -1 && firstArr !== -1) start = Math.min(firstObj, firstArr);
+                else start = Math.max(firstObj, firstArr);
+                if (start === -1) return null;
+
+                let normalized = this.normalizeRelaxedJson(str.slice(start)).trim();
+                const stack = [];
+                let inString = false;
+                let escape = false;
+
+                for (let i = 0; i < normalized.length; i++) {
+                    const c = normalized[i];
+                    if (inString) {
+                        if (escape) escape = false;
+                        else if (c === '\\') escape = true;
+                        else if (c === '"') inString = false;
+                        continue;
+                    }
+                    if (c === '"') { inString = true; continue; }
+                    if (c === '{') stack.push('}');
+                    else if (c === '[') stack.push(']');
+                    else if ((c === '}' || c === ']') && stack.length > 0) stack.pop();
+                }
+
+                if (inString) {
+                    if (normalized.endsWith('\\')) normalized = normalized.slice(0, -1);
+                    normalized += '"';
+                }
+
+                // Dọn phần đuôi lửng (dangling key hoặc dấu : hoặc ,)
+                normalized = normalized
+                    .replace(/,\s*"[^"]*"\s*:\s*$/g, '')
+                    .replace(/,\s*"[^"]*"\s*$/g, '')
+                    .replace(/:\s*$/g, ': null')
+                    .replace(/,\s*$/g, '');
+
+                while (stack.length > 0) {
+                    normalized += stack.pop();
+                }
+
+                try { return JSON.parse(normalized); } catch (_) { return null; }
+            },
+
+            /**
+             * Trích xuất tất cả các đảo JSON hợp lệ ẩn trong văn bản hỗn độn (ưu tiên kích thước lớn/độ sâu cao)
+             */
+            extractAllJsonCandidates(str) {
+                const results = [];
+                if (!str || typeof str !== 'string') return results;
+
+                let i = 0;
+                const n = str.length;
+                while (i < n) {
+                    if (str[i] === '{' || str[i] === '[') {
+                        const stack = [str[i] === '{' ? '}' : ']'];
+                        let inString = false;
+                        let quote = '"';
+                        let escape = false;
+                        let j = i + 1;
+
+                        while (j < n && stack.length > 0) {
+                            const c = str[j];
+                            if (inString) {
+                                if (escape) escape = false;
+                                else if (c === '\\') escape = true;
+                                else if (c === quote) inString = false;
+                            } else {
+                                if (c === '"' || c === "'") { inString = true; quote = c; }
+                                else if (c === '{') stack.push('}');
+                                else if (c === '[') stack.push(']');
+                                else if ((c === '}' || c === ']') && stack[stack.length - 1] === c) stack.pop();
+                            }
+                            j++;
+                        }
+
+                        if (stack.length === 0) {
+                            const slice = str.slice(i, j);
+                            try {
+                                const parsed = JSON.parse(this.normalizeRelaxedJson(slice));
+                                results.push({ parsed, rawLen: slice.length, start: i, end: j });
+                                i = j;
+                                continue;
+                            } catch (_) {}
+                        }
+                    }
+                    i++;
+                }
+                return results.sort((a, b) => b.rawLen - a.rawLen);
+            },
+
+            robustJsonRepair(rawString) {
+                if (!rawString || typeof rawString !== 'string') return null;
+                const trimmed = rawString.trim();
+
+                // Tầng 1: Parse nguyên bản tức thì
+                try { return JSON.parse(trimmed); } catch (_) {}
+
+                // Tầng 2: Thử chuẩn hóa Relaxed JSON nguyên khối
+                try {
+                    const norm = this.normalizeRelaxedJson(trimmed);
+                    return JSON.parse(norm);
+                } catch (_) {}
+
+                // Tầng 3: Bóc tách từ các Fenced Code Blocks (kể cả lồng nhau) qua CodeBlockLexer
+                if (typeof CodeBlockLexer !== 'undefined') {
+                    const fenced = CodeBlockLexer.extractBlocks(trimmed, ['json', 'jsonc', 'json5', ''], true);
+                    for (const blk of fenced) {
+                        const code = (blk.code || '').trim();
+                        if (!code) continue;
+                        try { return JSON.parse(code); } catch (_) {}
+                        try { return JSON.parse(this.normalizeRelaxedJson(code)); } catch (_) {}
+                        const islands = this.extractAllJsonCandidates(code);
+                        if (islands.length > 0) return islands[0].parsed;
+                    }
+                }
+
+                // Tầng 4: Quét đảo JSON cân bằng ngoặc từ văn bản hỗn độn
+                const candidates = this.extractAllJsonCandidates(trimmed);
+                if (candidates.length > 0) return candidates[0].parsed;
+
+                // Tầng 5: Tự động vá JSON bị cắt cụt giữa chừng do hết token
+                return this.repairTruncatedJson(trimmed);
             }
         };
 
@@ -6844,9 +7361,6 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
         // =========================================================================================
 
         const MarkdownStreamProcessor = SynapticNeuralMesh.autoWrapObject('StreamHealer', {
-            /**
-             * Chuẩn hóa và làm sạch tên ngôn ngữ lập trình từ token cú pháp (DATA PROTOCOL BOUND)
-             */
             extractExactLanguage(tokenLang) {
                 if (!tokenLang || typeof tokenLang !== 'string') return 'plaintext';
                 const firstWord = tokenLang.trim().split(/[\s:({[|;,]+/)[0].toLowerCase();
@@ -6854,147 +7368,109 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 return matched || firstWord || 'plaintext';
             },
 
-            /**
-             * CÂN BẰNG MARKDOWN TOÀN NĂNG (AUTONOMOUS HEALER)
-             */
             balanceMarkdownStream(rawText) {
                 if (!rawText || typeof rawText !== 'string') return '';
                 let working = rawText;
 
-                // 1. CÂN BẰNG KHỐI CODE BLOCK (FENCED CODE ```)
-                const codeFenceMatches = working.match(/^[\t ]*```/gm) || [];
-                const isCodeBlockOpen = (codeFenceMatches.length % 2 !== 0);
-
-                // Nếu đang ở trong khối code, đóng fence an toàn kèm con trỏ terminal ảo
-                if (isCodeBlockOpen) {
+                // 1. CÂN BẰNG KHỐI CODE BLOCK LỒNG NHAU CHÍNH XÁC QUA CODEBLOCKLEXER
+                const { openFence } = CodeBlockLexer.scan(working);
+                if (openFence) {
                     if (!working.endsWith('\n')) working += '\n';
-                    return working + '```\n';
+                    return working + openFence.fenceChar.repeat(openFence.fenceLen) + '\n';
                 }
 
-                // 2. CÂN BẰNG KHỐI TOÁN HỌC LATEX ENVIRONMENT (\begin{...}...\end{...})
-                const beginMatches = working.match(/\\begin\{([a-zA-Z0-9*]+)\}/g) || [];
-                const endMatches = working.match(/\\end\{([a-zA-Z0-9*]+)\}/g) || [];
+                // Che chắn toàn bộ khối code đã đóng trước khi cân bằng toán/bảng/inline
+                const maskedTokens = Object.create(null);
+                let tokId = 0;
+                const safeScope = CodeBlockLexer.maskProtectedRegions(working, maskedTokens, () => `\uE005B${tokId++}\uE006`, false);
+
+                // 2. CÂN BẰNG KHỐI TOÁN HỌC LATEX ENVIRONMENT
+                const beginMatches = safeScope.match(/\\begin\{([a-zA-Z0-9*]+)\}/g) || [];
+                const endMatches = safeScope.match(/\\end\{([a-zA-Z0-9*]+)\}/g) || [];
                 if (beginMatches.length > endMatches.length) {
-                    // Trích xuất stack các environment đang mở chưa đóng
                     const envStack = [];
                     const envRegex = /\\(begin|end)\{([a-zA-Z0-9*]+)\}/g;
                     let m;
-                    while ((m = envRegex.exec(working)) !== null) {
+                    while ((m = envRegex.exec(safeScope)) !== null) {
                         if (m[1] === 'begin') envStack.push(m[2]);
-                        else if (m[1] === 'end' && envStack.length > 0) {
-                            if (envStack[envStack.length - 1] === m[2]) envStack.pop();
-                        }
+                        else if (m[1] === 'end' && envStack.length > 0 && envStack[envStack.length - 1] === m[2]) envStack.pop();
                     }
                     while (envStack.length > 0) {
-                        const envToClose = envStack.pop();
-                        working += `\n\\end{${envToClose}}`;
+                        working += `\n\\end{${envStack.pop()}}`;
                     }
                 }
 
-                // 3. CÂN BẰNG MATH DISPLAY ($$...$$) VÀ INLINE MATH ($...$)
-                const mathDisplayMatches = working.match(/\$\$/g) || [];
+                // 3. CÂN BẰNG MATH DISPLAY ($$) VÀ INLINE ($)
+                const lines = safeScope.split('\n');
+                const lastLine = lines[lines.length - 1] || '';
+                const mathDisplayMatches = safeScope.match(/\$\$/g) || [];
                 if (mathDisplayMatches.length % 2 !== 0) {
                     working += '$$';
                 } else {
-                    // Kiểm tra inline math đơn $ ở dòng cuối cùng
-                    const lastLine = working.split('\n').pop() || '';
                     const singleDollars = (lastLine.match(/(?<!\\)\$/g) || []).length;
                     if (singleDollars % 2 !== 0) working += '$';
                 }
 
-                // 4. CÂN BẰNG BẢNG MARKDOWN TOÀN DIỆN TRONG KHI STREAMING
-                const lines = working.split('\n');
-                const lastLine = lines[lines.length - 1];
+                // 4. CÂN BẰNG BẢNG MARKDOWN ĐANG MỞ DỞ
                 if (lines.length >= 2 && lastLine.includes('|')) {
                     const pipeCount = (lastLine.match(/\|/g) || []).length;
                     const prevPipeCount = (lines[lines.length - 2].match(/\|/g) || []).length;
-                    if (!lastLine.trim().endsWith('|')) {
-                        working += ' |';
-                    }
-                    // Bổ sung các cột còn thiếu cho đủ số lượng cột của hàng trước
-                    if (prevPipeCount > pipeCount) {
-                        working += ' --- |'.repeat(prevPipeCount - pipeCount);
-                    }
+                    if (!lastLine.trim().endsWith('|')) working += ' |';
+                    if (prevPipeCount > pipeCount) working += ' --- |'.repeat(prevPipeCount - pipeCount);
                 }
 
                 // 5. CÂN BẰNG INLINE CODE TICKS (`) TRÊN DÒNG CUỐI
                 const lastLineTicks = (lastLine.match(/(^|[^\\])`/g) || []).length;
-                if (lastLineTicks % 2 !== 0) {
-                    working += '`';
-                }
+                if (lastLineTicks % 2 !== 0) working += '`';
 
-                // 6. CÂN BẰNG CÁC ĐỊNH DẠNG TEXT (BOLD, ITALIC, STRIKETHROUGH) BỊ TREO
-                // Bold: **
-                const boldMatches = (working.match(/(^|[^\\])\*\*/g) || []).length;
-                if (boldMatches % 2 !== 0) working += '**';
+                // 6. CÂN BẰNG ĐỊNH DẠNG BOLD / STRIKE / LINK BỊ TREO
+                if (((safeScope.match(/(^|[^\\])\*\*/g) || []).length % 2) !== 0) working += '**';
+                if (((safeScope.match(/(^|[^\\])~~/g) || []).length % 2) !== 0) working += '~~';
 
-                // Strikethrough: ~~
-                const strikeMatches = (working.match(/(^|[^\\])~~/g) || []).length;
-                if (strikeMatches % 2 !== 0) working += '~~';
-
-                // Link dở dạng [text](url...
-                const openBracketIndex = working.lastIndexOf('[');
-                const closeBracketIndex = working.lastIndexOf(']');
+                const openBracketIndex = lastLine.lastIndexOf('[');
+                const closeBracketIndex = lastLine.lastIndexOf(']');
                 if (openBracketIndex > closeBracketIndex) {
                     working += ']';
                 } else if (closeBracketIndex > openBracketIndex) {
-                    const openParenIndex = working.lastIndexOf('(');
-                    const closeParenIndex = working.lastIndexOf(')');
-                    if (openParenIndex > closeParenIndex && openParenIndex > closeBracketIndex) {
-                        working += ')';
-                    }
+                    const openParenIndex = lastLine.lastIndexOf('(');
+                    const closeParenIndex = lastLine.lastIndexOf(')');
+                    if (openParenIndex > closeParenIndex && openParenIndex > closeBracketIndex) working += ')';
                 }
 
                 return working;
             }
         }, ['compiler', 'markdown', 'stream-healer']);
 
-                /**
-         * CỤM NƠ-RON AI BẢO VỆ RANH GIỚI STREAM & TIẾP NỐI (CONTINUATION BOUNDARY MESH)
-         */
         const ContinuationBoundaryMesh = SynapticNeuralMesh.autoWrapObject('ContinuationSentry', {
             stripDuplicatePrefix(existingTail, newChunk, maxOverlap = 500, minOverlap = 2) {
                 if (!newChunk || typeof newChunk !== 'string') return '';
                 if (!existingTail || typeof existingTail !== 'string') return newChunk;
 
-                // 1. DỌN SẠCH CÁC CÂU DẪN NỐI TIẾP RÁC
                 let cleanChunk = newChunk.replace(/^(?:(?:\*\*|#+)?\s*(?:Tiếp tục|Dưới đây là|Phần tiếp theo|Viết tiếp|Continuing|Continuation|Here is the rest)[^\n:]*[:\n\-]+\s*)/i, '');
                 if (!cleanChunk) return '';
 
                 const tail = existingTail.slice(-maxOverlap);
-
-                // 2. TẦNG A: KHỚP NGUYÊN BẢN CHÍNH XÁC & CẮT BỎ SUB-TOKEN LẶP
                 const maxLen = Math.min(tail.length, cleanChunk.length);
                 for (let len = maxLen; len >= minOverlap; len--) {
-                    if (tail.endsWith(cleanChunk.slice(0, len))) {
-                        return cleanChunk.slice(len);
-                    }
+                    if (tail.endsWith(cleanChunk.slice(0, len))) return cleanChunk.slice(len);
                 }
-                // Khớp ranh giới từ bị lặp một phần (Word-Boundary Partial Match)
                 const lastWordMatch = tail.match(/[\p{L}\p{N}]+$/u);
                 if (lastWordMatch && cleanChunk.startsWith(lastWordMatch[0])) {
                     return cleanChunk.slice(lastWordMatch[0].length);
                 }
 
-                // 3. TẦNG B: KHỚP CO GIÃN KHOẢNG TRẮNG HAI CHIỀU (WHITESPACE-INSENSITIVE SPLICING)
-                // Triệt tiêu lỗi trượt 1 space/newline giữa đuôi cũ và đầu mới
                 const trimmedTail = tail.trimEnd();
                 const trimmedChunk = cleanChunk.trimStart();
                 const chunkOffset = cleanChunk.length - trimmedChunk.length;
-
                 const maxTrimmedLen = Math.min(trimmedTail.length, trimmedChunk.length);
                 for (let len = maxTrimmedLen; len >= minOverlap; len--) {
                     if (trimmedTail.endsWith(trimmedChunk.slice(0, len))) {
                         let result = cleanChunk.slice(chunkOffset + len);
-                        // Giữ nguyên tính toàn vẹn của cấu trúc đoạn văn bản
-                        if (tail.endsWith('\n') && !result.startsWith('\n')) {
-                            result = result.replace(/^[\t ]+/, '');
-                        }
+                        if (tail.endsWith('\n') && !result.startsWith('\n')) result = result.replace(/^[\t ]+/, '');
                         return result;
                     }
                 }
 
-                // 4. TẦNG C: ĐỐI SOÁT THEO ĐƠN VỊ DÒNG ĐẦU TIÊN (LINE ANCHORING)
                 const tailLines = tail.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
                 const chunkLines = cleanChunk.split(/\r?\n/);
                 if (tailLines.length > 0 && chunkLines.length > 0) {
@@ -7004,75 +7480,45 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         return chunkLines.join('\n');
                     }
                 }
-
                 return cleanChunk;
             },
+
             analyzeBoundary(text) {
                 if (!text || typeof text !== 'string') {
                     return {
-                        state: 'NORMAL',
-                        isCodeOpen: false,
-                        lang: 'text',
-                        indent: '',
-                        isTableOpen: false,
-                        isListOpen: false,
-                        listIndex: null,
-                        isMathOpen: false,
-                        unclosedTags: [],
-                        lastLine: '',
-                        lastChunk: ''
+                        state: 'NORMAL', isCodeOpen: false, lang: 'text', indent: '',
+                        isTableOpen: false, isListOpen: false, listIndex: null,
+                        isMathOpen: false, unclosedTags: [], openTag: null, lastLine: '', lastChunk: ''
                     };
                 }
-                const cleanText = text;
-                const lines = cleanText.split('\n');
+
+                const { openFence } = CodeBlockLexer.scan(text);
+                const isCodeOpen = Boolean(openFence);
+                const currentLang = openFence?.lang || 'text';
+                const lines = text.split('\n');
                 const lastLine = lines[lines.length - 1] || '';
+                const currentIndent = isCodeOpen ? (lastLine.match(/^(\s+)/)?.[1] || '') : '';
 
-                let isCodeOpen = false;
-                let currentLang = 'text';
-                let currentIndent = '';
+                // Che chắn code blocks lồng nhau trước khi kiểm tra math / table / XML tags
+                const dummyStore = Object.create(null);
+                let tid = 0;
+                const proseOnly = CodeBlockLexer.maskProtectedRegions(text, dummyStore, () => `\uE005${tid++}\uE006`, true);
 
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    const trimmed = line.trimStart();
-                    if (trimmed.startsWith('```')) {
-                        const after = trimmed.slice(3).trim();
-                        if (!isCodeOpen) {
-                            isCodeOpen = true;
-                            const match = after.match(/^([a-zA-Z0-9_#+\-]+)/);
-                            currentLang = match ? match[1] : 'text';
-                        } else if (after === '' || /^[\s]*$/.test(after)) {
-                            isCodeOpen = false;
-                            currentLang = 'text';
-                        }
-                    }
-                }
-
-                if (isCodeOpen) {
-                    const indentMatch = lastLine.match(/^(\s+)/);
-                    currentIndent = indentMatch ? indentMatch[1] : '';
-                }
-
-                const recentLines = lines.slice(-6);
+                const recentLines = proseOnly.split('\n').slice(-6);
                 const tableRowsCount = recentLines.filter(l => l.includes('|')).length;
-                const isTableOpen = (tableRowsCount >= 2 && lastLine.includes('|'));
+                const isTableOpen = !isCodeOpen && (tableRowsCount >= 2 && lastLine.includes('|'));
 
-                let isListOpen = false;
-                let listIndex = null;
-                const orderedListMatch = lastLine.match(/^(\s*)(\d+)\.\s/);
-                const bulletListMatch = lastLine.match(/^(\s*)([-*+])\s/);
-
-                if (orderedListMatch) {
-                    isListOpen = true;
-                    listIndex = parseInt(orderedListMatch[2], 10);
-                } else if (bulletListMatch) {
-                    isListOpen = true;
+                let isListOpen = false, listIndex = null;
+                if (!isCodeOpen) {
+                    const orderedListMatch = lastLine.match(/^(\s*)(\d+)\.\s/);
+                    const bulletListMatch = lastLine.match(/^(\s*)([-*+])\s/);
+                    if (orderedListMatch) { isListOpen = true; listIndex = parseInt(orderedListMatch[2], 10); }
+                    else if (bulletListMatch) { isListOpen = true; }
                 }
 
-                const mathMatches = (cleanText.match(/\$\$/g) || []).length;
-                const isMathOpen = (mathMatches % 2 !== 0);
-
-                // [CẢM BIẾN QUÉT THẺ LIFO ĐA TẦNG]: Bóc tách toàn bộ thẻ XML/HTML/Thought chưa đóng
-                const unclosedTags = typeof detectUnclosedTags === 'function' ? detectUnclosedTags(cleanText) : [];
+                const mathMatches = (proseOnly.match(/\$\$/g) || []).length;
+                const isMathOpen = !isCodeOpen && (mathMatches % 2 !== 0);
+                const unclosedTags = isCodeOpen ? [] : detectUnclosedTags(text);
 
                 let state = 'NORMAL';
                 if (isCodeOpen) state = 'IN_CODE';
@@ -7082,18 +7528,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 else if (isListOpen) state = 'IN_LIST';
 
                 return {
-                    state,
-                    isCodeOpen,
-                    lang: currentLang,
-                    indent: currentIndent,
-                    isTableOpen,
-                    isListOpen,
-                    listIndex,
-                    isMathOpen,
-                    unclosedTags,
+                    state, isCodeOpen, lang: currentLang, indent: currentIndent,
+                    fenceDelimiter: openFence ? openFence.fenceChar.repeat(openFence.fenceLen) : '```',
+                    isTableOpen, isListOpen, listIndex, isMathOpen, unclosedTags,
                     openTag: unclosedTags[unclosedTags.length - 1] || null,
-                    lastLine: lastLine.slice(-150),
-                    lastChunk: cleanText.slice(-400).trim()
+                    lastLine: lastLine.slice(-150), lastChunk: text.slice(-400).trim()
                 };
             }
         }, ['stream', 'boundary', 'continuation']);
@@ -7104,14 +7543,12 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
         function analyzeContinuationBoundary(text) {
             return ContinuationBoundaryMesh.analyzeBoundary(text);
         }
-        
-        /**
-         * [QUÉT THẺ CHƯA KHÉP KÍN TOÀN TRI]: Bóc tách thẻ XML, HTML, Thought lơ lửng ngoài code block
-         */
+
         function detectUnclosedTags(text) {
             if (!text || typeof text !== 'string') return [];
-            // Loại bỏ khối code ``` và inline code ` để không quét nhầm thẻ minh họa
-            const stripped = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]+`/g, '');
+            const dummyStore = Object.create(null);
+            let tid = 0;
+            const stripped = CodeBlockLexer.maskProtectedRegions(text, dummyStore, () => '', true);
             const voidTags = new Set(['br', 'hr', 'img', 'input', 'link', 'meta', 'area', 'base', 'col', 'embed', 'param', 'source', 'track', 'wbr']);
             const tagRegex = /<\/?([a-zA-Z0-9_\-]+)(?:\s+[^>]*)?\/?>/g;
             const stack = [];
@@ -7130,55 +7567,37 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
             return stack;
         }
 
-        /**
-         * [BỘ CẢM BIẾN DANG DỞ TOÀN TRI 2026 - TỰ ĐỘNG BẮT THIẾU THẺ & KÍCH HOẠT TIẾP NỐI]
-         */
         function isStructurallyIncomplete(text) {
             if (!text || typeof text !== 'string') return false;
             const trimmed = text.trim();
             if (trimmed.length === 0) return false;
 
             const boundary = analyzeContinuationBoundary(text);
-            
-            // 1. Khối Code hoặc Công thức Toán chưa khép kín -> 100% dang dở
             if (boundary.isCodeOpen || boundary.isMathOpen) return true;
 
-            // 2. [TỰ ĐỘNG PHÁT HIỆN THIẾU THẺ]: Có bất kỳ thẻ mở nào chưa được khép kín (LIFO Stack)
             const unclosed = detectUnclosedTags(trimmed);
             if (unclosed.length > 0) return true;
 
-            // 3. Phát hiện chuỗi Base64 hoặc thẻ <img> chưa đóng hoàn thiện
             if (/<img[^>]*src=["']data:image\/[^"']*$/i.test(trimmed)) return true;
             if (/data:image\/[a-zA-Z0-9+.-]+(?:;charset=[^;]+)?;base64,[A-Za-z0-9+/=]*$/i.test(trimmed) && !trimmed.endsWith('"') && !trimmed.endsWith("'") && !trimmed.endsWith("/>") && !trimmed.endsWith(">")) return true;
             if (/<img\b(?![^>]*\/>)[^>]*$/i.test(trimmed)) return true;
 
-            // 4. Kiểm tra ngoặc mở chưa đóng trong 600 ký tự cuối
-            const tail = trimmed.slice(-600);
+            const dummyStore = Object.create(null);
+            let tid = 0;
+            const proseTail = CodeBlockLexer.maskProtectedRegions(trimmed, dummyStore, () => ' ', true).slice(-600);
             const countChar = (str, ch) => (str.match(new RegExp('\\' + ch, 'g')) || []).length;
-            if (countChar(tail, '(') > countChar(tail, ')')) return true;
-            if (countChar(tail, '[') > countChar(tail, ']')) return true;
-            if (countChar(tail, '{') > countChar(tail, '}')) return true;
+            if (countChar(proseTail, '(') > countChar(proseTail, ')')) return true;
+            if (countChar(proseTail, '[') > countChar(proseTail, ']')) return true;
+            if (countChar(proseTail, '{') > countChar(proseTail, '}')) return true;
+            if (((proseTail.match(/(?<!\\)\*\*/g) || []).length % 2) !== 0) return true;
+            if (((proseTail.match(/(?<!\\)~~/g) || []).length % 2) !== 0) return true;
 
-            // 5. Rách định dạng in đậm (**), gạch ngang (~~)
-            const doubleStars = (tail.match(/(?<!\\)\*\*/g) || []).length;
-            if (doubleStars % 2 !== 0) return true;
-            const tildes = (tail.match(/(?<!\\)~~/g) || []).length;
-            if (tildes % 2 !== 0) return true;
-
-            // 6. Kết thúc bằng dấu ngắt lơ lửng, liên từ, hoặc ký hiệu toán/gán
             const lastChar = trimmed.slice(-1);
             if (/[,\-–—:;\\\/&=+<>]/.test(lastChar)) return true;
 
-            // 7. Câu bị cụt giữa chừng chưa có dấu ngắt câu chuẩn mực
             const validTerminators = /[.!?…\u3002"'”’`)}\]>]$/;
-            if (!validTerminators.test(trimmed)) {
-                if (/[\p{L}\p{N}]$/u.test(trimmed)) return true;
-            }
-
-            // 8. Bị ngắt ngay tại marker danh sách dở dang
+            if (!validTerminators.test(trimmed) && /[\p{L}\p{N}]$/u.test(trimmed)) return true;
             if (/(?:^|\n)\s*(?:\d+\.|[-*+])\s*$/.test(trimmed)) return true;
-
-            // 9. Bảng Markdown đang mở dở hàng
             if (boundary.isTableOpen) return true;
 
             return false;
@@ -7566,14 +7985,15 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     ? MarkdownStreamProcessor.balanceMarkdownStream(working)
                     : working);
 
-            // 2. Bảo vệ toàn bộ khối Code Blocks và Inline Code bằng Token vô hình
+            // 2. Bảo vệ toàn bộ khối Code Blocks lồng nhau và Inline Code qua CodeBlockLexer
             const codeTokens = Object.create(null);
             let codeCounter = 0;
-            working = working.replace(/```[\s\S]*?```|`[^\n`]+`/g, (match) => {
-                const token = `\uE002C${codeCounter++}\uE003`;
-                codeTokens[token] = match || '';
-                return token;
-            });
+            working = CodeBlockLexer.maskProtectedRegions(
+                working,
+                codeTokens,
+                () => `\uE002C${codeCounter++}\uE003`,
+                true
+            );
 
             // 3. Xử lý và trích xuất toàn bộ công thức Toán học (KaTeX Display & Inline)
             const mathBlocks = Object.create(null);
@@ -9794,11 +10214,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 
                     let pyCode = null, pyOut = null, pyPlot = null;
 
-                    // 5. REACT TOOL-CALL SAU LƯỢT: PYTHON 3.11 WASM KERNEL & TỰ SỬA LỖI CODE
-                    if (agent.tools.python && agentOutputText.includes('```python')) {
-                        const match = agentOutputText.match(/```python([\s\S]*?)```/i);
-                        if (match && match[1]) {
-                            pyCode = match[1].trim();
+                    // 5. REACT TOOL-CALL SAU LƯỢT: PYTHON 3.11 WASM KERNEL & TỰ SỬA LỖI CODE (AST-EXTRACTED)
+                    if (agent.tools.python && typeof CodeBlockLexer !== 'undefined') {
+                        const pyExtracted = CodeBlockLexer.extractBlocks(agentOutputText, ['python', 'py'], true);
+                        if (pyExtracted.length > 0 && pyExtracted[pyExtracted.length - 1].code.trim()) {
+                            pyCode = pyExtracted[pyExtracted.length - 1].code.trim();
                             workflowStudio.statusMessage = `[Python WASM] Đang thực thi mã của ${agent.name}...`;
                             let wasmRes = await PythonEngine.run(pyCode, 150000, workflowStudio.inputFiles);
                             pyOut = wasmRes.output;
@@ -9809,10 +10229,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                                 workflowStudio.statusMessage = `[Python Tự Chữa Lỗi] Phát hiện lỗi Runtime, đang tự sửa mã...`;
                                 const fixPrompt = `Mã Python sau vừa chạy trên môi trường WASM và gặp lỗi:\n\`\`\`python\n${pyCode}\n\`\`\`\nThông báo lỗi:\n${pyOut}\nHãy viết lại mã Python hoàn chỉnh đã được sửa lỗi trong khối \`\`\`python ... \`\`\`.`;
                                 try {
-                                    const fixResult = await runAgentWithSystemKeyRotation(agent, fixPrompt, workflowStudio.abortCtrl.signal);
-                                    const fixMatch = fixResult.text.match(/```python([\s\S]*?)```/i);
-                                    if (fixMatch && fixMatch[1]) {
-                                        pyCode = fixMatch[1].trim();
+                                    const fixResult = await runAgentWithSystemKeyRotation(agent, fixPrompt, workflowStudio.abortCtrl.signal, workflowStudio.inputFiles);
+                                    let fixedBlocks = CodeBlockLexer.extractBlocks(fixResult.text, ['python', 'py'], true);
+                                    if (fixedBlocks.length === 0) {
+                                        fixedBlocks = CodeBlockLexer.extractBlocks(fixResult.text, [''], true);
+                                    }
+                                    const fixedCode = fixedBlocks.length > 0 ? fixedBlocks[fixedBlocks.length - 1].code.trim() : '';
+                                    if (fixedCode) {
+                                        pyCode = fixedCode;
                                         wasmRes = await PythonEngine.run(pyCode, 150000, workflowStudio.inputFiles);
                                         pyOut = wasmRes.output;
                                         pyPlot = wasmRes.plotBase64;
@@ -9926,16 +10350,14 @@ export_artifact("flux_base.glsl", glsl_code)
                         agentOutputText += `\n\n[MÃ GLSL CAN THIỆP TEXTURE GỐC]:\n\`\`\`glsl\n${deconstructedGlsl}\n\`\`\``;
                     }
 
-                    // TỰ ĐỘNG BẮT MÃ GLSL ĐÃ ĐƯỢC AI NÂNG CẤP
-                    if (workflowStudio.resultData.image) {
-                        const glslBlocks = Array.from(agentOutputText.matchAll(/```(?:glsl|shader|c|cpp|frag)?\s*([\s\S]*?)```/gi));
-                        if (glslBlocks.length > 0) {
-                            for (let b = glslBlocks.length - 1; b >= 0; b--) {
-                                const codeCandidate = glslBlocks[b][1].trim();
-                                if (codeCandidate.includes('vec4') || codeCandidate.includes('render_scene') || codeCandidate.includes('mainImage') || codeCandidate.includes('gl_FragColor')) {
-                                    workflowStudio.resultData.image.glsl = codeCandidate;
-                                    break;
-                                }
+                    // TỰ ĐỘNG BẮT MÃ GLSL ĐÃ ĐƯỢC AI NÂNG CẤP QUA CODEBLOCKLEXER
+                    if (workflowStudio.resultData.image && typeof CodeBlockLexer !== 'undefined') {
+                        const glslBlocks = CodeBlockLexer.extractBlocks(agentOutputText, ['glsl', 'shader', 'c', 'cpp', 'frag', ''], true);
+                        for (let b = glslBlocks.length - 1; b >= 0; b--) {
+                            const codeCandidate = glslBlocks[b].code.trim();
+                            if (codeCandidate.includes('vec4') || codeCandidate.includes('render_scene') || codeCandidate.includes('mainImage') || codeCandidate.includes('gl_FragColor')) {
+                                workflowStudio.resultData.image.glsl = codeCandidate;
+                                break;
                             }
                         }
                     }
@@ -10423,8 +10845,8 @@ MỆNH LỆNH:
                     const reply = res?.candidates?.[0]?.content?.parts?.[0]?.text || '';
                     uxAuditModal.critiqueText = reply;
 
-                    const matchCode = reply.match(/```html([\s\S]*?)```/i);
-                    if (matchCode && matchCode[1]) uxAuditModal.healedCode = matchCode[1].trim();
+                    const htmlBlocks = (typeof CodeBlockLexer !== 'undefined') ? CodeBlockLexer.extractBlocks(reply, ['html', 'htm'], true) : [];
+                    if (htmlBlocks.length > 0) uxAuditModal.healedCode = htmlBlocks[htmlBlocks.length - 1].code.trim();
 
                     notify("Mắt và Tay AI đã hoàn thành buổi thực nghiệm!");
                     triggerHaptic('light');
@@ -13410,6 +13832,7 @@ QUY TẮC PHẢN HỒI:
 
                         // Phân luồng Tạo ảnh Flux
                         if (intakePlan.route === 'EXECUTE_IMAGE_PARAMETRIC_GPU') {
+                            if (intakePlan.directives?.aspectRatio) imageConfig.aspectRatio = intakePlan.directives.aspectRatio;
                             if (abortController) { try { abortController.abort(); } catch (_) {} }
                             isGenerating.value = true;
                             abortController = new AbortController();
@@ -13433,6 +13856,8 @@ QUY TẮC PHẢN HỒI:
 
                         // Phân luồng Xưởng phim Điện ảnh
                         if (intakePlan.route === 'EXECUTE_CINEMA_PRODUCTION') {
+                            if (intakePlan.directives?.aspectRatio) cinemaConfig.aspectRatio = intakePlan.directives.aspectRatio;
+                            if (intakePlan.directives?.durationSec) cinemaConfig.duration = intakePlan.directives.durationSec;
                             await OmegaCentralCoreEngine.dispatch('EXECUTE_CINEMA_PRODUCTION', {
                                 executeCinemaFn: rawExecuteCinemaProduction,
                                 msgTarget: null,
@@ -13444,6 +13869,7 @@ QUY TẮC PHẢN HỒI:
 
                         // Phân luồng Multi-Agent Workflow độc lập (Xử lý khi người dùng gõ /agent, /workflow)
                         if (intakePlan.route === 'EXECUTE_MULTI_AGENT_WORKFLOW') {
+                            if (intakePlan.directives?.workflowOutputFormat) workflowStudio.outputFormat = intakePlan.directives.workflowOutputFormat;
                             workflowStudio.userGoal = intakePlan.cleanPrompt || text;
                             if (attachments && attachments.length > 0) {
                                 workflowStudio.inputFiles = [...attachments];
