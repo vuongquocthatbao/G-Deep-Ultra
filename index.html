@@ -9335,8 +9335,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
         };
 
         // =========================================================================================
-        // [MODULE: HỆ ĐIỀU HÀNH MULTI-AGENTS A2A TỰ HÀNH TOÀN NĂNG - OMEGA INDUSTRIAL ARCHITECTURE]
-        // LOẠI BỎ TOÀN BỘ SỰ CHẮP VÁ, GIẢ TẠO - CÔNG CỤ VÀ THÀNH PHẨM ĐƯỢC KẾT XUẤT THẬT 100%
+        // [MODULE: HỆ ĐIỀU HÀNH MULTI-AGENTS GRAPH-REACT SWARM TỰ TRỊ THẾ HỆ MỚI 2026]
+        // CƠ CHẾ: DYNAMIC GRAPH TOPOLOGY · SELF-HEALING REFLECTION LOOP · RE-ACT TWO-WAY TOOL CALLS
         // =========================================================================================
         function useMultiAgentWorkflow({ 
             getNextHealthyApiKey, 
@@ -9372,11 +9372,14 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 viewMode: 'builder',
                 activeTab: 'builder',
                 outputFormat: 'pptx', // 'pptx' | 'text' | 'image' | 'video'
+                topologyMode: 'reflexive', // 'linear' | 'reflexive' (vòng lặp sửa lỗi) | 'debate' (tranh luận)
+                maxReflexiveLoops: 2, // Số vòng lặp tự sửa lỗi tối đa khi Critic chưa hài lòng
                 userGoal: '',
                 inputFiles: [],
                 isRunning: false,
                 hasResults: false,
                 currentStepIndex: -1,
+                currentIteration: 1,
                 statusMessage: 'Sẵn sàng khởi chạy',
                 artifacts: [],
                 executionLogs: [],
@@ -9385,53 +9388,54 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 agents: [
                     {
                         id: 'agent_lead',
-                        name: 'Tổng Chỉ Huy Chiến Lược',
+                        name: 'Tổng Chỉ Huy Chiến Lược (Orchestrator)',
                         role: 'coordinator',
                         modelId: 'gemini-3.7-flash',
-                        systemPrompt: 'Đóng vai trò Central Strategy Director. Phân tích mục tiêu, trực tiếp ra lệnh tra cứu web và bóc tách tài liệu đính kèm để phác thảo đề án chi tiết cho các chuyên gia tiếp theo.',
+                        systemPrompt: 'Đóng vai trò Central Strategy Director theo chuẩn Google A2A. Phân tích mục tiêu, xác lập cấu trúc tài liệu và giao nhiệm vụ chi tiết cho Kỹ Sư.',
                         tools: { search: true, crawler: true, python: false, vision: false, cinema: false }
                     },
                     {
                         id: 'agent_engineer',
-                        name: 'Kỹ Sư Triển Khai Kỹ Thuật',
+                        name: 'Kỹ Sư Triển Khai Thực Thi (Coder/Specialist)',
                         role: 'coder',
                         modelId: 'gemini-3.6-flash',
-                        systemPrompt: 'Thực thi các giải pháp kỹ thuật chuyên sâu: Viết mã Python tính toán mô phỏng, lập trình cấu trúc Slide chuẩn mực, thiết kế phân cảnh điện ảnh hoặc phân rã shader toán học.',
+                        systemPrompt: 'Thực thi các giải pháp kỹ thuật: Viết code Python tính toán, chi tiết hóa các slide thuyết trình, lập trình shader GLSL hoặc kịch bản phân cảnh điện ảnh.',
                         tools: { search: false, crawler: false, python: true, vision: true, cinema: true }
                     },
                     {
-                        id: 'agent_auditor',
-                        name: 'Hội Đồng Thẩm Định & Phê Duyệt',
+                        id: 'agent_critic',
+                        name: 'Trưởng Ban Thẩm Định Phản Tư (Auditor/Critic)',
                         role: 'critic',
                         modelId: 'gemini-3.7-flash',
-                        systemPrompt: 'Đóng vai trò QA Auditor & Executive Synthesizer. Phản biện tính chính xác của dữ liệu, kiểm tra lỗi logic và xuất báo cáo tổng hợp chất lượng cao nhất.',
+                        systemPrompt: 'Đóng vai trò Trọng tài Giám định Chất lượng cao cấp. Chấm điểm bài làm trên thang 1-10. Nếu điểm dưới 8, BẮT BUỘC chỉ rõ lỗi và yêu cầu Kỹ Sư hoàn thiện lại theo định dạng [VERDICT:REVISE: điểm số: lý do chi tiết]. Nếu đạt chuẩn, xuất [VERDICT:APPROVED: điểm số].',
                         tools: { search: true, crawler: false, python: false, vision: false, cinema: false }
                     }
                 ]
             });
 
-            // DANH MỤC CÁC MẪU QUY TRÌNH THỰC TẾ
+            // MẪU QUY TRÌNH THIẾT KẾ ĐA DẠNG
             const workflowTemplates = [
                 {
                     id: 'tmpl_pptx',
                     name: 'Slide Thuyết Trình PowerPoint (.pptx)',
                     outputFormat: 'pptx',
-                    description: 'Nghiên cứu chuyên sâu, thiết kế cấu trúc bài giảng/báo cáo và xuất file .pptx chuẩn 16:9 mở trực tiếp.',
-                    goal: 'Soạn thảo bài thuyết trình chuyên nghiệp 5-7 slide gồm Slide Tiêu đề, Bối cảnh/Vấn đề, Giải pháp cốt lõi, Lộ trình và Kết luận.',
+                    topologyMode: 'reflexive',
+                    description: 'Hội đồng phân cảnh, thiết kế nội dung và tự phản biện chất lượng slide trước khi xuất file 16:9 chuẩn OpenXML.',
+                    goal: 'Soạn thảo bài thuyết trình 5-7 slide chuyên sâu với luận điểm sắc sảo, cấu trúc rõ ràng: Slide Tiêu đề, Bối cảnh & Vấn đề, Giải pháp cốt lõi, Lộ trình và Kết luận.',
                     agents: [
                         {
                             id: 'p_coord', name: 'Chuyên Gia Phân Cảnh Slide', role: 'coordinator', modelId: 'gemini-3.7-flash',
-                            systemPrompt: 'Nghiên cứu chủ đề, xác lập cấu trúc slide chặt chẽ và bố cục thông điệp chính cho từng trang thuyết trình.',
+                            systemPrompt: 'Nghiên cứu chủ đề, xác lập cấu trúc 5-7 slide mạch lạc, định hình thông điệp then chốt cho từng trang.',
                             tools: { search: true, crawler: true, python: false, vision: false, cinema: false }
                         },
                         {
-                            id: 'p_coder', name: 'Kiến Trúc Sư Nội Dung & Dữ Liệu', role: 'coder', modelId: 'gemini-3.6-flash',
-                            systemPrompt: 'Chi tiết hóa từng slide: Viết tiêu đề rõ ràng và 3-4 bullet point cô đọng, sắc sảo. Xuất cấu trúc phân cấp chuẩn.',
+                            id: 'p_coder', name: 'Kiến Trúc Sư Nội Dung Slide', role: 'coder', modelId: 'gemini-3.6-flash',
+                            systemPrompt: 'Viết nội dung chi tiết cho từng slide gồm Tiêu đề súc tích và 3-4 bullet point có chiều sâu. Bố cục phân cấp chuẩn.',
                             tools: { search: false, crawler: false, python: true, vision: false, cinema: false }
                         },
                         {
-                            id: 'p_critic', name: 'Tổng Giám Đốc Thẩm Định', role: 'critic', modelId: 'gemini-3.7-flash',
-                            systemPrompt: 'Phê duyệt cấu trúc tổng thể, tinh chỉnh ngôn từ mạch lạc và hoàn thiện bản trình chiếu cuối cùng.',
+                            id: 'p_critic', name: 'Giám Đốc Thẩm Định Bài Thuyết Trình', role: 'critic', modelId: 'gemini-3.7-flash',
+                            systemPrompt: 'Đánh giá tính thuyết phục và súc tích của toàn bộ slide. Chấm điểm trên thang 1-10. Nếu điểm < 8, yêu cầu Kỹ Sư viết lại bằng [VERDICT:REVISE: điểm: góp ý]. Nếu tốt, xuất [VERDICT:APPROVED: điểm].',
                             tools: { search: false, crawler: false, python: false, vision: false, cinema: false }
                         }
                     ]
@@ -9440,42 +9444,44 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     id: 'tmpl_image_shader',
                     name: 'Flux ➔ GLSL: Phân Rã & Tái Hiện WebGL',
                     outputFormat: 'image',
-                    description: 'Flux tạo phác thảo ý niệm ➔ Python phân rã pixel thành toán học ➔ AI làm chủ Shader ➔ WebGL render ảnh PNG thật.',
+                    topologyMode: 'linear',
+                    description: 'Flux tạo ảnh phác thảo ➔ Python đo đạc ma trận pixel ➔ AI can thiệp Texture uTexture ➔ WebGL render 60 FPS.',
                     goal: 'Sáng tạo một tác phẩm thị giác ấn tượng, bóc tách cấu trúc pixel thành mã toán học GLSL qua Python và tái hiện bằng WebGL.',
                     agents: [
                         {
-                            id: 'img_1', name: 'Giám Đốc Nghệ Thuật (Art Director)', role: 'coordinator', modelId: 'gemini-3.7-flash',
-                            systemPrompt: 'Thiết kế concept nghệ thuật, xác lập nguồn sáng và xuất prompt tiếng Anh theo cú pháp: [FLUX_PROMPT]: <prompt chi tiết>.',
+                            id: 'img_1', name: 'Giám Đốc Mỹ Thuật (Art Director)', role: 'coordinator', modelId: 'gemini-3.7-flash',
+                            systemPrompt: 'Thiết kế concept nghệ thuật, xác lập nguồn sáng và xuất prompt tiếng Anh: [FLUX_PROMPT]: <prompt chi tiết>.',
                             tools: { search: true, crawler: false, python: false, vision: true, cinema: false }
                         },
                         {
                             id: 'img_2', name: 'Kỹ Sư Shader Toán Học (GLSL Master)', role: 'coder', modelId: 'gemini-3.6-flash',
-                            systemPrompt: 'Đọc ảnh Flux cùng mã GLSL và bảng giải thích pixel do Python phân rã. Nâng cấp mã GLSL thành kiệt tác Shader hoàn chỉnh và xuất trong khối ```glsl ... ```.',
+                            systemPrompt: 'Nạp ảnh Flux làm Texture uTexture (iChannel0), can thiệp trực tiếp vào từng pixel (thêm quầng sáng, tia raymarching, hiệu chỉnh màu sắc, phủ bụi ánh sáng hoặc chuyển động thời gian uTime) và xuất mã trong khối ```glsl ... ```.',
                             tools: { search: false, crawler: false, python: true, vision: true, cinema: false }
                         }
                     ]
                 },
                 {
-                    id: 'tmpl_research',
-                    name: 'Nghiên Cứu Web & Báo Cáo Chiến Lược',
+                    id: 'tmpl_research_debate',
+                    name: 'Nghiên Cứu Đa Chiều & Trọng Tài Đối Soát',
                     outputFormat: 'text',
-                    description: 'Tự động cào dữ liệu từ các liên kết web, đối soát tài liệu nội bộ và Google Live để xuất báo cáo chuyên sâu.',
-                    goal: 'Nghiên cứu đa chiều về chủ đề được cung cấp, đối chiếu tài liệu và trích xuất số liệu thực tế thành báo cáo chiến lược.',
+                    topologyMode: 'reflexive',
+                    description: 'Khai thác dữ liệu sâu từ Web/Tài liệu, kiểm định giả thuyết đa chiều và đúc kết bản đệ trình điều hành.',
+                    goal: 'Nghiên cứu toàn diện về chủ đề được cung cấp, đối chiếu tài liệu và trích xuất số liệu thực tế thành báo cáo chiến lược.',
                     agents: [
                         {
-                            id: 'res_1', name: 'Chuyên Viên Khai Thác Dữ Liệu', role: 'coordinator', modelId: 'gemini-3.7-flash',
-                            systemPrompt: 'Khai thác toàn diện các liên kết web và tài liệu đính kèm, chắt lọc các luận điểm cốt lõi và số liệu tin cậy.',
+                            id: 'res_1', name: 'Trưởng Ban Khai Thác Dữ Liệu', role: 'coordinator', modelId: 'gemini-3.7-flash',
+                            systemPrompt: 'Khai thác triệt để các liên kết web và tài liệu đính kèm, lập danh mục các sự kiện, số liệu thống kê đáng tin cậy.',
                             tools: { search: true, crawler: true, python: false, vision: false, cinema: false }
                         },
                         {
-                            id: 'res_2', name: 'Chuyên Gia Phân Tích Logic & Định Lượng', role: 'coder', modelId: 'gemini-3.6-flash',
-                            systemPrompt: 'Phân tích các mối quan hệ nguyên nhân - kết quả, sử dụng Python WASM tính toán số liệu thống kê nếu cần.',
+                            id: 'res_2', name: 'Chuyên Gia Lập Luận Định Lượng', role: 'coder', modelId: 'gemini-3.6-flash',
+                            systemPrompt: 'Sử dụng Python WASM tính toán số liệu nếu cần, kiểm định các mâu thuẫn trong tài liệu và thiết lập các luận điểm cốt lõi.',
                             tools: { search: false, crawler: false, python: true, vision: false, cinema: false }
                         },
                         {
-                            id: 'res_3', name: 'Trưởng Ban Thẩm Định Điều Hành', role: 'critic', modelId: 'gemini-3.7-flash',
-                            systemPrompt: 'Tổng hợp toàn bộ phát hiện thành một Báo Cáo Điều Hành hoàn chỉnh, mạch lạc và có giá trị thực thi cao.',
-                            tools: { search: false, crawler: false, python: false, vision: false, cinema: false }
+                            id: 'res_3', name: 'Trọng Tài Thẩm Định Chiến Lược', role: 'critic', modelId: 'gemini-3.7-flash',
+                            systemPrompt: 'Phản biện các luận điểm, phát hiện góc nhìn thiên vị. Chấm điểm báo cáo trên thang 1-10. Nếu điểm < 8, kích hoạt [VERDICT:REVISE: điểm: hướng sửa]. Nếu đạt chuẩn, xuất [VERDICT:APPROVED: điểm] kèm báo cáo hoàn chỉnh.',
+                            tools: { search: true, crawler: false, python: false, vision: false, cinema: false }
                         }
                     ]
                 },
@@ -9483,6 +9489,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     id: 'tmpl_cinema_production',
                     name: 'Xưởng Phim Điện Ảnh & Video 60 FPS',
                     outputFormat: 'video',
+                    topologyMode: 'linear',
                     description: 'Hội đồng biên kịch và đạo diễn phối hợp lên kịch bản phân cảnh từng giây và kết xuất thành Video MP4 chất lượng cao.',
                     goal: 'Đạo diễn một phân cảnh điện ảnh sống động, phân chia chuyển động camera, ánh sáng và kết xuất Video MP4 60 FPS nguyên bản.',
                     agents: [
@@ -9504,6 +9511,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 workflowStudio.agents = JSON.parse(JSON.stringify(tmpl.agents));
                 workflowStudio.userGoal = tmpl.goal;
                 workflowStudio.outputFormat = tmpl.outputFormat || 'text';
+                workflowStudio.topologyMode = tmpl.topologyMode || 'reflexive';
                 notify(`Đã nạp quy trình: ${tmpl.name}`);
                 triggerHaptic('light');
             };
@@ -9512,6 +9520,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 const tmpl = workflowTemplates.find(t => t.id === templateId) || workflowTemplates[0];
                 workflowStudio.agents = JSON.parse(JSON.stringify(tmpl.agents));
                 workflowStudio.outputFormat = tmpl.outputFormat || 'text';
+                workflowStudio.topologyMode = tmpl.topologyMode || 'reflexive';
                 workflowStudio.userGoal = customGoal || tmpl.goal;
                 workflowStudio.viewMode = 'builder';
                 workflowStudio.show = true;
@@ -9526,7 +9535,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     name: `Chuyên Gia ${count}`,
                     role: 'coder',
                     modelId: 'gemini-3.6-flash',
-                    systemPrompt: 'Tiếp nhận kết quả của chuyên gia trước và triển khai nhiệm vụ chuyên sâu.',
+                    systemPrompt: 'Tiếp nhận yêu cầu từ hội đồng, lập luận chuyên môn và triển khai nhiệm vụ thực thi.',
                     tools: { search: false, crawler: false, python: true, vision: false, cinema: false }
                 });
                 triggerHaptic('light');
@@ -9558,11 +9567,11 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 notify(`Đã nạp ${files.length} tệp`);
             };
 
-            // HÀM GỌI AGENT KÈM CƠ CHẾ XOAY CHÌA KHÓA MA TRẬN CHỐNG NGHẼN
+            // HÀM GỌI MODEL AI VỚI MA TRẬN ĐIỀU PHỐI CHÌA KHÓA
             const runAgentWithSystemKeyRotation = async (agent, promptText, signal) => {
-                const requestedModel = agent.modelId;
+                const requestedModel = agent.modelId || 'gemini-3.6-flash';
                 const modelCascade = Array.from(new Set([
-                    requestedModel, 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'
+                    requestedModel, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'
                 ]));
 
                 let lastError = null;
@@ -9615,7 +9624,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 throw lastError || new Error("Mọi tuyến kết nối AI đều bận hoặc hết hạn mức.");
             };
 
-            // BỘ PHÂN TÍCH CẤU TRÚC SLIDE ĐA NĂNG
+            // BỘ PHÂN TÍCH CẤU TRÚC SLIDE
             const parseSlideDeckStructure = (rawText) => {
                 const slides = [];
                 const lines = (rawText || '').split('\n');
@@ -9640,16 +9649,15 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 return slides;
             };
 
-            // HÀM BIÊN DỊCH VÀ RENDER MÃ GLSL THÀNH ẢNH PNG 1024x1024 THẬT
-            const renderGlslToDataUrl = async (glslCode, width = 1024, height = 1024) => {
+            // HÀM BIÊN DỊCH VÀ RENDER GLSL LÊN TEXTURE ẢNH FLUX
+            const renderGlslToDataUrl = async (glslCode, textureSourceUrl = null, width = 1024, height = 1024) => {
                 if (!glslCode || typeof glslCode !== 'string') return null;
-                
                 let rawCode = glslCode.replace(/```(?:glsl|shader|c|cpp|frag)?/gi, '').replace(/```/g, '').trim();
                 if (!rawCode) return null;
 
-                // Tự động gỡ bỏ các khai báo precision và uniform bị lặp lại gây lỗi Compile Error
                 rawCode = rawCode.replace(/^[ \t]*precision[ \t]+(?:highp|mediump|lowp)[ \t]+float[ \t]*;/gm, '');
                 rawCode = rawCode.replace(/^[ \t]*uniform[ \t]+(?:vec2|vec3|float)[ \t]+(?:uResolution|uTime|iResolution|iTime|u_resolution|u_time)[ \t]*;/gm, '');
+                rawCode = rawCode.replace(/^[ \t]*uniform[ \t]+sampler2D[ \t]+(?:uTexture|iChannel0|u_image)[ \t]*;/gm, '');
                 rawCode = rawCode.replace(/^[ \t]*varying[ \t]+vec2[ \t]+(?:vUv|uv)[ \t]*;/gm, '');
 
                 const canvas = document.createElement('canvas');
@@ -9661,27 +9669,53 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                            canvas.getContext('experimental-webgl', { preserveDrawingBuffer: true });
                 if (!gl) throw new Error("WebGL không khả dụng");
 
+                let hasTexture = false;
+                if (textureSourceUrl) {
+                    try {
+                        const img = new Image();
+                        img.crossOrigin = 'anonymous';
+                        await new Promise((res, rej) => {
+                            img.onload = res;
+                            img.onerror = rej;
+                            img.src = textureSourceUrl;
+                        });
+
+                        const texture = gl.createTexture();
+                        gl.activeTexture(gl.TEXTURE0);
+                        gl.bindTexture(gl.TEXTURE_2D, texture);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                        hasTexture = true;
+                    } catch (texErr) {
+                        console.warn("[WebGL] Lỗi nạp Texture:", texErr.message);
+                    }
+                }
+
                 const vsSource = "attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }";
                 const commonHeader = [
                     "precision highp float;",
+                    "uniform sampler2D uTexture;",
                     "uniform vec2 uResolution;",
                     "uniform float uTime;",
+                    "#define iChannel0 uTexture",
+                    "#define u_image uTexture",
                     "#define iResolution vec3(uResolution, 1.0)",
                     "#define iTime uTime",
-                    "#define u_resolution uResolution",
-                    "#define u_time uTime",
                     "varying vec2 vUv;"
                 ].join('\n');
 
                 let fsSource = '';
                 if (rawCode.includes('mainImage')) {
                     fsSource = `${commonHeader}\n${rawCode}\nvoid main() {\n    mainImage(gl_FragColor, gl_FragCoord.xy);\n    gl_FragColor.a = 1.0;\n}`;
-                } else if (rawCode.includes('render_scene')) {
-                    fsSource = `${commonHeader}\n${rawCode}\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\n    gl_FragColor = render_scene(uv, uTime);\n    gl_FragColor.a = 1.0;\n}`;
                 } else if (rawCode.includes('void main')) {
                     fsSource = `${commonHeader}\n${rawCode}`;
+                } else if (rawCode.includes('render_scene')) {
+                    fsSource = `${commonHeader}\n${rawCode}\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / uResolution.xy;\n    gl_FragColor = render_scene(uv, uTime);\n    gl_FragColor.a = 1.0;\n}`;
                 } else {
-                    fsSource = `${commonHeader}\nvec4 render_scene(vec2 uv, float time) {\n${rawCode}\n}\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y);\n    gl_FragColor = render_scene(uv, uTime);\n    gl_FragColor.a = 1.0;\n}`;
+                    fsSource = `${commonHeader}\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / uResolution.xy;\n    vec4 baseColor = texture2D(uTexture, uv);\n    vec3 col = baseColor.rgb;\n    ${rawCode}\n    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}`;
                 }
 
                 const compileShader = (type, src) => {
@@ -9703,10 +9737,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 gl.attachShader(prog, fs);
                 gl.linkProgram(prog);
 
-                if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-                    throw new Error(gl.getProgramInfoLog(prog));
-                }
-
+                if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
                 gl.useProgram(prog);
 
                 const buf = gl.createBuffer();
@@ -9719,16 +9750,20 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
 
                 const uRes = gl.getUniformLocation(prog, "uResolution");
                 const uTime = gl.getUniformLocation(prog, "uTime");
+                const uTexLoc = gl.getUniformLocation(prog, "uTexture");
 
                 gl.viewport(0, 0, width, height);
                 if (uRes) gl.uniform2f(uRes, width, height);
-                if (uTime) gl.uniform1f(uTime, 1.0);
+                if (uTime) gl.uniform1f(uTime, 1.5);
+                if (uTexLoc && hasTexture) gl.uniform1i(uTexLoc, 0);
 
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
                 return canvas.toDataURL('image/png');
             };
 
-            // THỰC THI QUY TRÌNH HỘI ĐỒNG MULTI-AGENT TỰ HÀNH
+            // =========================================================================
+            // ĐỘNG CƠ THỰC THI GRAPH-REACT SWARM TỰ TRỊ VÀ VÒNG LẶP SỬA LỖI (SELF-HEALING)
+            // =========================================================================
             const executeAutonomousWorkflow = async () => {
                 if (workflowStudio.agents.length === 0) {
                     notify("Quy trình chưa có chuyên gia nào", true);
@@ -9753,134 +9788,142 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     goal: workflowStudio.userGoal,
                     format: workflowStudio.outputFormat.toUpperCase(),
                     files: workflowStudio.inputFiles.map(f => f.name),
-                    fileContents: workflowStudio.inputFiles.map(f => `[TỆP: ${f.name}]\n${f.textContent || '(Dữ liệu nhị phân/Base64)'}`).join('\n\n'),
-                    groundingNotes: [],
+                    fileContents: workflowStudio.inputFiles.map(f => `[TỆP: ${f.name}]\n${f.textContent || '(Dữ liệu nhị phân)'}`).join('\n\n'),
+                    groundingMemory: [],
                     findings: [],
                     pythonArtifacts: [],
-                    cinemaScript: null,
-                    rawOutputs: []
+                    critiqueScores: [],
+                    revisionRequests: []
                 };
 
-                try {
-                    for (let i = 0; i < workflowStudio.agents.length; i++) {
-                        if (workflowStudio.abortCtrl?.signal?.aborted) break;
+                const runSingleAgentPass = async (agent, directiveModifier = '', targetNextAgent = null) => {
+                    const startTime = performance.now();
+                    workflowStudio.statusMessage = `[Hội đồng A2A] ${agent.name} đang phân tích (${agent.modelId})...`;
 
-                        const agent = workflowStudio.agents[i];
-                        const nextAgent = workflowStudio.agents[i + 1] || null;
-                        workflowStudio.currentStepIndex = i;
-                        workflowStudio.statusMessage = `[Hội đồng A2A] ${agent.name} đang điều phối (${agent.modelId})...`;
-                        const startTime = performance.now();
-
-                        // 1. TOOL AGENTIC TRƯỚC LƯỢT: TỰ ĐỘNG CÀO LIÊN KẾT VÀ TÀI LIỆU
-                        let linkContext = "";
-                        if (agent.tools.crawler && typeof UrlGroundingEngine !== 'undefined') {
-                            const detectedUrls = UrlGroundingEngine.extractUrls(workflowStudio.userGoal + ' ' + blackboard.findings.join(' '));
-                            if (detectedUrls.length > 0) {
-                                workflowStudio.statusMessage = `[${agent.name}] đang đối soát ${detectedUrls.length} liên kết web...`;
-                                const sources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => {
-                                    workflowStudio.statusMessage = `[${agent.name}] ${st}`;
-                                });
-                                const valid = sources.filter(s => s.success);
-                                if (valid.length > 0) {
-                                    linkContext = `[TÀI LIỆU WEB ĐÃ XÁC THỰC]:\n` + valid.map((s, idx) => `(Nguồn ${idx + 1}) ${s.title} (${s.url}):\n${s.text.slice(0, 2000)}`).join('\n\n');
-                                    blackboard.groundingNotes.push(linkContext);
-                                }
+                    // 1. REACT TOOL-CALL TRƯỚC LƯỢT: TỰ ĐỘNG CÀO DỮ LIỆU
+                    let crawlContext = "";
+                    if (agent.tools.crawler && typeof UrlGroundingEngine !== 'undefined') {
+                        const detectedUrls = UrlGroundingEngine.extractUrls(blackboard.goal + ' ' + blackboard.findings.join(' '));
+                        if (detectedUrls.length > 0) {
+                            workflowStudio.statusMessage = `[${agent.name}] đang đối soát ${detectedUrls.length} liên kết...`;
+                            const sources = await UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => {
+                                workflowStudio.statusMessage = `[${agent.name}] ${st}`;
+                            });
+                            const valid = sources.filter(s => s.success);
+                            if (valid.length > 0) {
+                                crawlContext = `[TÀI LIỆU WEB ĐÃ XÁC THỰC]:\n` + valid.map((s, idx) => `(Nguồn ${idx + 1}) ${s.title} (${s.url}):\n${s.text.slice(0, 2000)}`).join('\n\n');
+                                blackboard.groundingMemory.push(crawlContext);
                             }
                         }
+                    }
 
-                        // 2. TOOL AGENTIC TRƯỚC LƯỢT: TRA CỨU GOOGLE LIVE THỜI GIAN THỰC
-                        let searchContext = "";
-                        if (agent.tools.search && typeof performSerperSearch === 'function') {
-                            workflowStudio.statusMessage = `[${agent.name}] đang tra cứu Google Live...`;
-                            const searchRes = await performSerperSearch(workflowStudio.userGoal.slice(0, 100));
-                            if (searchRes?.organic?.length) {
-                                searchContext = `[GOOGLE SEARCH GROUNDING]:\n` + searchRes.organic.slice(0, 5).map(r => `- ${r.title} (${r.link}): ${r.snippet}`).join('\n');
-                                blackboard.groundingNotes.push(searchContext);
-                            }
+                    // 2. REACT TOOL-CALL TRƯỚC LƯỢT: TRA CỨU GOOGLE LIVE
+                    let searchContext = "";
+                    if (agent.tools.search && typeof performSerperSearch === 'function') {
+                        workflowStudio.statusMessage = `[${agent.name}] đang tra cứu Google Live...`;
+                        const searchRes = await performSerperSearch(blackboard.goal.slice(0, 100));
+                        if (searchRes?.organic?.length) {
+                            searchContext = `[GOOGLE SEARCH GROUNDING]:\n` + searchRes.organic.slice(0, 5).map(r => `- ${r.title} (${r.link}): ${r.snippet}`).join('\n');
+                            blackboard.groundingMemory.push(searchContext);
                         }
+                    }
 
-                        // 3. TẠO GÓI TIN BÀN GIAO NGỮ CẢNH CÓ CẤU TRÚC (STRUCTURED A2A PACKET)
-                        const previousHandoffs = blackboard.findings.map((f, idx) => `### Bàn giao từ ${workflowStudio.agents[idx]?.name || 'Agent trước'}:\n${f}`).join('\n\n');
+                    // 3. TỔNG HỢP GÓI TIN BÀN GIAO THỰC THỂ (STATE PACKET)
+                    const previousContext = blackboard.findings.map((f, idx) => `### Bàn giao từ ${workflowStudio.agents[idx]?.name || 'Agent trước'}:\n${f}`).join('\n\n');
 
-                        const a2aEnvelope = [
-                            `[G-DEEP AUTONOMOUS A2A PROTOCOL - BƯỚC ${i + 1}/${workflowStudio.agents.length}]`,
-                            `CHUYÊN GIA HIỆN TẠI: ${agent.name} (Vai trò: ${agent.role})`,
-                            `ĐÍCH BÀN GIAO TIẾP THEO: ${nextAgent ? nextAgent.name : 'Người Dùng / Báo Cáo Cuối Cùng'}`,
-                            `MỤC TIÊU TỔNG THỂ: ${blackboard.goal}`,
-                            `ĐỊNH DẠNG ĐẦU RA YÊU CẦU: ${blackboard.format}`,
-                            `CHỈ THỊ CỐT LÕI: ${agent.systemPrompt}`,
-                            blackboard.fileContents ? `\n[DỮ LIỆU TỆP ĐÍNH KÈM WORKSPACE]:\n${blackboard.fileContents.slice(0, 6000)}` : '',
-                            linkContext ? `\n${linkContext}` : '',
-                            searchContext ? `\n${searchContext}` : '',
-                            previousHandoffs ? `\n[TIẾN ĐỘ & BÀN GIAO TỪ CÁC CHUYÊN GIA TRƯỚC]:\n${previousHandoffs}` : '',
-                            `\nHÃY THỰC THI NHIỆM VỤ, LẬP LUẬN CHUYÊN MÔN VÀ BÀN GIAO SẢN PHẨM HOÀN CHỈNH:`
-                        ].filter(Boolean).join('\n');
+                    const a2aEnvelope = [
+                        `[G-DEEP OMEGA A2A AUTONOMOUS PROTOCOL]`,
+                        `CHUYÊN GIA HIỆN TẠI: ${agent.name} (Vai trò: ${agent.role})`,
+                        `MỤC TIÊU TỔNG THỂ: ${blackboard.goal}`,
+                        `ĐỊNH DẠNG ĐẦU RA MỤC TIÊU: ${blackboard.format}`,
+                        `CHỈ THỊ CỐT LÕI: ${agent.systemPrompt}`,
+                        directiveModifier ? `\n[CHỈ THỊ ĐẶC BIỆT / YÊU CẦU PHẢN TƯ]:\n${directiveModifier}` : '',
+                        blackboard.fileContents ? `\n[DỮ LIỆU TỆP ĐÍNH KÈM WORKSPACE]:\n${blackboard.fileContents.slice(0, 5000)}` : '',
+                        crawlContext ? `\n${crawlContext}` : '',
+                        searchContext ? `\n${searchContext}` : '',
+                        previousContext ? `\n[TIẾN TRÌNH & BÀN GIAO TỪ CÁC CHUYÊN GIA TRƯỚC]:\n${previousContext}` : '',
+                        `\nHÃY THỰC THI NHIỆM VỤ, TƯ DUY PHẢN BIỆN VÀ XUẤT KẾT QUẢ CHUYÊN MÔN:`
+                    ].filter(Boolean).join('\n');
 
-                        // 4. GỌI AI THÔNG QUA HỆ THỐNG PHÂN PHỐI CHÌA KHÓA
-                        const callResult = await runAgentWithSystemKeyRotation(agent, a2aEnvelope, workflowStudio.abortCtrl.signal);
-                        let agentOutputText = callResult.text;
+                    // 4. GỌI AI THÔNG QUA HỆ THỐNG PHÂN BỔ CHÌA KHÓA
+                    const callResult = await runAgentWithSystemKeyRotation(agent, a2aEnvelope, workflowStudio.abortCtrl.signal);
+                    let agentOutputText = callResult.text;
 
-                        let pyCode = null, pyOut = null, pyPlot = null;
+                    let pyCode = null, pyOut = null, pyPlot = null;
 
-                        // 5. TOOL AGENTIC SAU LƯỢT: PYTHON 3.11 WASM KERNEL THỰC TẾ
-                        if (agent.tools.python && agentOutputText.includes('```python')) {
-                            const match = agentOutputText.match(/```python([\s\S]*?)```/i);
-                            if (match && match[1]) {
-                                pyCode = match[1].trim();
-                                workflowStudio.statusMessage = `[Python WASM] Đang thực thi mã của ${agent.name}...`;
-                                const wasmRes = await PythonEngine.run(pyCode, 150000, workflowStudio.inputFiles);
-                                pyOut = wasmRes.output;
-                                pyPlot = wasmRes.plotBase64;
-                                if (wasmRes.artifacts?.length > 0) {
-                                    wasmRes.artifacts.forEach(art => {
-                                        if (!workflowStudio.artifacts.some(a => a.name === art.name)) {
-                                            workflowStudio.artifacts.push(art);
-                                            blackboard.pythonArtifacts.push(art.name);
-                                        }
-                                    });
-                                }
-                                agentOutputText += `\n\n[KẾT QUẢ THỰC THI PYTHON WASM]:\n${pyOut || 'Mã đã chạy thành công.'}`;
-                            }
-                        }
+                    // 5. REACT TOOL-CALL SAU LƯỢT: PYTHON 3.11 WASM KERNEL & TỰ SỬA LỖI CODE
+                    if (agent.tools.python && agentOutputText.includes('```python')) {
+                        const match = agentOutputText.match(/```python([\s\S]*?)```/i);
+                        if (match && match[1]) {
+                            pyCode = match[1].trim();
+                            workflowStudio.statusMessage = `[Python WASM] Đang thực thi mã của ${agent.name}...`;
+                            let wasmRes = await PythonEngine.run(pyCode, 150000, workflowStudio.inputFiles);
+                            pyOut = wasmRes.output;
+                            pyPlot = wasmRes.plotBase64;
 
-                        // 6. TOOL AGENTIC: DÂY CHUYỀN FLUX ➔ PYTHON NUMPY ➔ GLSL SHADER
-                        if (agent.tools.vision && workflowStudio.outputFormat === 'image' && !workflowStudio.resultData.image) {
-                            let imgPrompt = blackboard.goal;
-                            const promptMatch = agentOutputText.match(/\[FLUX_PROMPT\]:\s*([^\n\r]+)/i);
-                            if (promptMatch && promptMatch[1]) imgPrompt = promptMatch[1].trim();
-
-                            workflowStudio.statusMessage = "🎨 Đang tạo bản phác thảo tham chiếu từ Flux GPU...";
-                            const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imgPrompt)}?width=768&height=768&model=flux-realism&nologo=true`;
-
-                            let fluxB64 = '';
-                            try {
-                                let blob = null;
+                            // NẾU CODE PYTHON VƯỚNG LỖI RUNTIME: TỰ ĐỘNG GỌI AI SỬA LẠI NGAY LẬP TỨC
+                            if (wasmRes.outcome === 'ERROR' && !workflowStudio.abortCtrl?.signal?.aborted) {
+                                workflowStudio.statusMessage = `[Python Tự Chữa Lỗi] Phát hiện lỗi Runtime, đang tự sửa mã...`;
+                                const fixPrompt = `Mã Python sau vừa chạy trên môi trường WASM và gặp lỗi:\n\`\`\`python\n${pyCode}\n\`\`\`\nThông báo lỗi:\n${pyOut}\nHãy viết lại mã Python hoàn chỉnh đã được sửa lỗi trong khối \`\`\`python ... \`\`\`.`;
                                 try {
-                                    const res = await fetch(imgUrl);
-                                    if (res.ok) blob = await res.blob();
+                                    const fixResult = await runAgentWithSystemKeyRotation(agent, fixPrompt, workflowStudio.abortCtrl.signal);
+                                    const fixMatch = fixResult.text.match(/```python([\s\S]*?)```/i);
+                                    if (fixMatch && fixMatch[1]) {
+                                        pyCode = fixMatch[1].trim();
+                                        wasmRes = await PythonEngine.run(pyCode, 150000, workflowStudio.inputFiles);
+                                        pyOut = wasmRes.output;
+                                        pyPlot = wasmRes.plotBase64;
+                                    }
                                 } catch (_) {}
-                                if (!blob) {
-                                    try {
-                                        const pRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(imgUrl)}`);
-                                        if (pRes.ok) blob = await pRes.blob();
-                                    } catch (_) {}
-                                }
-                                if (blob) {
-                                    fluxB64 = await new Promise(r => {
-                                        const fr = new FileReader();
-                                        fr.onloadend = () => r(fr.result.split(',')[1]);
-                                        fr.readAsDataURL(blob);
-                                    });
-                                }
+                            }
+
+                            if (wasmRes.artifacts?.length > 0) {
+                                wasmRes.artifacts.forEach(art => {
+                                    if (!workflowStudio.artifacts.some(a => a.name === art.name)) {
+                                        workflowStudio.artifacts.push(art);
+                                        blackboard.pythonArtifacts.push(art.name);
+                                    }
+                                });
+                            }
+                            agentOutputText += `\n\n[KẾT QUẢ THỰC THI PYTHON WASM]:\n${pyOut || 'Mã đã chạy thành công.'}`;
+                        }
+                    }
+
+                    // 6. REACT TOOL-CALL: FLUX ➔ PYTHON ➔ GLSL CAN THIỆP TEXTURE
+                    if (agent.tools.vision && workflowStudio.outputFormat === 'image' && !workflowStudio.resultData.image) {
+                        let imgPrompt = blackboard.goal;
+                        const pMatch = agentOutputText.match(/\[FLUX_PROMPT\]:\s*([^\n\r]+)/i);
+                        if (pMatch && pMatch[1]) imgPrompt = pMatch[1].trim();
+
+                        workflowStudio.statusMessage = "🎨 Đang tạo bản phác thảo tham chiếu từ Flux GPU...";
+                        const imgUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imgPrompt)}?width=768&height=768&model=flux-realism&nologo=true`;
+
+                        let fluxB64 = '';
+                        try {
+                            let blob = null;
+                            try {
+                                const res = await fetch(imgUrl);
+                                if (res.ok) blob = await res.blob();
                             } catch (_) {}
+                            if (!blob) {
+                                try {
+                                    const pRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(imgUrl)}`);
+                                    if (pRes.ok) blob = await pRes.blob();
+                                } catch (_) {}
+                            }
+                            if (blob) {
+                                fluxB64 = await new Promise(r => {
+                                    const fr = new FileReader();
+                                    fr.onloadend = () => r(fr.result.split(',')[1]);
+                                    fr.readAsDataURL(blob);
+                                });
+                            }
+                        } catch (_) {}
 
-                            let deconstructedGlsl = '';
-                            let pixelReport = '';
-
-                            // PHÂN RÃ PIXEL THÀNH MA TRẬN GLSL BẰNG NUMPY WASM THỰC TẾ
-                            if (fluxB64 && typeof PythonEngine !== 'undefined') {
-                                workflowStudio.statusMessage = "🐍 Python NumPy đang phân rã ma trận điểm ảnh thành hàm số GLSL...";
-                                const pyScript = `
+                        let deconstructedGlsl = '';
+                        if (fluxB64 && typeof PythonEngine !== 'undefined') {
+                            workflowStudio.statusMessage = "🐍 Python đang đo đạc quang học để lập trình Shader can thiệp vào ảnh Flux...";
+                            const pyScript = `
 import base64, io
 import numpy as np
 import matplotlib.image as mpimg
@@ -9893,111 +9936,154 @@ if len(img.shape) == 3 and img.shape[2] > 3:
     img = img[:, :, :3]
 
 H, W, _ = img.shape
+lum = 0.299 * img[:, :, 0] + 0.587 * img[:, :, 1] + 0.114 * img[:, :, 2]
 sH, sW = min(32, H), min(32, W)
-grid = img[::max(1, H//sH), ::max(1, W//sW)]
-gh, gw, _ = grid.shape
+sampled = lum[::max(1, H//sH), ::max(1, W//sW)]
+max_idx = np.unravel_index(np.argmax(sampled), sampled.shape)
+light_x = float(max_idx[1] / sW)
+light_y = float(1.0 - (max_idx[0] / sH))
 
-top_col = np.mean(grid[:max(1, gh//4), :], axis=(0, 1))
-bot_col = np.mean(grid[max(1, 3*gh//4):, :], axis=(0, 1))
-center_col = np.mean(grid[gh//4:3*gh//4, gw//4:3*gw//4], axis=(0, 1))
+glsl_code = f"""// [GLSL PARAMETRIC TEXTURE CONTROLLER FOR FLUX IMAGE]
+uniform sampler2D uTexture;
+uniform vec2 uResolution;
+uniform float uTime;
 
-lum = 0.299 * grid[:, :, 0] + 0.587 * grid[:, :, 1] + 0.114 * grid[:, :, 2]
-max_idx = np.unravel_index(np.argmax(lum), lum.shape)
-min_idx = np.unravel_index(np.argmin(lum), lum.shape)
-
-light_uv = ((max_idx[1]/gw)*2.0 - 1.0, -((max_idx[0]/gh)*2.0 - 1.0))
-dark_uv = ((min_idx[1]/gw)*2.0 - 1.0, -((min_idx[0]/gh)*2.0 - 1.0))
-
-glsl_code = f"""// [GLSL DECONSTRUCTED MATHEMATICAL SCENE]
-vec4 render_scene(vec2 uv, float time) {{
-    vec2 p = uv;
-    vec3 colTop = vec3({top_col[0]:.3f}, {top_col[1]:.3f}, {top_col[2]:.3f});
-    vec3 colBot = vec3({bot_col[0]:.3f}, {bot_col[1]:.3f}, {bot_col[2]:.3f});
-    vec3 colCenter = vec3({center_col[0]:.3f}, {center_col[1]:.3f}, {center_col[2]:.3f});
-    vec3 bg = mix(colBot, colTop, clamp(p.y * 0.5 + 0.5, 0.0, 1.0));
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {{
+    vec2 uv = fragCoord.xy / uResolution.xy;
+    vec4 baseColor = texture2D(uTexture, uv);
+    vec3 col = baseColor.rgb;
     
-    vec2 lightPos = vec2({light_uv[0]:.3f}, {light_uv[1]:.3f});
-    float dLight = length(p - lightPos);
-    float light = exp(-dLight * 2.5);
+    vec2 lightPos = vec2({light_x:.3f}, {light_y:.3f});
+    float d = length(uv - lightPos);
+    float glow = exp(-d * 3.2);
+    col += vec3(1.0, 0.85, 0.6) * glow * (0.35 + 0.1 * sin(uTime * 2.0));
     
-    vec2 darkPos = vec2({dark_uv[0]:.3f}, {dark_uv[1]:.3f});
-    float shadow = smoothstep(0.05, 0.8, length(p - darkPos));
+    float vignette = smoothstep(1.2, 0.4, length(uv - 0.5));
+    col *= vignette;
     
-    vec3 col = mix(bg, colCenter, light * 0.7);
-    col = mix(col * 0.3, col, shadow) + light * 0.4;
-    return vec4(clamp(col, 0.0, 1.0), 1.0);
+    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }}"""
 
 export_artifact("flux_base.glsl", glsl_code)
 `;
-                                const wasmRes = await PythonEngine.run(pyScript, 90000);
-                                const art = wasmRes.artifacts?.find(a => a.name === 'flux_base.glsl');
-                                if (art?.data) deconstructedGlsl = atob(art.data);
-                            }
-
-                            workflowStudio.resultData.image = {
-                                url: imgUrl,
-                                prompt: imgPrompt,
-                                baseGlsl: deconstructedGlsl,
-                                glsl: deconstructedGlsl,
-                                renderedUrl: null,
-                                viewMode: 'rendered'
-                            };
-
-                            agentOutputText += `\n\n[MÃ GLSL PYTHON VỪA PHÂN RÃ TỪ ẢNH FLUX]:\n\`\`\`glsl\n${deconstructedGlsl}\n\`\`\``;
+                            const wasmRes = await PythonEngine.run(pyScript, 90000);
+                            const art = wasmRes.artifacts?.find(a => a.name === 'flux_base.glsl');
+                            if (art?.data) deconstructedGlsl = atob(art.data);
                         }
 
-                        // NẾU AGENT XUẤT KHỐI MÃ GLSL TỐI ƯU HÓA: BẮT LẠI CHÍNH XÁC
-                        if (workflowStudio.resultData.image) {
-                            const glslBlocks = Array.from(agentOutputText.matchAll(/```(?:glsl|shader|c|cpp|frag)?\s*([\s\S]*?)```/gi));
-                            if (glslBlocks.length > 0) {
-                                for (let b = glslBlocks.length - 1; b >= 0; b--) {
-                                    const codeCandidate = glslBlocks[b][1].trim();
-                                    if (codeCandidate.includes('vec4') || codeCandidate.includes('render_scene') || codeCandidate.includes('mainImage') || codeCandidate.includes('gl_FragColor')) {
-                                        workflowStudio.resultData.image.glsl = codeCandidate;
-                                        break;
-                                    }
+                        workflowStudio.resultData.image = {
+                            url: imgUrl,
+                            prompt: imgPrompt,
+                            baseGlsl: deconstructedGlsl,
+                            glsl: deconstructedGlsl,
+                            renderedUrl: null,
+                            viewMode: 'rendered'
+                        };
+
+                        agentOutputText += `\n\n[MÃ GLSL CAN THIỆP TEXTURE GỐC]:\n\`\`\`glsl\n${deconstructedGlsl}\n\`\`\``;
+                    }
+
+                    // TỰ ĐỘNG BẮT MÃ GLSL ĐÃ ĐƯỢC AI NÂNG CẤP
+                    if (workflowStudio.resultData.image) {
+                        const glslBlocks = Array.from(agentOutputText.matchAll(/```(?:glsl|shader|c|cpp|frag)?\s*([\s\S]*?)```/gi));
+                        if (glslBlocks.length > 0) {
+                            for (let b = glslBlocks.length - 1; b >= 0; b--) {
+                                const codeCandidate = glslBlocks[b][1].trim();
+                                if (codeCandidate.includes('vec4') || codeCandidate.includes('render_scene') || codeCandidate.includes('mainImage') || codeCandidate.includes('gl_FragColor')) {
+                                    workflowStudio.resultData.image.glsl = codeCandidate;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // 7. XƯỞNG PHIM ĐIỆN ẢNH THỰC TẾ
+                    if (agent.tools.cinema && workflowStudio.outputFormat === 'video' && typeof rawExecuteCinemaProduction === 'function') {
+                        workflowStudio.statusMessage = "🎬 Đang kích hoạt xưởng phim kết xuất MP4 60 FPS...";
+                        await rawExecuteCinemaProduction(null, blackboard.goal);
+                    }
+
+                    const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+
+                    workflowStudio.executionLogs.push({
+                        agentName: agent.name,
+                        role: agent.role,
+                        modelId: callResult.modelId,
+                        handoffTo: targetNextAgent ? targetNextAgent.name : 'Hoàn thành lượt',
+                        isCritic: (agent.role === 'critic'),
+                        output: agentOutputText,
+                        pythonCode: pyCode,
+                        pythonOutput: pyOut,
+                        plotBase64: pyPlot,
+                        elapsedTime: elapsed
+                    });
+
+                    return agentOutputText;
+                };
+
+                try {
+                    // =========================================================================
+                    // TIẾN TRÌNH THỰC THI GRAPH: TỰ HÀNH & TỰ PHẢN TƯ VÁ LỖI (REFLEXIVE LOOP)
+                    // =========================================================================
+                    let loopCount = 0;
+                    const maxLoops = (workflowStudio.topologyMode === 'reflexive') ? workflowStudio.maxReflexiveLoops : 1;
+                    let workflowApproved = false;
+
+                    while (loopCount < maxLoops && !workflowApproved && !workflowStudio.abortCtrl?.signal?.aborted) {
+                        loopCount++;
+                        workflowStudio.currentIteration = loopCount;
+
+                        for (let i = 0; i < workflowStudio.agents.length; i++) {
+                            if (workflowStudio.abortCtrl?.signal?.aborted) break;
+
+                            const agent = workflowStudio.agents[i];
+                            const nextAgent = workflowStudio.agents[i + 1] || null;
+                            workflowStudio.currentStepIndex = i;
+
+                            let directiveModifier = '';
+                            if (loopCount > 1 && agent.role === 'coder' && blackboard.revisionRequests.length > 0) {
+                                directiveModifier = `[HỘI ĐỒNG YÊU CẦU HOÀN THIỆN LẠI VÒNG #${loopCount}]:\n${blackboard.revisionRequests[blackboard.revisionRequests.length - 1]}`;
+                            }
+
+                            const output = await runSingleAgentPass(agent, directiveModifier, nextAgent);
+                            blackboard.findings.push(output);
+
+                            // KIỂM TRA PHẢN HỒI TỪ CHUYÊN GIA THẨM ĐỊNH (CRITIC VERDICT)
+                            if (agent.role === 'critic') {
+                                const reviseMatch = output.match(/\[VERDICT:REVISE:\s*(\d+)[:\s]*(.*?)\]/i);
+                                const approveMatch = output.match(/\[VERDICT:APPROVED:\s*(\d+).*?\]/i);
+
+                                if (reviseMatch && loopCount < maxLoops) {
+                                    const score = parseInt(reviseMatch[1], 10);
+                                    const critiqueMsg = reviseMatch[2].trim();
+                                    blackboard.critiqueScores.push(score);
+                                    blackboard.revisionRequests.push(critiqueMsg);
+                                    workflowStudio.statusMessage = `[Tự Phản Tư] Điểm chất lượng: ${score}/10. Đang kích hoạt vòng tự sửa lỗi #${loopCount + 1}...`;
+                                    notify(`Chất lượng đạt ${score}/10. Hội đồng yêu cầu hoàn thiện thêm...`);
+                                    await new Promise(r => setTimeout(r, 1000));
+                                    break; // Thoát vòng lặp con để quay lại Kỹ Sư hoàn thiện tiếp
+                                } else {
+                                    workflowApproved = true;
                                 }
                             }
                         }
 
-                        // 7. TOOL AGENTIC: XƯỞNG PHIM ĐIỆN ẢNH THỰC TẾ
-                        if (agent.tools.cinema && workflowStudio.outputFormat === 'video' && typeof rawExecuteCinemaProduction === 'function') {
-                            workflowStudio.statusMessage = "🎬 Đang chuyển kịch bản sang xưởng phim để kết xuất MP4 60 FPS...";
-                            await rawExecuteCinemaProduction(null, blackboard.goal);
+                        if (workflowStudio.topologyMode !== 'reflexive') {
+                            workflowApproved = true;
                         }
-
-                        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
-
-                        // CẬP NHẬT NHẬT KÝ THỰC THI CHÍNH XÁC
-                        workflowStudio.executionLogs.push({
-                            agentName: agent.name,
-                            role: agent.role,
-                            modelId: callResult.modelId,
-                            handoffTo: nextAgent ? nextAgent.name : 'Hoàn thành bàn giao',
-                            isCritic: (agent.role === 'critic'),
-                            output: agentOutputText,
-                            pythonCode: pyCode,
-                            pythonOutput: pyOut,
-                            plotBase64: pyPlot,
-                            elapsedTime: elapsed
-                        });
-
-                        blackboard.findings.push(agentOutputText);
-                        blackboard.rawOutputs.push(agentOutputText);
                     }
 
                     // =========================================================================
-                    // TỔNG KẾT THÀNH PHẨM THỰC TẾ THEO ĐÚNG ĐỊNH DẠNG (KHÔNG RẬP KHUÔN, KHÔNG GIẢ TẠO)
+                    // TỔNG KẾT ĐẦU RA THỰC TẾ 100% (KHÔNG RẬP KHUÔN, KHÔNG GIẢ TẠO)
                     // =========================================================================
-                    workflowStudio.statusMessage = `Đang hoàn thiện thành phẩm ${workflowStudio.outputFormat.toUpperCase()}...`;
+                    workflowStudio.statusMessage = `Đang xuất thành phẩm ${workflowStudio.outputFormat.toUpperCase()}...`;
 
                     // ĐẦU RA 1: TỆP POWERPOINT (.PPTX) CHUẨN 16:9
                     if (workflowStudio.outputFormat === 'pptx') {
                         const allContext = blackboard.findings.join('\n\n');
                         const parsedSlides = parseSlideDeckStructure(allContext);
                         const finalSlides = parsedSlides.length ? parsedSlides : [
-                            { num: 1, title: 'Slide 1: Đề Án Chiến Lược', bullets: ['Đã hoàn tất báo cáo tổng hợp từ Hội đồng Chuyên gia Multi-Agent'] }
+                            { num: 1, title: 'Slide 1: Đề Án Chiến Lược', bullets: ['Đã hoàn tất báo cáo tổng hợp từ Hội đồng Multi-Agents'] }
                         ];
 
                         workflowStudio.resultData.pptx = {
@@ -10011,15 +10097,16 @@ export_artifact("flux_base.glsl", glsl_code)
                     if (workflowStudio.outputFormat === 'image' && workflowStudio.resultData.image) {
                         workflowStudio.statusMessage = "🎨 Đang dùng WebGL kết xuất mã GLSL thành hình ảnh PNG 1024x1024...";
                         let activeGlsl = workflowStudio.resultData.image.glsl || workflowStudio.resultData.image.baseGlsl;
+                        const fluxOriginUrl = workflowStudio.resultData.image.url;
 
                         let renderedPng = null;
                         try {
-                            renderedPng = await renderGlslToDataUrl(activeGlsl, 1024, 1024);
+                            renderedPng = await renderGlslToDataUrl(activeGlsl, fluxOriginUrl, 1024, 1024);
                         } catch (err) {
-                            console.warn("[WebGL] Lỗi biên dịch shader chính, kích hoạt shader cơ sở:", err.message);
+                            console.warn("[WebGL] Thử shader cơ sở từ Python:", err.message);
                             if (workflowStudio.resultData.image.baseGlsl) {
                                 try {
-                                    renderedPng = await renderGlslToDataUrl(workflowStudio.resultData.image.baseGlsl, 1024, 1024);
+                                    renderedPng = await renderGlslToDataUrl(workflowStudio.resultData.image.baseGlsl, fluxOriginUrl, 1024, 1024);
                                 } catch (_) {}
                             }
                         }
@@ -10030,26 +10117,27 @@ export_artifact("flux_base.glsl", glsl_code)
 
                             const b64 = renderedPng.split(',')[1];
                             workflowStudio.artifacts.push({
-                                name: `GLSL_Render_${Date.now()}.png`,
+                                name: `FLUX_GLSL_Mastered_${Date.now()}.png`,
                                 mime: 'image/png',
                                 data: b64,
                                 size: Math.round(b64.length * 0.75)
                             });
                             workflowStudio.artifacts.push({
-                                name: `Shader_${Date.now()}.glsl`,
+                                name: `Flux_Enhancement_Shader_${Date.now()}.glsl`,
                                 mime: 'text/plain',
                                 data: btoa(unescape(encodeURIComponent(activeGlsl))),
                                 size: activeGlsl.length
                             });
                         } else {
-                            workflowStudio.resultData.image.renderedUrl = workflowStudio.resultData.image.url;
+                            workflowStudio.resultData.image.renderedUrl = fluxOriginUrl;
                         }
                     }
 
-                    // ĐẦU RA 3: BÁO CÁO TỔNG HỢP (EXECUTIVE DOSSIER)
+                    // ĐẦU RA 3: BÁO CÁO TỔNG HỢP TOÀN NĂNG (EXECUTIVE DOSSIER)
                     const fullDossier = [
                         `# BÁO CÁO ĐIỀU HÀNH TỔNG HỢP TỪ HỘI ĐỒNG MULTI-AGENTS`,
-                        `**Mục tiêu bài toán:** ${blackboard.goal}`,
+                        `**Mục tiêu:** ${blackboard.goal}`,
+                        `**Cấu trúc thực thi:** Graph Swarm (${workflowStudio.topologyMode.toUpperCase()}) · Vòng lặp: ${workflowStudio.currentIteration}`,
                         `**Thời gian hoàn thành:** ${new Date().toLocaleString('vi-VN')}`,
                         `\n---\n`,
                         blackboard.findings.join('\n\n---\n\n')
@@ -10062,12 +10150,12 @@ export_artifact("flux_base.glsl", glsl_code)
                     if (currentMessages && currentMessages.value && currentThreadId && currentThreadId.value) {
                         let finalReport = `### ⚡ Quy Trình Hội Đồng Multi-Agents Hoàn Tất (${workflowStudio.outputFormat.toUpperCase()})\n` +
                                           `**Mục tiêu:** ${blackboard.goal}\n\n` +
-                                          `**Hội đồng thực thi:** ${workflowStudio.agents.map(a => a.name).join(' ➔ ')}\n\n`;
+                                          `**Hội đồng thực thi:** ${workflowStudio.agents.map(a => a.name).join(' ➔ ')} *(Số vòng tự phản tư: ${workflowStudio.currentIteration})*\n\n`;
 
                         if (workflowStudio.resultData.image) {
                             const outputImg = workflowStudio.resultData.image.renderedUrl || workflowStudio.resultData.image.url;
                             finalReport += `![GLSL Artwork](${outputImg})\n\n` +
-                                           `> 💎 **Tác phẩm đã được WebGL kết xuất trực tiếp từ mã GLSL tham số** (Bóc tách toán học từ phác thảo Flux).\n\n`;
+                                           `> 💎 **Tác phẩm đã được WebGL kết xuất trực tiếp từ mã GLSL tham số** (Can thiệp quang học vào Texture ảnh Flux gốc).\n\n`;
                         }
                         if (workflowStudio.resultData.pptx) {
                             finalReport += `📊 **Bài thuyết trình PowerPoint:** Đã thiết kế hoàn thiện ${workflowStudio.resultData.pptx.slides.length} slide chuẩn 16:9.\n\n`;
@@ -10100,7 +10188,7 @@ export_artifact("flux_base.glsl", glsl_code)
                 }
             };
 
-            // HÀM XUẤT TỆP POWERPOINT (.PPTX) CHUẨN 16:9 BẰNG PPTXGENJS (THẬT 100%)
+            // HÀM XUẤT POWERPOINT CHUẨN PPTXGENJS (100% THẬT)
             const downloadPptxFile = async (pptxData) => {
                 notify("Đang tạo tệp PowerPoint (.pptx) chuẩn 16:9...");
                 try {
@@ -10215,9 +10303,31 @@ export_artifact("flux_base.glsl", glsl_code)
                 workflowStudio.artifacts.forEach(art => downloadSingleArtifact(art));
             };
 
-            // HÀM MỞ MÃ GLSL XEM TRỰC TIẾP TRÊN WEBGL TOÀN MÀN HÌNH 60 FPS
-            const openGlslLivePreview = (glslCode) => {
-                const cleanShader = (glslCode || '').replace(/```(?:glsl)?/gi, '').replace(/```/g, '').trim();
+            // TRÌNH KẾT XUẤT GLSL 60 FPS TRỰC TIẾP LÊN TEXTURE FLUX
+            const openGlslLivePreview = (glslCode, textureUrl = null) => {
+                let clean = (glslCode || '').replace(/```(?:glsl|shader|c|cpp|frag)?/gi, '').replace(/```/g, '').trim();
+                clean = clean.replace(/^[ \t]*precision[ \t]+(?:highp|mediump|lowp)[ \t]+float[ \t]*;/gm, '');
+                clean = clean.replace(/^[ \t]*uniform[ \t]+(?:vec2|vec3|float)[ \t]+(?:uResolution|uTime|iResolution|iTime|u_resolution|u_time)[ \t]*;/gm, '');
+                clean = clean.replace(/^[ \t]*uniform[ \t]+sampler2D[ \t]+(?:uTexture|iChannel0|u_image)[ \t]*;/gm, '');
+
+                const textureInitJs = textureUrl ? `
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+            const texture = gl.createTexture();
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+            const uTex = gl.getUniformLocation(program, "uTexture");
+            if (uTex) gl.uniform1i(uTex, 0);
+        };
+        img.src = "${textureUrl}";
+                ` : '';
+
                 const webglRunnerHtml = `<!DOCTYPE html>
 <html>
 <head>
@@ -10241,18 +10351,16 @@ export_artifact("flux_base.glsl", glsl_code)
         resize();
 
         const vsSource = "attribute vec2 position; void main() { gl_Position = vec4(position, 0.0, 1.0); }";
-        let rawCode = \`${cleanShader}\`;
-        rawCode = rawCode.replace(/^[ \\t]*precision[ \\t]+(?:highp|mediump|lowp)[ \\t]+float[ \\t]*;/gm, '');
-        rawCode = rawCode.replace(/^[ \\t]*uniform[ \\t]+(?:vec2|vec3|float)[ \\t]+(?:uResolution|uTime|iResolution|iTime|u_resolution|u_time)[ \\t]*;/gm, '');
-
-        const commonHeader = "precision highp float;\\nuniform vec2 uResolution;\\nuniform float uTime;\\n#define iResolution vec3(uResolution, 1.0)\\n#define iTime uTime;\\nvarying vec2 vUv;";
+        const commonHeader = "precision highp float;\\nuniform sampler2D uTexture;\\nuniform vec2 uResolution;\\nuniform float uTime;\\n#define iChannel0 uTexture\\n#define u_image uTexture\\n#define iResolution vec3(uResolution, 1.0)\\n#define iTime uTime;\\nvarying vec2 vUv;";
+        
+        let rawCode = \`${clean}\`;
         let fsSource = '';
         if (rawCode.includes('mainImage')) {
             fsSource = commonHeader + "\\n" + rawCode + "\\nvoid main() { mainImage(gl_FragColor, gl_FragCoord.xy); gl_FragColor.a = 1.0; }";
-        } else if (rawCode.includes('render_scene')) {
-            fsSource = commonHeader + "\\n" + rawCode + "\\nvoid main() { vec2 uv = (gl_FragCoord.xy * 2.0 - uResolution.xy) / min(uResolution.x, uResolution.y); gl_FragColor = render_scene(uv, uTime); }";
-        } else {
+        } else if (rawCode.includes('void main')) {
             fsSource = commonHeader + "\\n" + rawCode;
+        } else {
+            fsSource = commonHeader + "\\nvoid main() { vec2 uv = gl_FragCoord.xy / uResolution.xy; vec4 baseColor = texture2D(uTexture, uv); vec3 col = baseColor.rgb; " + rawCode + " gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0); }";
         }
 
         function createShader(gl, type, source) {
@@ -10281,6 +10389,8 @@ export_artifact("flux_base.glsl", glsl_code)
         const uResLoc = gl.getUniformLocation(program, "uResolution");
         const uTimeLoc = gl.getUniformLocation(program, "uTime");
 
+        ${textureInitJs}
+
         let startTime = performance.now();
         function render() {
             resize();
@@ -10300,7 +10410,7 @@ export_artifact("flux_base.glsl", glsl_code)
                 }
             };
 
-            // HÀM MẮT & TAY GIÁC QUAN AI THỰC NGHIỆM TRÊN MÃ NGUỒN
+            // HÀM MẮT & TAY GIÁC QUAN AI
             const runSensoryUxAudit = async (targetCode) => {
                 const codeToTest = targetCode || workflowStudio.resultData.text || '';
                 if (!codeToTest.trim()) {
