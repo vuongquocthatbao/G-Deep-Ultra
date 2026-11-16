@@ -8,68 +8,86 @@
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <title>G-Deep Ultra - Không Gian Sáng Tạo & Xưởng Phim Nghệ Thuật</title>
 
-    <!-- Phông chữ & Làm ấm đường truyền API Zero-Latency -->
+    <!-- Phông chữ & Làm ấm đường truyền đa luồng (CDN + API + Media) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link rel="preconnect" href="https://generativelanguage.googleapis.com" crossorigin />
     <link rel="dns-prefetch" href="https://generativelanguage.googleapis.com" />
+    <link rel="dns-prefetch" href="https://image.pollinations.ai" />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-    <!-- Thư viện giao diện & đồ họa cốt lõi -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css" />
-    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
-    <!-- [BƯỚC NHẢY VỌT LOGIC ĐÃ KHẮC PHỤC]: Nạp Mermaid UMD độc lập không chứa lệnh import ESM -->
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@9.4.3/dist/mermaid.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    
-    <!-- Khung ứng dụng Vue 3, Cơ sở dữ liệu và Định dạng văn bản -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/4.0.1/dexie.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+    <!-- CSS thư viện phụ nạp bất đồng bộ không chặn First Paint -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github-dark.min.css" media="print" onload="this.media='all'" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" media="print" onload="this.media='all'" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css" media="print" onload="this.media='all'" />
 
-    <!-- Khởi động giao diện mượt mà -->
+    <!-- Lõi khởi chạy & Thư viện giao diện -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.13/vue.global.prod.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/4.0.1/dexie.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/15.0.7/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.4/purify.min.js"></script>
+
+    <!-- Các bộ render chuyên dụng dùng defer để giải phóng Main-Thread khi dựng khung -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/highlight.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+    <!-- Khởi động giao diện chống lộ FOUC {{ }} trước khi Vue mount -->
     <script id="gdeep-boot">
         (function() {
             'use strict';
-            function revealApp() {
+            let revealed = false;
+            function revealApp(forceFallback = false) {
+                if (revealed) return;
+                const appEl = document.getElementById('app');
+                // Chỉ gỡ v-cloak khi Vue đã mount xong hoặc chạm ngưỡng fallback an toàn
+                if (!forceFallback && appEl && appEl.hasAttribute('v-cloak') && !window.__VUE_MOUNTED__) {
+                    return;
+                }
+                revealed = true;
                 const sk = document.getElementById('initial-app-skeleton');
                 if (sk) {
                     sk.style.opacity = '0';
                     sk.style.pointerEvents = 'none';
-                    setTimeout(() => { try { sk.remove(); } catch(e) { sk.style.display = 'none'; } }, 200);
+                    setTimeout(() => { try { sk.remove(); } catch(_) { sk.style.display = 'none'; } }, 220);
                 }
-                const appEl = document.getElementById('app');
                 if (appEl) {
                     appEl.removeAttribute('v-cloak');
                     appEl.style.opacity = '1';
                 }
             }
             window.__REVEAL_APP__ = revealApp;
-            setTimeout(revealApp, 1200);
-            window.addEventListener('DOMContentLoaded', () => setTimeout(revealApp, 300));
+            setTimeout(() => revealApp(true), 3200);
         })();
     </script>
 
     <script>
         (function initCtx() {
-            if (typeof window !== 'undefined' && window.pdfjsLib) {
-                window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            function wireDeferredLibs() {
+                if (typeof window === 'undefined') return;
+                if (window.pdfjsLib) {
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                }
+                if (window.mermaid) {
+                    try {
+                        window.mermaid.initialize({
+                            startOnLoad: false,
+                            theme: 'dark',
+                            securityLevel: 'strict',
+                            fontFamily: 'Plus Jakarta Sans, sans-serif'
+                        });
+                    } catch (_) {}
+                }
             }
-            if (typeof window !== 'undefined' && window.mermaid) {
-                try {
-                    window.mermaid.initialize({
-                        startOnLoad: false,
-                        theme: 'dark',
-                        securityLevel: 'strict',
-                        fontFamily: 'Plus Jakarta Sans, sans-serif'
-                    });
-                } catch (e) {}
+            if (document.readyState === 'loading') {
+                window.addEventListener('DOMContentLoaded', wireDeferredLibs, { once: true });
+            } else {
+                wireDeferredLibs();
             }
         })();
 
@@ -91,10 +109,14 @@
                         mono: ['JetBrains Mono', 'ui-monospace', 'monospace']
                     },
                     spacing: {
-                        '4.5': '1.125rem'
+                        '0.2': '0.05rem',
+                        '4.5': '1.125rem',
+                        '9.5': '2.375rem',
+                        '18': '4.5rem',
+                        '22': '5.5rem'
                     },
                     backdropBlur: {
-                        '3xl': '36px'
+                        '3xl': '24px'
                     }
                 }
             }
@@ -296,21 +318,19 @@
                 opacity: 0.55;
             }
 
-            /* MẶT NẠ CHÂN TRỜI QUANG HỌC (SCROLL FADE MASKS) */
+            /* Tối ưu vùng cuộn chính: Loại bỏ mask-image kết hợp content-visibility gây repaint khung hình */
             main[role="main"] {
-                mask-image: linear-gradient(to bottom, transparent 0px, black 24px, black calc(100% - 28px), transparent 100%);
-                -webkit-mask-image: linear-gradient(to bottom, transparent 0px, black 24px, black calc(100% - 28px), transparent 100%);
+                contain: layout style;
+                overflow-anchor: auto;
             }
 
             .g-deep-message-card {
                 content-visibility: auto;
-                contain-intrinsic-size: 1px 180px;
-                transform: translateZ(0);
-                backface-visibility: hidden;
+                contain-intrinsic-size: auto 180px;
+                contain: layout style;
                 margin-bottom: 2.85rem !important;
                 position: relative;
                 z-index: 2;
-                transition: opacity 0.25s ease;
             }
             .g-deep-message-card:last-child {
                 margin-bottom: 1rem !important;
@@ -342,16 +362,17 @@
                 opacity: 0.75;
             }
 
-            /* Header Thấu Kính Thạch Anh Khúc Xạ Kép */
+            /* Header Thấu Kính Tinh Gọn GPU (Giảm bán kính blur tránh nghẽn băng thông bộ nhớ đồ họa) */
             .glass-header {
-                background: var(--surface-glass);
-                backdrop-filter: blur(48px) saturate(220%) brightness(105%);
-                -webkit-backdrop-filter: blur(48px) saturate(220%) brightness(105%);
+                background: rgba(7, 9, 17, 0.86);
+                backdrop-filter: blur(20px) saturate(160%);
+                -webkit-backdrop-filter: blur(20px) saturate(160%);
                 border-bottom: 1px solid var(--border-nano);
                 box-shadow: 
-                    0 4px 28px -2px rgba(0, 0, 0, 0.55),
+                    0 4px 24px -2px rgba(0, 0, 0, 0.55),
                     inset 0 -1px 0 0 rgba(255, 255, 255, 0.04);
                 contain: layout style;
+                will-change: transform;
             }
 
             .allow-select { user-select: text; -webkit-user-select: text; }
@@ -379,8 +400,8 @@
         /* ========================================================================= */
         @layer components {
             button, a, [role="button"], .btn-instant, .action-btn, summary {
-                touch-action: manipulation !important;
-                transition: transform 0.16s var(--ease-bounce), background 0.18s ease, opacity 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease !important;
+                touch-action: manipulation;
+                transition: transform 0.14s var(--ease-bounce), opacity 0.16s ease, border-color 0.16s ease, color 0.16s ease, background-color 0.16s ease;
                 cursor: pointer;
                 user-select: none;
                 -webkit-user-select: none;
@@ -394,21 +415,21 @@
             }
 
             button:active, .btn-instant:active, .action-btn:active, summary:active {
-                transform: scale(0.93) translateZ(0) !important;
-                opacity: 0.82 !important;
+                transform: scale(0.95) translateZ(0);
+                opacity: 0.85;
             }
 
-            /* Viên nén nhập liệu Neo-Capsule 2026 */
+            /* Viên nén nhập liệu Neo-Capsule 2026 (Tối ưu bán kính blur) */
             .floating-input-capsule {
-                background: rgba(12, 15, 25, 0.88);
+                background: rgba(12, 15, 25, 0.92);
                 border: 1px solid var(--border-subtle) !important;
                 box-shadow: 
-                    0 24px 64px -14px rgba(0, 0, 0, 0.92),
+                    0 20px 52px -14px rgba(0, 0, 0, 0.9),
                     0 0 0 1px rgba(255, 255, 255, 0.05) inset,
                     inset 0 1px 0 0 rgba(255, 255, 255, 0.15);
-                transition: box-shadow 0.28s var(--ease-spring), border-color 0.24s ease, background 0.24s ease, transform 0.24s var(--ease-spring);
-                backdrop-filter: blur(42px) saturate(210%);
-                -webkit-backdrop-filter: blur(42px) saturate(210%);
+                transition: border-color 0.22s ease, background-color 0.22s ease, transform 0.22s var(--ease-spring);
+                backdrop-filter: blur(20px) saturate(160%);
+                -webkit-backdrop-filter: blur(20px) saturate(160%);
             }
             .floating-input-capsule:focus-within {
                 border-color: var(--border-bright) !important;
@@ -457,74 +478,63 @@
                 box-shadow: var(--shadow-floating) !important;
             }
 
-            /* Hộp Suy Luận Phát Quang Sinh Học */
+            /* Hộp Suy Luận Phát Quang Sinh Học (Loại bỏ nested backdrop-filter trong danh sách cuộn) */
             .thought-box {
-                background: linear-gradient(175deg, rgba(29, 22, 48, 0.62) 0%, rgba(12, 10, 23, 0.9) 100%);
+                background: linear-gradient(175deg, rgba(29, 22, 48, 0.88) 0%, rgba(12, 10, 23, 0.96) 100%);
                 border-radius: 16px;
                 margin-bottom: 14px;
                 border: 1px solid rgba(192, 132, 252, 0.22);
                 border-left: 3.5px solid #c084fc !important;
                 overflow: hidden !important;
                 box-shadow: 
-                    0 8px 28px -4px rgba(192, 132, 252, 0.12),
+                    0 8px 24px -4px rgba(192, 132, 252, 0.12),
                     inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
-                backdrop-filter: blur(24px);
-                -webkit-backdrop-filter: blur(24px);
-                transition: border-color 0.22s ease, box-shadow 0.22s ease;
+                transition: border-color 0.2s ease;
             }
             .thought-box[open] {
                 border-color: rgba(192, 132, 252, 0.44);
-                box-shadow: 
-                    0 14px 38px -4px rgba(192, 132, 252, 0.2),
-                    inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
             }
             .thought-box summary::-webkit-details-marker, .thought-box summary::marker { display: none; list-style: none; }
 
             /* Terminal Điện Toán Độc Lập */
             .execution-box {
-                background: linear-gradient(175deg, rgba(11, 26, 22, 0.68) 0%, rgba(6, 15, 13, 0.92) 100%);
+                background: linear-gradient(175deg, rgba(11, 26, 22, 0.9) 0%, rgba(6, 15, 13, 0.97) 100%);
                 border-radius: 16px;
                 margin-bottom: 12px;
                 border: 1px solid rgba(52, 211, 153, 0.22);
                 border-left: 3.5px solid #34d399 !important;
                 overflow: hidden !important;
                 box-shadow: 
-                    0 8px 24px -4px rgba(52, 211, 153, 0.1),
+                    0 8px 22px -4px rgba(52, 211, 153, 0.1),
                     inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
-                backdrop-filter: blur(24px);
-                -webkit-backdrop-filter: blur(24px);
             }
             .execution-box summary::-webkit-details-marker, .execution-box summary::marker { display: none; list-style: none; }
 
             /* Tra Cứu Trực Tuyến Thời Gian Thực */
             .search-box {
-                background: linear-gradient(175deg, rgba(12, 25, 42, 0.68) 0%, rgba(7, 13, 25, 0.92) 100%);
+                background: linear-gradient(175deg, rgba(12, 25, 42, 0.9) 0%, rgba(7, 13, 25, 0.97) 100%);
                 border-radius: 16px;
                 margin-bottom: 12px;
                 border: 1px solid rgba(56, 189, 248, 0.22);
                 border-left: 3.5px solid #38bdf8 !important;
                 overflow: hidden !important;
                 box-shadow: 
-                    0 8px 24px -4px rgba(56, 189, 248, 0.1),
+                    0 8px 22px -4px rgba(56, 189, 248, 0.1),
                     inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
-                backdrop-filter: blur(24px);
-                -webkit-backdrop-filter: blur(24px);
             }
             .search-box summary::-webkit-details-marker, .search-box summary::marker { display: none; list-style: none; }
 
             /* Đối Soát Siêu Liên Kết */
             .url-grounding-box {
-                background: linear-gradient(175deg, rgba(32, 21, 14, 0.68) 0%, rgba(17, 10, 7, 0.92) 100%);
+                background: linear-gradient(175deg, rgba(32, 21, 14, 0.9) 0%, rgba(17, 10, 7, 0.97) 100%);
                 border-radius: 16px;
                 margin-bottom: 12px;
                 border: 1px solid rgba(245, 158, 11, 0.22);
                 border-left: 3.5px solid #f59e0b !important;
                 overflow: hidden !important;
                 box-shadow: 
-                    0 8px 24px -4px rgba(245, 158, 11, 0.1),
+                    0 8px 22px -4px rgba(245, 158, 11, 0.1),
                     inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
-                backdrop-filter: blur(24px);
-                -webkit-backdrop-filter: blur(24px);
             }
             .url-grounding-box summary::-webkit-details-marker, .url-grounding-box summary::marker { display: none; list-style: none; }
 
@@ -1413,7 +1423,7 @@
                                 </transition>
 
                                 <!-- Nút 3 chấm đứng mở rộng (Kích thước 32px chuẩn ngón tay) -->
-                                <button type="button" @click="activeMenuThreadId = (activeMenuThreadId === thread.id ? null : thread.id); triggerHaptic('light')" :class="['btn-instant w-5 h-5 flex items-center justify-center rounded-xl transition-colors', activeMenuThreadId === thread.id ? 'bg-white/20 text-white shadow-md' : 'text-textMuted hover:text-white hover:bg-white/10']" title="Tùy chọn">
+                                <button type="button" @click="activeMenuThreadId = (activeMenuThreadId === thread.id ? null : thread.id); triggerHaptic('light')" :class="['btn-instant w-8 h-8 flex items-center justify-center rounded-xl transition-colors', activeMenuThreadId === thread.id ? 'bg-white/20 text-white shadow-md' : 'text-textMuted hover:text-white hover:bg-white/10']" title="Tùy chọn">
                                     <svg class="w-4 h-4 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                         <circle cx="12" cy="12" r="1.5" fill="currentColor"></circle>
                                         <circle cx="12" cy="5" r="1.5" fill="currentColor"></circle>
@@ -2257,9 +2267,9 @@
 
         <!-- SCROLL TO BOTTOM BUTTON -->
         <transition name="fade">
-            <button type="button" v-if="showScrollBtn" @click="scrollToBottom(true)" class="btn-instant absolute bottom-[76px] right-3.5 md:right-8 w-5 h-5 rounded-full bg-surfaceElevated/90 backdrop-blur-md border border-white/15 text-textMuted hover:text-white shadow-2xl z-30 flex items-center justify-center p-0">
-                <lucide-icon name="arrow-down" class="w-4 h-4"></lucide-icon>
-                <span v-if="isGenerating" class="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
+            <button type="button" v-if="showScrollBtn" @click="scrollToBottom(true)" aria-label="Cuộn xuống cuối" class="btn-instant absolute bottom-[76px] right-3.5 md:right-8 w-10 h-10 rounded-full bg-surfaceElevated/95 backdrop-blur-md border border-white/15 text-textMuted hover:text-white shadow-2xl z-30 flex items-center justify-center p-0">
+                <lucide-icon name="arrow-down" class="w-5 h-5"></lucide-icon>
+                <span v-if="isGenerating" class="absolute top-0 right-0 w-2.5 h-2.5 rounded-full bg-indigo-400 animate-ping"></span>
             </button>
         </transition>
 
@@ -3277,23 +3287,29 @@ function robustJsonParse(rawString) {
 async function bitmapToBase64(bitmap, maxWidth = 512) {
     if (!bitmap) return "";
     const scale = Math.min(1.0, maxWidth / bitmap.width);
-    const w = Math.round(bitmap.width * scale);
-    const h = Math.round(bitmap.height * scale);
+    const w = Math.max(16, Math.round(bitmap.width * scale));
+    const h = Math.max(16, Math.round(bitmap.height * scale));
     const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext('2d');
     ctx.drawImage(bitmap, 0, 0, w, h);
-    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
-    const arrayBuffer = await blob.arrayBuffer();
-    let binary = '';
-    const bytes = new Uint8Array(arrayBuffer);
-    for (let i = 0; i < bytes.length; i += 8192) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.82 });
+    // Sử dụng FileReaderSync nguyên bản C++ trong Web Worker để tránh nghẽn vòng lặp JS
+    if (typeof FileReaderSync !== 'undefined') {
+        const dataUrl = new FileReaderSync().readAsDataURL(blob);
+        const commaIdx = dataUrl.indexOf(',');
+        return commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : '';
     }
-    return btoa(binary);
+    const arrayBuffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    const chunks = [];
+    for (let i = 0; i < bytes.length; i += 8192) {
+        chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 8192)));
+    }
+    return btoa(chunks.join(''));
 }
 
 // =========================================================================
-// [VÒNG LẶP TỰ HỒI QUY]: GEMINI PHÂN TÍCH FRAME TRƯỚC ĐỂ SINH FRAME SAU
+// [VÒNG LẶP TỰ HỒI QUY]: GEMINI PHÂN TÍCH FRAME TRƯỚC ĐỂ SINH FRAME SAU (CO TIMEOUT + BACKOFF)
 // =========================================================================
 async function requestAutoregressiveState(currentSecond, anchorBase64, sceneSpec, keyPool, postStatus) {
     const isGenesis = (currentSecond === 0);
@@ -3335,13 +3351,29 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
 }`;
 
     const candidateModels = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
-    let totalTries = 0;
-    const MAX_AUTOREGRESSIVE_TRIES = Math.max(12, keyPool.length * candidateModels.length);
+    const maxTries = Math.max(6, Math.min(18, keyPool.length * candidateModels.length));
+    let rawImageData = null;
 
-    while (totalTries < MAX_AUTOREGRESSIVE_TRIES) {
-        totalTries++;
-        const activeModel = candidateModels[totalTries % candidateModels.length];
-        const activeKey = keyPool[totalTries % keyPool.length];
+    if (isGenesis && sceneSpec.directImageDataUrl) {
+        let rawData = sceneSpec.directImageDataUrl;
+        if (rawData.startsWith('http') || rawData.startsWith('blob')) {
+            try {
+                const imgRes = await fetch(rawData, { signal: AbortSignal.timeout(10000) });
+                const imgBlob = await imgRes.blob();
+                const bmp = await createImageBitmap(imgBlob);
+                rawImageData = await bitmapToBase64(bmp, 512);
+                bmp.close();
+            } catch (_) { rawImageData = null; }
+        } else {
+            rawImageData = rawData.includes(',') ? rawData.split(',')[1] : rawData;
+        }
+    }
+
+    for (let attempt = 0; attempt < maxTries; attempt++) {
+        const activeModel = candidateModels[attempt % candidateModels.length];
+        const activeKey = keyPool[Math.floor(attempt / candidateModels.length) % keyPool.length];
+        const reqCtrl = new AbortController();
+        const timeoutId = setTimeout(() => reqCtrl.abort(), 22000);
 
         try {
             if (typeof postStatus === 'function') {
@@ -3349,22 +3381,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
             }
 
             const payloadContents = [{ text: directorPrompt }];
-            if (isGenesis && sceneSpec.directImageDataUrl) {
-                let rawData = sceneSpec.directImageDataUrl;
-                if (rawData.startsWith('http') || rawData.startsWith('blob')) {
-                    try {
-                        const imgRes = await fetch(rawData);
-                        const imgBlob = await imgRes.blob();
-                        const bmp = await createImageBitmap(imgBlob);
-                        rawData = await bitmapToBase64(bmp, 512);
-                        bmp.close();
-                    } catch (_) { rawData = null; }
-                } else if (rawData.includes(',')) {
-                    rawData = rawData.split(',')[1];
-                }
-                if (rawData) {
-                    payloadContents.push({ inlineData: { mimeType: "image/jpeg", data: rawData } });
-                }
+            if (isGenesis && rawImageData) {
+                payloadContents.push({ inlineData: { mimeType: "image/jpeg", data: rawImageData } });
             } else if (!isGenesis && anchorBase64) {
                 payloadContents.push({ inlineData: { mimeType: "image/jpeg", data: anchorBase64 } });
             }
@@ -3372,6 +3390,7 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
             const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${activeKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: reqCtrl.signal,
                 body: JSON.stringify({
                     contents: [{ role: 'user', parts: payloadContents }],
                     generationConfig: { temperature: 0.2, maxOutputTokens: 6000, responseMimeType: "application/json" }
@@ -3382,12 +3401,20 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                 const data = await res.json();
                 const parsed = robustJsonParse(data?.candidates?.[0]?.content?.parts?.[0]?.text);
                 if (parsed && typeof parsed.glsl_render_scene === 'string') return parsed;
+            } else if (res.status === 429 || res.status === 503) {
+                const retryHeader = Number(res.headers.get('Retry-After')) || 0;
+                const backoffMs = Math.min(8000, Math.max(retryHeader * 1000, 600 * Math.pow(1.4, attempt)));
+                await new Promise(r => setTimeout(r, backoffMs));
+                continue;
             }
         } catch (_) {}
+        finally {
+            clearTimeout(timeoutId);
+        }
 
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 450 + Math.min(2000, attempt * 200)));
     }
-    throw new Error(`[Worker] Không thể kết nối Gemini Vision sau ${totalTries} lần thử (Hết hạn mức Quota hoặc lỗi mạng).`);
+    throw new Error(`[Worker] Không thể kết nối Gemini Vision sau ${maxTries} lần thử (Hết hạn mức Quota hoặc timeout mạng).`);
 }
 
 // =========================================================================
@@ -3549,26 +3576,39 @@ self.onmessage = async function(e) {
     const heartbeatTimer = setInterval(() => self.postMessage({ type: 'HEARTBEAT', ts: Date.now() }), 2000);
     const postStatus = (text, percent = null) => self.postMessage({ type: 'STATUS', text, percent });
 
-    let sharedRenderer = null, webglCanvas = null, rawMuxer = null, activeEncoder = null;
-    let opfsFileHandle = null, opfsWritable = null;
+        let sharedRenderer = null, webglCanvas = null, rawMuxer = null, activeEncoder = null;
+    let encoderFatalError = null;
 
     try {
         const overallDuration = Number(masterScript.total_duration) || 15;
         const fps = 60;
-        const validKeyPool = (Array.isArray(apiKeys) && apiKeys.length > 0) ? apiKeys : [apiKey];
+        const validKeyPool = (Array.isArray(apiKeys) && apiKeys.length > 0) ? apiKeys.filter(Boolean) : [apiKey].filter(Boolean);
+        if (validKeyPool.length === 0) throw new Error("[Worker] Không có API Key hợp lệ.");
 
-        let width = Math.floor((masterScript.overall_resolution?.width || 1024) / 16) * 16;
-        let height = Math.floor((masterScript.overall_resolution?.height || 576) / 16) * 16;
+        let width = Math.max(256, Math.floor((masterScript.overall_resolution?.width || 1024) / 16) * 16);
+        let height = Math.max(256, Math.floor((masterScript.overall_resolution?.height || 576) / 16) * 16);
         const rawScenesList = Array.isArray(masterScript.scenes) ? masterScript.scenes : [masterScript];
         const totalScenes = rawScenesList.length;
+
+        const targetBitrate = Math.min(12000000, Math.round(width * height * fps * 0.14));
+        const candidateCodecs = ['avc1.4d002a', 'avc1.42001f', 'avc1.640028'];
+        let chosenCodecCfg = null;
+        for (const c of candidateCodecs) {
+            const support = await VideoEncoder.isConfigSupported({ codec: c, width, height, bitrate: targetBitrate, framerate: fps });
+            if (support?.supported) { chosenCodecCfg = support.config; break; }
+        }
+        if (!chosenCodecCfg) throw new Error("[Worker] Trình duyệt không hỗ trợ VideoEncoder H.264/AVC.");
 
         let muxerTarget = new (self.Mp4Muxer?.ArrayBufferTarget || self.ArrayBufferTarget)();
         rawMuxer = new (self.Mp4Muxer?.Muxer || self.Muxer)({
             target: muxerTarget, video: { codec: 'avc', width, height }, fastStart: true
         });
 
-        activeEncoder = new VideoEncoder({ output: (c, m) => rawMuxer.addVideoChunk(c, m), error: () => {} });
-        activeEncoder.configure({ codec: 'avc1.4d002a', width, height, bitrate: Math.min(12000000, Math.round(width * height * fps * 0.14)), framerate: fps });
+        activeEncoder = new VideoEncoder({
+            output: (c, m) => rawMuxer.addVideoChunk(c, m),
+            error: (err) => { encoderFatalError = err || new Error("VideoEncoder failed"); }
+        });
+        activeEncoder.configure(chosenCodecCfg);
 
         webglCanvas = new OffscreenCanvas(width, height);
         sharedRenderer = new THREE.WebGLRenderer({ canvas: webglCanvas, antialias: false, preserveDrawingBuffer: true });
@@ -3578,39 +3618,37 @@ self.onmessage = async function(e) {
 
         let cumulativeGlobalFrameCount = 0;
         const shotsLog = [];
+        const lookaheadFrameIdx = Math.floor(fps * 0.75); // Chụp ở frame 45/60 để gọi trước giây tiếp theo song song với GPU
 
-        // VÒNG LẶP SẢN XUẤT CÁC PHÂN CẢNH
+        // VÒNG LẶP SẢN XUẤT CÁC PHÂN CẢNH VỚI PIPELINING LOOKAHEAD
         for (let sIdx = 0; sIdx < totalScenes; sIdx++) {
             const sceneSpec = rawScenesList[sIdx] || {};
-            const shotDuration = Number(sceneSpec.target_duration) || Math.round(overallDuration / totalScenes);
-            
-            let anchorBase64 = null;
+            const shotDuration = Math.max(1, Number(sceneSpec.target_duration) || Math.round(overallDuration / totalScenes));
+
             let currentJitMat = null;
             let currentMesh = null;
+            let nextPlanPromise = requestAutoregressiveState(0, null, sceneSpec, validKeyPool, postStatus);
 
-            // [TỬ HUYỆT ĐÃ KHẮC PHỤC]: VÒNG LẶP TỰ HỒI QUY QUA TỪNG GIÂY
             for (let sec = 0; sec < shotDuration; sec++) {
-                
-                // 1. Nhờ Gemini phân tích frame cũ và nâng cấp Shader cho giây mới
-                const aiPlan = await requestAutoregressiveState(sec, anchorBase64, sceneSpec, validKeyPool, postStatus);
+                const aiPlan = await nextPlanPromise;
+                nextPlanPromise = null;
 
-                // 2. Tự sửa lỗi và Biên dịch lại Shader (Có cơ chế Fail-Safe Procedural Shader)
                 let glslCode = String(aiPlan.glsl_render_scene || '').replace(/```(?:glsl)?/gi, '').replace(/```/g, '').trim();
                 let check = compileAndVerifyShader(sharedRenderer.getContext(), `precision highp float; uniform vec2 uResolution; uniform float uTime; ${glslCode} void main() { gl_FragColor = render_scene(vec2(0.0), 0.0); }`);
-                
+
                 if (!check.success) {
                     postStatus(`[Giây ${sec}] Lỗi cú pháp GPU, tự động phục hồi...`);
                     try {
                         const fixKey = validKeyPool[sec % validKeyPool.length];
                         const fixRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${fixKey}`, {
                             method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            signal: AbortSignal.timeout(15000),
                             body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: `Sửa lỗi GLSL: ${check.log}\n\nMã:\n${glslCode}\n\nTrả về DUY NHẤT mã GLSL hoàn chỉnh của hàm render_scene.` }] }] })
                         });
                         const hText = (await fixRes.json())?.candidates?.[0]?.content?.parts?.[0]?.text;
                         if (hText) glslCode = hText.replace(/```(?:glsl)?/gi, '').replace(/```/g, '').trim();
                     } catch (_) {}
 
-                    // Thử nghiệm lại sau khi sửa, nếu vẫn lỗi áp dụng Shader bảo chứng hình học
                     check = compileAndVerifyShader(sharedRenderer.getContext(), `precision highp float; uniform vec2 uResolution; uniform float uTime; ${glslCode} void main() { gl_FragColor = render_scene(vec2(0.0), 0.0); }`);
                     if (!check.success) {
                         glslCode = `vec4 render_scene(vec2 uv, float time) {
@@ -3629,28 +3667,37 @@ self.onmessage = async function(e) {
                 currentMesh = new THREE.Mesh(vmQuadGeo, currentJitMat);
                 vmScene.add(currentMesh);
 
-                // 3. Render 60 Frame cho giây này
                 for (let f = 0; f < fps; f++) {
+                    if (encoderFatalError || activeEncoder.state !== 'configured') {
+                        throw encoderFatalError || new Error("VideoEncoder đã đóng bất thường.");
+                    }
                     const currentGlobalSecond = sec + (f / fps);
                     currentJitMat.uniforms.uTime.value = currentGlobalSecond;
 
                     sharedRenderer.render(vmScene, vmCamera);
 
-                    // CHỤP ẢNH TẠI FRAME CUỐI CỦA GIÂY ĐỂ LÀM MỎ NEO TỰ HỒI QUY
-                    if (f === fps - 1) {
+                    // Gối đầu gọi API giây tiếp theo ngay tại frame 45/60 để chạy song song với 15 frame GPU còn lại
+                    if (f === lookaheadFrameIdx && sec + 1 < shotDuration) {
                         const bmp = await createImageBitmap(webglCanvas);
-                        anchorBase64 = await bitmapToBase64(bmp, 512);
+                        const anchorB64 = await bitmapToBase64(bmp, 512);
                         bmp.close();
+                        nextPlanPromise = requestAutoregressiveState(sec + 1, anchorB64, sceneSpec, validKeyPool, null);
                     }
 
-                    while (activeEncoder.encodeQueueSize > 4) await new Promise(r => setTimeout(r, 6));
+                    let waitTicks = 0;
+                    while (activeEncoder.encodeQueueSize > 4) {
+                        if (encoderFatalError || activeEncoder.state !== 'configured' || ++waitTicks > 500) {
+                            throw encoderFatalError || new Error("VideoEncoder backpressure deadlock timeout.");
+                        }
+                        await new Promise(r => setTimeout(r, 8));
+                    }
 
                     const vFrame = new VideoFrame(webglCanvas, { timestamp: Math.round(cumulativeGlobalFrameCount * (1000000 / fps)) });
                     activeEncoder.encode(vFrame, { keyFrame: (cumulativeGlobalFrameCount % (fps * 2) === 0) });
                     vFrame.close();
                     cumulativeGlobalFrameCount++;
 
-                    if (f % 30 === 0) postStatus(`[Giây ${sec}] Đang kết xuất hình học tự tiến hóa (${Math.round((f/fps)*100)}%)...`);
+                    if (f % 30 === 0) postStatus(`[Giây ${sec}] Đang kết xuất song song (${Math.round((f/fps)*100)}%)...`);
                 }
             }
 
@@ -3782,25 +3829,48 @@ self.onmessage = async function(e) {
         const SAFETY_SETTINGS = GDeepMasterConfig.Security.SafetySettings;
         const DOMPURIFY_CONFIG = GDeepMasterConfig.Security.DomPurify;
 
-        // BỘ QUẢN LÝ LƯU TRỮ PHÂN TẦNG (SESSION & LOCAL STORAGE)
+                // BỘ QUẢN LÝ LƯU TRỮ PHÂN TẦNG CÓ CHỐNG TRÀN QUOTA & LRU EVICTION
         const StorageManager = {
             get(key, defaultValue, isJson = false) {
-                const store = (key === GDeepMasterConfig.Storage.DRAFT_INPUT) ? sessionStorage : localStorage;
-                const val = store.getItem(key);
-                if (val === null) return defaultValue;
-                if (isJson) {
-                    try { return JSON.parse(val) ?? defaultValue; } catch (_) { return defaultValue; }
+                try {
+                    const store = (key === GDeepMasterConfig.Storage.DRAFT_INPUT) ? sessionStorage : localStorage;
+                    const val = store.getItem(key);
+                    if (val === null) return defaultValue;
+                    if (isJson) {
+                        try { return JSON.parse(val) ?? defaultValue; } catch (_) { return defaultValue; }
+                    }
+                    if (typeof defaultValue === 'boolean') return val === 'true';
+                    return val;
+                } catch (_) {
+                    return defaultValue;
                 }
-                if (typeof defaultValue === 'boolean') return val === 'true';
-                return val;
             },
             set(key, value, isJson = false) {
                 const store = (key === GDeepMasterConfig.Storage.DRAFT_INPUT) ? sessionStorage : localStorage;
-                store.setItem(key, isJson ? JSON.stringify(value) : String(value));
+                const serialized = isJson ? JSON.stringify(value) : String(value);
+                try {
+                    store.setItem(key, serialized);
+                } catch (err) {
+                    // Tự động dọn các bản backup tin nhắn cũ nếu chạm ngưỡng QuotaExceededError (~5MB)
+                    if (store === localStorage) {
+                        try {
+                            const backupPrefix = GDeepMasterConfig.Storage.MSG_BACKUP_PREFIX;
+                            const keysToPurge = [];
+                            for (let i = 0; i < localStorage.length; i++) {
+                                const k = localStorage.key(i);
+                                if (k && k.startsWith(backupPrefix) && k !== key) keysToPurge.push(k);
+                            }
+                            keysToPurge.slice(0, Math.max(1, Math.ceil(keysToPurge.length / 2))).forEach(k => localStorage.removeItem(k));
+                            store.setItem(key, serialized);
+                            return;
+                        } catch (_) {}
+                    }
+                    console.warn('[StorageManager] Quota exceeded for key:', key, err);
+                }
             },
             remove(key) {
-                localStorage.removeItem(key);
-                sessionStorage.removeItem(key);
+                try { localStorage.removeItem(key); } catch (_) {}
+                try { sessionStorage.removeItem(key); } catch (_) {}
             }
         };
 
@@ -3823,35 +3893,48 @@ self.onmessage = async function(e) {
         };
         SynapticOcularMatrix.init();
 
-        // NƠ-RON TỰ PHỤC HỒI THỰC THI (COGNITIVE RESILIENCE NEURON)
+        // NƠ-RON TỰ PHỤC HỒI THỰC THI CÓ CIRCUIT-BREAKER TELEMETRY
         class CognitiveNeuron {
             constructor(id, schemaContract, processorFn, defaultFallback) {
                 this.id = id;
                 this.schemaContract = schemaContract || (() => true);
                 this.processor = processorFn || (async (x) => x);
                 this.fallback = defaultFallback;
+                this.errorCount = 0;
             }
             fireSync(inputData) {
                 try { return this.processor(inputData); }
-                catch (_) { return typeof this.fallback === 'function' ? this.fallback(inputData) : this.fallback; }
+                catch (err) {
+                    this.errorCount++;
+                    return typeof this.fallback === 'function' ? this.fallback(inputData, err) : this.fallback;
+                }
             }
             async fire(inputData) {
                 try { return await this.processor(inputData); }
                 catch (err) {
                     if (err?.name === 'AbortError') throw err;
-                    return typeof this.fallback === 'function' ? this.fallback(inputData) : this.fallback;
+                    this.errorCount++;
+                    return typeof this.fallback === 'function' ? this.fallback(inputData, err) : this.fallback;
                 }
             }
         }
 
         const SynapticNeuralMesh = {
             neurons: new Map(),
+            faults: [],
             register(id, schema, proc, fb) {
                 const n = new CognitiveNeuron(id, schema, proc, fb);
                 this.neurons.set(id, n);
                 return n;
             },
             get(id) { return this.neurons.get(id); },
+            _recordFault(scope, err) {
+                this.faults.push({ scope, msg: err?.message || String(err), ts: Date.now() });
+                if (this.faults.length > 50) this.faults.shift();
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('gdeep:neuron-fault', { detail: { scope, error: err } }));
+                }
+            },
             autoWrapObject(prefix, obj) {
                 if (!obj || typeof obj !== 'object') return obj;
                 const hotSkip = new Set(['compileMarkdown', 'getImgSrc', 'checkScroll', 'getFileIconName', 'isLongUserMsg', 'getExecutionLogsHtml', 'getExecutionLogsText']);
@@ -3865,15 +3948,15 @@ self.onmessage = async function(e) {
                                 try { return await orig.apply(obj, args); }
                                 catch (err) {
                                     if (err?.name === 'AbortError') throw err;
-                                    console.warn(`[${prefix}.${k}]`, err);
-                                    return null;
+                                    this._recordFault(`${prefix}.${k}`, err);
+                                    throw err; // Không nuốt ngoại lệ trả về null gây hỏng luồng dữ liệu
                                 }
                             }
                             : (...args) => {
                                 try { return orig.apply(obj, args); }
                                 catch (err) {
-                                    console.warn(`[${prefix}.${k}]`, err);
-                                    return null;
+                                    this._recordFault(`${prefix}.${k}`, err);
+                                    throw err;
                                 }
                             };
                         wrapped.__synapticWrapped = true;
@@ -3885,7 +3968,7 @@ self.onmessage = async function(e) {
             intercept(scopeName, bag) { return this.autoWrapObject(scopeName, bag); }
         };
 
-        // BẢN GHI TIN NHẮN PHẢN HỒI NGUYÊN KHỐI CHUẨN VUE 3 REACTIVE (DUY NHẤT 1 ĐỊNH NGHĨA)
+        // BẢN GHI TIN NHẮN PHẢN HỒI CHUẨN VUE 3 REACTIVE (LAZY MARKDOWN COMPILE CHỐNG ĐƠ KHI MỞ LỊCH SỬ DÀI)
         function createMessageRecord(data = {}) {
             const now = (typeof getMonotonicTimestamp === 'function') ? getMonotonicTimestamp() : Date.now();
             const initialContent = data.content !== undefined && data.content !== null ? String(data.content) : '';
@@ -3902,7 +3985,8 @@ self.onmessage = async function(e) {
                 attachments: Array.isArray(data.attachments) ? data.attachments : [],
                 versions: initialVersions,
                 activeVersionIndex: Number(data.activeVersionIndex) || 0,
-                htmlContent: data.htmlContent || (initialContent ? (typeof compileMarkdownSync === 'function' ? compileMarkdownSync(initialContent, true) : initialContent) : ''),
+                // Trì hoãn biên dịch HTML cho tới khi thẻ thực sự hiển thị trong visibleMessages (trừ khi eagerCompile = true)
+                htmlContent: data.htmlContent || (data.eagerCompile && initialContent && typeof compileMarkdownSync === 'function' ? compileMarkdownSync(initialContent, true) : ''),
                 createdAt: data.createdAt || now,
                 isThinking: Boolean(data.isThinking),
                 userOpenedThought: data.userOpenedThought !== undefined ? Boolean(data.userOpenedThought) : (data.role === 'system_thought'),
@@ -3958,8 +4042,14 @@ self.onmessage = async function(e) {
                 "A49 [Groupthink Inquisitor]", "A50 [Supreme Architect]"
             ]);
 
-            // 2. BỘ ĐIỀU PHỐI ĐA TÍN HIỆU & PHÂN LUỒNG TẢI TRỌNG 2026 (MULTI-LANE ADAPTIVE ROUTER)
+                        // 2. BỘ ĐIỀU PHỐI ĐA TÍN HIỆU & PHÂN LUỒNG TẢI TRỌNG 2026 (MULTI-LANE ADAPTIVE ROUTER)
             const DataIntakeRouter = {
+                _LANE_CONFIG: Object.freeze({
+                    EXECUTE_MULTI_AGENT_WORKFLOW: { lane: 'WORKFLOW_ORCHESTRATION', priority: 1, maxKnowledgeChars: 36000 },
+                    EXECUTE_CINEMA_PRODUCTION: { lane: 'GPU_CINEMA_PIPELINE', priority: 2, maxKnowledgeChars: 12000 },
+                    EXECUTE_IMAGE_PARAMETRIC_GPU: { lane: 'GPU_IMAGE_SYNTHESIS', priority: 2, maxKnowledgeChars: 8000 },
+                    EXECUTE_STREAMING_CHAT: { lane: 'REALTIME_COGNITIVE_STREAM', priority: 0, maxKnowledgeChars: 48000 }
+                }),
                 parseAndRoute(promptText, attachments = [], flags = {}) {
                     const { enableCinema = false, enableImage = false, isWorkflowMode = false } = flags;
                     let cleanPrompt = (promptText || '').trim();
@@ -3969,13 +4059,7 @@ self.onmessage = async function(e) {
                     const isSlashCinema = /^\/(?:cinema|video|phim)\b/i.test(lower);
                     const isSlashImage = /^\/(?:image|draw|anh)\b/i.test(lower);
 
-                    const directives = {
-                        aspectRatio: null,
-                        durationSec: null,
-                        workflowOutputFormat: null,
-                        imageStyle: null
-                    };
-
+                    const directives = { aspectRatio: null, durationSec: null, workflowOutputFormat: null, imageStyle: null };
                     let route = 'EXECUTE_STREAMING_CHAT';
                     let displayPrefix = '';
 
@@ -3993,7 +4077,6 @@ self.onmessage = async function(e) {
                     } else if (enableCinema || isSlashCinema) {
                         route = 'EXECUTE_CINEMA_PRODUCTION';
                         cleanPrompt = cleanPrompt.replace(/^\/(?:cinema|video|phim)\s*/i, '');
-                        // Bắt tham số inline tùy chọn ở đầu lệnh (ví dụ: /cinema 30s 9:16 ...)
                         for (let p = 0; p < 2; p++) {
                             const arMatch = cleanPrompt.match(/^(16:9|9:16|1:1|21:9)\b\s*/i);
                             if (arMatch) { directives.aspectRatio = arMatch[1]; cleanPrompt = cleanPrompt.slice(arMatch[0].length).trim(); continue; }
@@ -4009,35 +4092,52 @@ self.onmessage = async function(e) {
                         displayPrefix = '🎨 Tạo hình ảnh:';
                     }
 
-                    // Phân loại hồ sơ tải trọng đa phương thức (Payload Workload Classifier)
-                    const imgFiles = attachments.filter(a => a.mimeType?.startsWith('image/'));
-                    const videoFiles = attachments.filter(a => a.isFullVideo || a.mimeType?.startsWith('video/'));
-                    const audioFiles = attachments.filter(a => a.mimeType?.startsWith('audio/'));
-                    const dataFiles = attachments.filter(a => /\.(csv|tsv|json|xlsx|xls|parquet|py|ipynb|sql)$/i.test(a.name || '') || a.mimeType?.includes('csv'));
-                    const docFiles = attachments.filter(a => a.mimeType === 'application/pdf' || /\.(pdf|txt|md|docx?)$/i.test(a.name || ''));
+                    // Phân luồng 1-pass vào các bucket chuyên biệt để cấp phát ưu tiên băng thông & ngân sách token
+                    const buckets = { images: [], videos: [], audios: [], structuredData: [], documents: [], other: [] };
+                    let totalPayloadBytes = 0;
+                    for (const att of (attachments || [])) {
+                        const mime = (att?.mimeType || '').toLowerCase();
+                        const name = (att?.name || '').toLowerCase();
+                        totalPayloadBytes += Number(att?.sizeBytes || att?.data?.length || 0);
+                        if (mime.startsWith('image/')) buckets.images.push(att);
+                        else if (att?.isFullVideo || mime.startsWith('video/')) buckets.videos.push(att);
+                        else if (mime.startsWith('audio/')) buckets.audios.push(att);
+                        else if (/\.(csv|tsv|json|xlsx|xls|parquet|py|ipynb|sql)$/i.test(name) || mime.includes('csv')) buckets.structuredData.push(att);
+                        else if (mime === 'application/pdf' || /\.(pdf|txt|md|docx?)$/i.test(name)) buckets.documents.push(att);
+                        else buckets.other.push(att);
+                    }
+
                     const detectedUrls = (typeof UrlGroundingEngine !== 'undefined') ? UrlGroundingEngine.extractUrls(cleanPrompt) : [];
+                    const laneMeta = this._LANE_CONFIG[route] || this._LANE_CONFIG.EXECUTE_STREAMING_CHAT;
 
                     return {
                         route,
+                        lane: laneMeta.lane,
+                        priority: laneMeta.priority,
+                        maxKnowledgeChars: laneMeta.maxKnowledgeChars,
                         displayPrefix,
                         cleanPrompt,
                         directives,
+                        detectedUrls,
+                        buckets,
                         profiles: {
-                            hasVideo: videoFiles.length > 0,
-                            hasAudio: audioFiles.length > 0,
-                            hasImage: imgFiles.length > 0,
-                            hasStructuredData: dataFiles.length > 0,
-                            hasDocuments: docFiles.length > 0,
+                            hasVideo: buckets.videos.length > 0,
+                            hasAudio: buckets.audios.length > 0,
+                            hasImage: buckets.images.length > 0,
+                            hasStructuredData: buckets.structuredData.length > 0,
+                            hasDocuments: buckets.documents.length > 0,
                             hasUrls: detectedUrls.length > 0,
                             urlCount: detectedUrls.length,
-                            primaryImage: imgFiles[0] || null,
-                            totalFiles: attachments.length
+                            primaryImage: buckets.images[0] || null,
+                            totalFiles: attachments.length,
+                            totalPayloadBytes,
+                            isHeavyPayload: totalPayloadBytes > 4 * 1024 * 1024 || buckets.videos.length > 0
                         }
                     };
                 }
             };
 
-            // 3. ĐỘNG CƠ TẠO ẢNH FLUX TĨNH LẶNG (SILENT FLUX CANVAS PIPELINE)
+            // 3. ĐỘNG CƠ TẠO ẢNH FLUX TĨNH LẶNG (LOẠI BỎ PROXY CÔNG CỘNG RÒ RỈ & THÊM TIMEOUT CHỐNG TREO)
             const FluxImagePipeline = {
                 COOLDOWN_MS: 46000,
                 async execute(context) {
@@ -4055,7 +4155,7 @@ self.onmessage = async function(e) {
 
                     targetMsg.content = '';
                     targetMsg.htmlContent = `
-                        <div class="my-4 rounded-3xl overflow-hidden border border-white/5 bg-[#070911]/90 backdrop-blur-2xl shadow-2xl p-3 sm:p-5">
+                        <div class="my-4 rounded-3xl overflow-hidden border border-white/5 bg-[#070911]/90 shadow-2xl p-3 sm:p-5">
                             <div class="flex items-center justify-between gap-2 mb-3.5 px-1 opacity-70">
                                 <span class="text-xs font-bold text-white/70 tracking-wide">G-Deep Vision Canvas</span>
                                 <span class="text-[9px] font-mono px-2 py-0.5 rounded-full border border-white/10 bg-white/5 text-white/50 animate-pulse uppercase tracking-wider">GENERATING...</span>
@@ -4077,28 +4177,25 @@ self.onmessage = async function(e) {
                     const fullPrompt = `${cleanPrompt}, ${styleDef.desc}`;
 
                     const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${w}&height=${h}&seed=${seed}&model=${fluxModel}&nologo=true`;
-                    localStorage.setItem('gdeep_last_flux_gen_ts', Date.now());
+                    StorageManager.set('gdeep_last_flux_gen_ts', Date.now());
 
                     try {
                         let finalDataUrl = fluxUrl;
                         let blob = null;
                         for (let attempt = 0; attempt < 2 && !blob; attempt++) {
                             if (abortController?.signal?.aborted) return;
+                            const combinedSignal = abortController?.signal
+                                ? AbortSignal.any([abortController.signal, AbortSignal.timeout(25000)])
+                                : AbortSignal.timeout(25000);
                             try {
-                                const res = await fetch(fluxUrl, { signal: abortController?.signal });
+                                const res = await fetch(fluxUrl, { signal: combinedSignal });
                                 if (res.ok) { blob = await res.blob(); break; }
                                 if (res.status === 429 || res.status === 503) {
-                                    await new Promise(r => setTimeout(r, 3500));
+                                    await new Promise(r => setTimeout(r, 2500 * (attempt + 1)));
                                     continue;
                                 }
                             } catch (e) {
-                                if (e?.name === 'AbortError') return;
-                            }
-                            try {
-                                const proxyRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(fluxUrl)}`, { signal: abortController?.signal });
-                                if (proxyRes.ok) { blob = await proxyRes.blob(); break; }
-                            } catch (e) {
-                                if (e?.name === 'AbortError') return;
+                                if (e?.name === 'AbortError' && abortController?.signal?.aborted) return;
                             }
                         }
 
@@ -4138,15 +4235,55 @@ self.onmessage = async function(e) {
                 }
             };
 
-            // 4. ĐỘNG CƠ STREAM CHAT PHÂN TÁCH 3 KÊNH (COGNITIVE STREAM PIPELINE - FULL KHÔI PHỤC)
+                        // 4. ĐỘNG CƠ STREAM CHAT PHÂN TÁCH 3 KÊNH (LỌC TRI THỨC RAG THEO NGÂN SÁCH & TIMEOUT GROUNDING)
             const CognitiveStreamPipeline = {
+                _selectRelevantKnowledge(files, queryText, maxCharsBudget = 48000) {
+                    if (!Array.isArray(files) || files.length === 0) return '';
+                    const rawTotal = files.reduce((acc, f) => acc + (f?.content?.length || 0), 0);
+                    // Nếu tổng dung lượng nhỏ gọn, nạp nguyên văn không mất chi tiết
+                    if (rawTotal <= maxCharsBudget) {
+                        return files.map((f, i) => `--- [Tài liệu #${i + 1}: ${f.name}] ---\n${f.content}\n[HẾT TÀI LIỆU #${i + 1}]`).join('\n\n');
+                    }
+                    // Nếu kho tri thức lớn, chia chunk 1800 ký tự và chấm điểm BM25-lite theo từ khóa truy vấn
+                    const qTokens = new Set((queryText || '').toLowerCase().match(/[a-z0-9_à-ỹ]{2,}/gi) || []);
+                    const scoredChunks = [];
+                    files.forEach((f, fIdx) => {
+                        const content = String(f?.content || '');
+                        const step = 1500, size = 1800;
+                        for (let pos = 0, cIdx = 0; pos < content.length; pos += step, cIdx++) {
+                            const chunk = content.slice(pos, pos + size);
+                            let score = (cIdx === 0) ? 0.5 : 0; // Ưu tiên giữ phần mở đầu của mỗi tài liệu
+                            if (qTokens.size > 0) {
+                                const lowerChunk = chunk.toLowerCase();
+                                qTokens.forEach(tok => { if (lowerChunk.includes(tok)) score += 1; });
+                            }
+                            scoredChunks.push({ score, fIdx, cIdx, fileName: f.name, chunk });
+                        }
+                    });
+                    scoredChunks.sort((a, b) => (b.score - a.score) || (a.fIdx - b.fIdx) || (a.cIdx - b.cIdx));
+                    let usedChars = 0;
+                    const selected = [];
+                    for (const item of scoredChunks) {
+                        if (usedChars + item.chunk.length > maxCharsBudget) continue;
+                        selected.push(item);
+                        usedChars += item.chunk.length;
+                    }
+                    selected.sort((a, b) => (a.fIdx - b.fIdx) || (a.cIdx - b.cIdx));
+                    return selected.map(s => `--- [Trích đoạn ${s.fileName} #${s.cIdx + 1}] ---\n${s.chunk}`).join('\n\n');
+                },
+                _withTimeout(promise, ms, fallbackVal) {
+                    return Promise.race([
+                        promise.catch(() => fallbackVal),
+                        new Promise(resolve => setTimeout(() => resolve(fallbackVal), ms))
+                    ]);
+                },
                 async execute(ctx) {
                     const {
                         text, attachments, isRegenerate, targetThreadId, targetModelObj, activeGem, currentMessages,
                         dbWriteQueue, enableDeepThinking, enableCodeExecution, enableGoogleSearch, serperApiKeys,
                         currentStreamingMsg, abortController, searchStatusText, fetchStreamWithFaultTolerance,
                         performSerperSearch, dispatchBackgroundTaskWithFallback, scheduleDbSave, scrollToBottom,
-                        triggerHaptic, triggerGenerateFollowUps
+                        triggerHaptic, triggerGenerateFollowUps, routeContext
                     } = ctx;
 
                     let thoughtMsg = null, executionMsg = null;
@@ -4162,26 +4299,28 @@ self.onmessage = async function(e) {
                         (activeGem.instruction || "").trim()
                     ].join('\n');
 
-                    // NẠP TRỰC TIẾP KHO TRI THỨC ĐỘC QUYỀN CỦA CHUYÊN GIA VÀO ATTENTION CỐT LÕI
+                    // NẠP KHO TRI THỨC CÓ LỌC NGÂN SÁCH (TRÁNH PHÌNH CONTEXT & CHẬM TTFT)
                     if (activeGem.knowledgeFiles && Array.isArray(activeGem.knowledgeFiles) && activeGem.knowledgeFiles.length > 0) {
-                        systemPrompt += `\n\n========================================================\n` +
-                            `[KHO TÀI LIỆU TRI THỨC ĐỘC QUYỀN CỦA CHUYÊN GIA ${(activeGem.name || '').toUpperCase()}]:\n` +
-                            activeGem.knowledgeFiles.map((f, i) => `--- [Tài liệu #${i+1}: ${f.name}] ---\n${f.content}\n[HẾT TÀI LIỆU #${i+1}]`).join('\n\n') +
-                            `\n[CHỈ DẪN ATTENTION BẮT BUỘC: Bạn đại diện cho Chuyên gia này, phải nắm vững và ưu tiên sử dụng toàn bộ dữ kiện, tài liệu trong kho tri thức trên để trả lời.]\n========================================================`;
+                        const knowledgeBudget = routeContext?.maxKnowledgeChars || (currentTierName === 'LITE' ? 16000 : 48000);
+                        const selectedKnowledge = this._selectRelevantKnowledge(activeGem.knowledgeFiles, text, knowledgeBudget);
+                        if (selectedKnowledge) {
+                            systemPrompt += `\n\n========================================================\n` +
+                                `[KHO TÀI LIỆU TRI THỨC ĐỘC QUYỀN CỦA CHUYÊN GIA ${(activeGem.name || '').toUpperCase()}]:\n` +
+                                selectedKnowledge +
+                                `\n[CHỈ DẪN ATTENTION BẮT BUỘC: Ưu tiên sử dụng các dữ kiện đã trích xuất từ kho tri thức trên để trả lời chính xác.]\n========================================================`;
+                        }
                     }
 
-                    // KHẮC SÂU KÝ ỨC VĨNH CỬU TRỰC TIẾP VÀO ATTENTION CỦA SYSTEM PROMPT
-                    const permanentMemoryText = EpistemicMemoryEngine.getFormattedSystemInstructionMemory(targetThreadId);
-                    if (permanentMemoryText) {
-                        systemPrompt += `\n\n${permanentMemoryText}`;
-                    }
-                    const globalUserAxioms = EpistemicMemoryEngine.getGlobalAxioms();
-                    if (globalUserAxioms) {
-                        systemPrompt += `\n\n[TIÊN ĐỀ SỞ THÍCH NGƯỜI DÙNG]:\n${globalUserAxioms}`;
+                    // KHẮC SÂU KÝ ỨC VĨNH CỬU CÓ BẢO VỆ BIÊN
+                    if (typeof EpistemicMemoryEngine !== 'undefined') {
+                        const permanentMemoryText = EpistemicMemoryEngine.getFormattedSystemInstructionMemory(targetThreadId);
+                        if (permanentMemoryText) systemPrompt += `\n\n${permanentMemoryText}`;
+                        const globalUserAxioms = EpistemicMemoryEngine.getGlobalAxioms();
+                        if (globalUserAxioms) systemPrompt += `\n\n[TIÊN ĐỀ SỞ THÍCH NGƯỜI DÙNG]:\n${globalUserAxioms}`;
                     }
 
-                    // CHẠY SONG SONG URL GROUNDING + GOOGLE SEARCH GROUNDING (LOẠI BỎ CHỜ TUẦN TỰ)
-                    const detectedUrls = (typeof UrlGroundingEngine !== 'undefined') ? UrlGroundingEngine.extractUrls(text) : [];
+                    // CHẠY SONG SONG URL GROUNDING + GOOGLE SEARCH VỚI TIMEOUT CỨNG 8000ms (KHÔNG TREO LUỒNG CHAT)
+                    const detectedUrls = routeContext?.detectedUrls || ((typeof UrlGroundingEngine !== 'undefined') ? UrlGroundingEngine.extractUrls(text) : []);
                     const needSerper = Boolean(enableGoogleSearch && serperApiKeys.length > 0);
                     if (detectedUrls.length > 0 || needSerper) {
                         searchStatusText.value = detectedUrls.length > 0 && needSerper
@@ -4190,14 +4329,14 @@ self.onmessage = async function(e) {
 
                         const [fetchedSources, searchRes] = await Promise.all([
                             detectedUrls.length > 0
-                                ? UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => { searchStatusText.value = st; })
+                                ? this._withTimeout(UrlGroundingEngine.inspectAllUrls(detectedUrls, (st) => { searchStatusText.value = st; }), 8000, [])
                                 : Promise.resolve([]),
                             needSerper
-                                ? performSerperSearch(text.slice(0, 160))
+                                ? this._withTimeout(performSerperSearch(text.slice(0, 160)), 6500, null)
                                 : Promise.resolve(null)
                         ]);
 
-                        const validSources = (fetchedSources || []).filter(s => s.success);
+                        const validSources = (fetchedSources || []).filter(s => s?.success);
                         if (validSources.length > 0) {
                             botMsg.urlSources = validSources;
                             systemPrompt += "\n\n[DỮ LIỆU ĐỐI SOÁT LIÊN KẾT TRỰC TIẾP]:\n" + validSources.map((s, i) => `[${i+1}] ${s.title} (${s.url}): ${s.text.slice(0, 3500)}`).join('\n');
@@ -4219,13 +4358,13 @@ self.onmessage = async function(e) {
                         }
                     }
 
-                    // KỊCH BẢN KHÔI PHỤC: MA TRẬN 50 BẢN THỂ TƯ DUY ĐỐI KHÁNG
+                    // KỊCH BẢN KHÔI PHỤC: NẠP ĐỦ TOÀN BỘ MA TRẬN 50 BẢN THỂ TƯ DUY ĐỐI KHÁNG
                     if (enableDeepThinking) {
                         systemPrompt += [
                             "\n\n========================================================",
                             `[HỆ THỨC TƯ DUY NGUYÊN BẢN: G-DEEP ${currentTierName} - MA TRẬN 50 BẢN THỂ PHẢN BIỆN]`,
-                            "Kích hoạt ma trận 50 bản thể để tự thẩm định và phản biện giả thuyết:",
-                            SENATE_50_AGENTS.slice(0, 15).join(', ') + "...",
+                            "Kích hoạt toàn bộ ma trận 50 bản thể để tự thẩm định và phản biện giả thuyết:",
+                            SENATE_50_AGENTS.join(' | '),
                             "Quy định định dạng suy luận: `[G-Deep · Tên Bản Thể]: phân tích luận điểm...`",
                             "TUYỆT ĐỐI KHÔNG in thẻ <think> ra câu trả lời chính thức.",
                             "========================================================"
