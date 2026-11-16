@@ -1581,9 +1581,13 @@
                                             </div>
                                             <div class="flex items-center justify-between gap-1 text-[9px]">
                                                 <select v-model="ag.modelId" class="bg-black/40 text-[9.5px] text-indigo-300 font-mono rounded-md px-1.5 py-0.5 outline-none border border-white/5">
-                                                    <option value="gemini-3.7-flash">3.7 Flash (Reasoning)</option>
-                                                    <option value="gemini-3.6-flash">3.6 Flash (Workhorse)</option>
-                                                    <option value="gemini-2.5-flash">2.5 Flash (Synthesis)</option>
+                                                    <option value="gemini-4-hydrogen">4 Hydrogen</option>
+                                                    <option value="gemini-3.8-flash">3.8 Flash</option>
+                                                    <option value="gemini-3.6-flash">3.6 Flash</option>
+                                                    <option value="gemini-3.5-flash-lite">3.5 Flash Lite</option>
+                                                    <option value="gemini-3.1-flash-lite">3.1 Flash Lite</option>
+                                                    <option value="gemini-2.5-flash">2.5 Flash</option>
+                                                    <option value="gemini-2.5-flash-lite">2.5 Flash Lite</option>
                                                 </select>
                                                 <div class="flex items-center gap-1 flex-wrap">
                                                     <label class="flex items-center gap-1 cursor-pointer px-1.5 py-0.5 rounded border text-[8.5px]" :class="ag.tools.search ? 'bg-sky-500/20 border-sky-500/30 text-sky-300' : 'border-white/5 text-textMuted'" title="Google Live Search">
@@ -3309,8 +3313,50 @@ async function bitmapToBase64(bitmap, maxWidth = 512) {
 }
 
 // =========================================================================
-// [VÒNG LẶP TỰ HỒI QUY]: GEMINI PHÂN TÍCH FRAME TRƯỚC ĐỂ SINH FRAME SAU (CO TIMEOUT + BACKOFF)
+// [VÒNG LẶP TỰ HỒI QUY]: GEMINI PHÂN TÍCH FRAME TRƯỚC ĐỂ SINH FRAME SAU (CO TIMEOUT + BACKOFF + SMART KEY-MODEL CACHE)
 // =========================================================================
+const _workerInvalidKeys = new Set();
+const _workerUnsupportedPairs = new Set();
+const _workerVerifiedPairs = new Set();
+const _workerPairCooldown = new Map();
+const _workerPairLastUsed = new Map();
+
+function buildWorkerGenerationConfig(modelId, maxOutputTokens = 6000) {
+    const id = String(modelId || '').toLowerCase();
+    // Thế hệ 3.8 / 4.x: Không hỗ trợ 'minimal', bỏ sampling params (temperature)
+    if (id.startsWith('gemini-4') || id.startsWith('gemini-3.8') || id.startsWith('gemini-3.7')) {
+        return {
+            maxOutputTokens,
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingLevel: "low", includeThoughts: false }
+        };
+    }
+    // Thế hệ 3.6 / 3.5-lite / 3.1-lite / 3-flash-preview: Dùng 'minimal', bỏ sampling params
+    if (id.startsWith('gemini-3')) {
+        return {
+            maxOutputTokens,
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingLevel: "minimal", includeThoughts: false }
+        };
+    }
+    // Thế hệ 2.5 Pro: Tối thiểu budget 128
+    if (id.startsWith('gemini-2.5-pro')) {
+        return {
+            temperature: 0.2,
+            maxOutputTokens,
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingBudget: 128, includeThoughts: false }
+        };
+    }
+    // Thế hệ 2.5 Flash / 2.5 Flash-Lite: Tắt thinking bằng budget 0
+    return {
+        temperature: 0.2,
+        maxOutputTokens,
+        responseMimeType: "application/json",
+        thinkingConfig: { thinkingBudget: 0, includeThoughts: false }
+    };
+}
+
 async function requestAutoregressiveState(currentSecond, anchorBase64, sceneSpec, keyPool, postStatus) {
     const isGenesis = (currentSecond === 0);
     let visualContext = "";
@@ -3350,8 +3396,8 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
   }
 }`;
 
-    const candidateModels = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"];
-    const maxTries = Math.max(6, Math.min(18, keyPool.length * candidateModels.length));
+    const candidateModels = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite"];
+    const maxTries = Math.max(8, Math.min(24, keyPool.length * candidateModels.length));
     let rawImageData = null;
 
     if (isGenesis && sceneSpec.directImageDataUrl) {
@@ -3369,9 +3415,53 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
         }
     }
 
+    const pickNextPair = () => {
+        const now = Date.now();
+        const readyVerified = [];
+        const readyUntested = [];
+        const coolingFallback = [];
+
+        for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {
+            const mId = candidateModels[mIdx];
+            for (const kStr of keyPool) {
+                if (!kStr || _workerInvalidKeys.has(kStr)) continue;
+                const pairId = `${mId}::${kStr}`;
+                if (_workerUnsupportedPairs.has(pairId)) continue;
+
+                const cdUntil = _workerPairCooldown.get(pairId) || 0;
+                const lastUsed = _workerPairLastUsed.get(pairId) || 0;
+                if (cdUntil > now) {
+                    coolingFallback.push({ mId, kStr, pairId, cdUntil });
+                    continue;
+                }
+                if (_workerVerifiedPairs.has(pairId)) {
+                    readyVerified.push({ mId, kStr, pairId, lastUsed, mIdx });
+                } else {
+                    readyUntested.push({ mId, kStr, pairId, lastUsed, mIdx });
+                }
+            }
+        }
+
+        if (readyVerified.length > 0) {
+            readyVerified.sort((a, b) => (a.lastUsed - b.lastUsed) || (a.mIdx - b.mIdx));
+            return readyVerified[0];
+        }
+        if (readyUntested.length > 0) {
+            readyUntested.sort((a, b) => (a.mIdx - b.mIdx) || (a.lastUsed - b.lastUsed));
+            return readyUntested[0];
+        }
+        if (coolingFallback.length > 0) {
+            coolingFallback.sort((a, b) => a.cdUntil - b.cdUntil);
+            return coolingFallback[0];
+        }
+        return null;
+    };
+
     for (let attempt = 0; attempt < maxTries; attempt++) {
-        const activeModel = candidateModels[attempt % candidateModels.length];
-        const activeKey = keyPool[Math.floor(attempt / candidateModels.length) % keyPool.length];
+        const selected = pickNextPair();
+        if (!selected) break;
+
+        const { mId: activeModel, kStr: activeKey, pairId } = selected;
         const reqCtrl = new AbortController();
         const timeoutId = setTimeout(() => reqCtrl.abort(), 22000);
 
@@ -3393,26 +3483,42 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON:
                 signal: reqCtrl.signal,
                 body: JSON.stringify({
                     contents: [{ role: 'user', parts: payloadContents }],
-                    generationConfig: { temperature: 0.2, maxOutputTokens: 6000, responseMimeType: "application/json" }
+                    generationConfig: buildWorkerGenerationConfig(activeModel, 6000)
                 })
             });
 
             if (res.ok) {
+                _workerPairLastUsed.set(pairId, Date.now());
+                _workerPairCooldown.delete(pairId);
+                _workerVerifiedPairs.add(pairId);
+
                 const data = await res.json();
-                const parsed = robustJsonParse(data?.candidates?.[0]?.content?.parts?.[0]?.text);
+                const parts = data?.candidates?.[0]?.content?.parts || [];
+                const textOut = parts.filter(p => p && !p.thought && typeof p.text === 'string').map(p => p.text).join('');
+                const parsed = robustJsonParse(textOut);
                 if (parsed && typeof parsed.glsl_render_scene === 'string') return parsed;
-            } else if (res.status === 429 || res.status === 503) {
-                const retryHeader = Number(res.headers.get('Retry-After')) || 0;
-                const backoffMs = Math.min(8000, Math.max(retryHeader * 1000, 600 * Math.pow(1.4, attempt)));
-                await new Promise(r => setTimeout(r, backoffMs));
-                continue;
+            } else {
+                const errData = await res.json().catch(() => ({}));
+                const errMsg = String(errData?.error?.message || '').toLowerCase();
+
+                if (res.status === 401 || (res.status === 400 && errMsg.includes('api key'))) {
+                    _workerInvalidKeys.add(activeKey);
+                } else if (res.status === 404 || res.status === 403 || (res.status === 429 && /\blimit:\s*0\b/i.test(errMsg))) {
+                    _workerUnsupportedPairs.add(pairId);
+                } else if (res.status === 429 || res.status === 503) {
+                    const retryHeader = Number(res.headers.get('Retry-After')) || 0;
+                    const backoffMs = Math.min(15000, Math.max(retryHeader * 1000, 1500 * Math.pow(1.4, attempt)));
+                    _workerPairCooldown.set(pairId, Date.now() + backoffMs);
+                    await new Promise(r => setTimeout(r, Math.min(2000, backoffMs)));
+                    continue;
+                }
             }
         } catch (_) {}
         finally {
             clearTimeout(timeoutId);
         }
 
-        await new Promise(r => setTimeout(r, 450 + Math.min(2000, attempt * 200)));
+        await new Promise(r => setTimeout(r, 350));
     }
     throw new Error(`[Worker] Không thể kết nối Gemini Vision sau ${maxTries} lần thử (Hết hạn mức Quota hoặc timeout mạng).`);
 }
@@ -3828,6 +3934,359 @@ self.onmessage = async function(e) {
         const GDeepDataProtocol = GDeepMasterConfig.Protocol;
         const SAFETY_SETTINGS = GDeepMasterConfig.Security.SafetySettings;
         const DOMPURIFY_CONFIG = GDeepMasterConfig.Security.DomPurify;
+
+        // =========================================================================================
+        // [BỘ ĐẶC TẢ KỸ THUẬT GOOGLE GEMINI API FREE TIER (CẬP NHẬT 11/2026) & BỘ CHUYỂN ĐỔI PAYLOAD]
+        // Tham chiếu chuẩn REST v1beta theo từng thế hệ: 4.x / 3.8 / 3.6 & 3.5-Lite / 3.x Preview / 2.5
+        // =========================================================================================
+        const GeminiModelSpecRegistry = Object.freeze({
+            resolve(modelId) {
+                const id = String(modelId || '').replace(/^models\//i, '').trim().toLowerCase();
+
+                // 1. Thế hệ Gemini 4 Hydrogen (Flagship Free Tier mới nhất)
+                // - thinkingLevel: low | medium | high | xhigh (CẤM 'minimal', CẤM thinkingBudget)
+                // - Bỏ temperature / topP / topK; Cấm kết thúc contents bằng role: 'model'
+                if (id.startsWith('gemini-4-hydrogen')) {
+                    return {
+                        id, generation: '4', family: '4-hydrogen',
+                        thinkingMode: 'level',
+                        supportedLevels: ['low', 'medium', 'high', 'xhigh'],
+                        defaultLevel: 'high', deepLevel: 'high', minimalLevel: 'low',
+                        supportsSamplingParams: false,
+                        prohibitsModelPrefill: true,
+                        supportsToolCombination: true,
+                        googleSearchFreeTierAvailable: false,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 2. Các biến thể Gemini 4 khác (Argon / Carbon / 4.x tương lai)
+                if (id.startsWith('gemini-4')) {
+                    return {
+                        id, generation: '4', family: '4-general',
+                        thinkingMode: 'level',
+                        supportedLevels: ['low', 'medium', 'high'],
+                        defaultLevel: 'medium', deepLevel: 'high', minimalLevel: 'low',
+                        supportsSamplingParams: false,
+                        prohibitsModelPrefill: true,
+                        supportsToolCombination: true,
+                        googleSearchFreeTierAvailable: false,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 3. Thế hệ Gemini 3.8 Flash (và alias 3.7 Flash)
+                // - thinkingLevel: low | medium | high (CẤM 'minimal' -> trả về HTTP 400)
+                // - Bỏ temperature / topP / topK; Cấm prefill model
+                if (id.startsWith('gemini-3.8') || id.startsWith('gemini-3.7')) {
+                    return {
+                        id, generation: '3.8', family: '3.8-flash',
+                        thinkingMode: 'level',
+                        supportedLevels: ['low', 'medium', 'high'],
+                        defaultLevel: 'medium', deepLevel: 'high', minimalLevel: 'low',
+                        supportsSamplingParams: false,
+                        prohibitsModelPrefill: true,
+                        supportsToolCombination: true,
+                        googleSearchFreeTierAvailable: false,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 4. Thế hệ Gemini 3.6 Flash & 3.5 Flash / 3.5 Flash-Lite
+                // - thinkingLevel: minimal | low | medium | high (3.5-lite mặc định minimal)
+                // - Bỏ temperature / topP / topK theo migration guide 3.6+; Cấm prefill model
+                if (id.startsWith('gemini-3.6') || id.startsWith('gemini-3.5')) {
+                    const isLite = id.includes('lite');
+                    return {
+                        id, generation: isLite ? '3.5-lite' : '3.6', family: isLite ? '3.5-flash-lite' : '3.6-flash',
+                        thinkingMode: 'level',
+                        supportedLevels: ['minimal', 'low', 'medium', 'high'],
+                        defaultLevel: isLite ? 'minimal' : 'medium', deepLevel: 'high', minimalLevel: 'minimal',
+                        supportsSamplingParams: false,
+                        prohibitsModelPrefill: true,
+                        supportsToolCombination: true,
+                        googleSearchFreeTierAvailable: false,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 5. Thế hệ Gemini 3 Pro / 3.1 Pro Preview (không hỗ trợ minimal)
+                if (id.startsWith('gemini-3.1-pro') || id.startsWith('gemini-3-pro')) {
+                    return {
+                        id, generation: '3.1', family: '3-pro',
+                        thinkingMode: 'level',
+                        supportedLevels: ['low', 'medium', 'high'],
+                        defaultLevel: 'high', deepLevel: 'high', minimalLevel: 'low',
+                        supportsSamplingParams: false, // Giữ mặc định 1.0 theo khuyến nghị Google Gemini 3
+                        prohibitsModelPrefill: false,
+                        supportsToolCombination: true,
+                        googleSearchFreeTierAvailable: false,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 6. Thế hệ Gemini 3.1 Flash-Lite & 3 Flash Preview
+                if (id.startsWith('gemini-3')) {
+                    const isLite = id.includes('lite');
+                    return {
+                        id, generation: '3.0', family: isLite ? '3.1-flash-lite' : '3-flash-preview',
+                        thinkingMode: 'level',
+                        supportedLevels: ['minimal', 'low', 'medium', 'high'],
+                        defaultLevel: isLite ? 'minimal' : 'high', deepLevel: 'high', minimalLevel: 'minimal',
+                        supportsSamplingParams: false, // Không hạ temperature dưới 1.0 trên Gemini 3
+                        prohibitsModelPrefill: false,
+                        supportsToolCombination: isLite,
+                        googleSearchFreeTierAvailable: false,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 7. Thế hệ Gemini 2.5 Pro (Dùng thinkingBudget, tối thiểu 128, không được set 0)
+                if (id.startsWith('gemini-2.5-pro')) {
+                    return {
+                        id, generation: '2.5', family: '2.5-pro',
+                        thinkingMode: 'budget',
+                        budgetMin: 128, budgetMax: 32768, canDisableThinking: false,
+                        minimalBudget: 128, deepBudget: -1,
+                        supportsSamplingParams: true,
+                        prohibitsModelPrefill: false,
+                        supportsToolCombination: false,
+                        googleSearchFreeTierAvailable: true,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 8. Thế hệ Gemini 2.5 Flash-Lite (thinkingBudget: 0 để tắt, hoặc 512..24576; 1..511 lỗi 400)
+                if (id.startsWith('gemini-2.5-flash-lite')) {
+                    return {
+                        id, generation: '2.5', family: '2.5-flash-lite',
+                        thinkingMode: 'budget',
+                        budgetMin: 512, budgetMax: 24576, canDisableThinking: true,
+                        minimalBudget: 0, deepBudget: 24576,
+                        supportsSamplingParams: true,
+                        prohibitsModelPrefill: false,
+                        supportsToolCombination: false,
+                        googleSearchFreeTierAvailable: true,
+                        maxOutputTokens: 65536, maxContextTokens: 1048576
+                    };
+                }
+
+                // 9. Thế hệ Gemini 2.5 Flash mặc định (thinkingBudget: 0..24576 hoặc -1)
+                return {
+                    id, generation: '2.5', family: '2.5-flash',
+                    thinkingMode: 'budget',
+                    budgetMin: 0, budgetMax: 24576, canDisableThinking: true,
+                    minimalBudget: 0, deepBudget: -1,
+                    supportsSamplingParams: true,
+                    prohibitsModelPrefill: false,
+                    supportsToolCombination: false,
+                    googleSearchFreeTierAvailable: true,
+                    maxOutputTokens: 65536, maxContextTokens: 1048576
+                };
+            }
+        });
+
+        const GeminiPayloadAdapter = Object.freeze({
+            buildPayload(modelId, rawPayload = {}, options = {}) {
+                const spec = GeminiModelSpecRegistry.resolve(modelId);
+                const {
+                    deepThinking = null,
+                    thinkingEffort = 'high',
+                    taskType = 'chat', // 'chat' | 'background' | 'probe' | 'agent' | 'json'
+                    stripGoogleSearch = false,
+                    stripJsonMime = false
+                } = options;
+
+                // Sao chép cấu trúc nhẹ (không nhân bản chuỗi base64 media đính kèm)
+                const req = { ...rawPayload };
+                const srcGen = (rawPayload.generationConfig && typeof rawPayload.generationConfig === 'object')
+                    ? { ...rawPayload.generationConfig }
+                    : {};
+                if (rawPayload.generationConfig?.thinkingConfig) {
+                    srcGen.thinkingConfig = { ...rawPayload.generationConfig.thinkingConfig };
+                }
+
+                // 1. Xử lý Sampling Params (Gemini 3+/4 bỏ hoàn toàn temperature/topP/topK)
+                if (!spec.supportsSamplingParams) {
+                    delete srcGen.temperature;
+                    delete srcGen.topP;
+                    delete srcGen.topK;
+                }
+
+                // 2. Xử lý JSON MimeType nếu cần fallback
+                if (stripJsonMime) {
+                    delete srcGen.responseMimeType;
+                    delete srcGen.responseSchema;
+                }
+
+                // 3. Chuẩn hóa thinkingConfig chính xác tuyệt đối theo thế hệ model
+                const buildLevelConfig = (wantedLevel, includeThoughts) => {
+                    let lvl = String(wantedLevel || spec.defaultLevel).toLowerCase();
+                    if (!spec.supportedLevels.includes(lvl)) {
+                        lvl = (lvl === 'minimal') ? spec.minimalLevel
+                            : (lvl === 'xhigh') ? 'high'
+                            : spec.defaultLevel;
+                    }
+                    return { thinkingLevel: lvl, includeThoughts: Boolean(includeThoughts) };
+                };
+
+                const buildBudgetConfig = (wantedBudget, includeThoughts) => {
+                    let b = Number(wantedBudget);
+                    if (!Number.isFinite(b)) b = spec.minimalBudget;
+                    if (b === -1) return { thinkingBudget: -1, includeThoughts: Boolean(includeThoughts) };
+                    if (b <= 0) {
+                        b = spec.canDisableThinking ? 0 : spec.budgetMin;
+                    } else {
+                        b = Math.max(spec.budgetMin || 0, Math.min(spec.budgetMax || 24576, Math.round(b)));
+                    }
+                    return { thinkingBudget: b, includeThoughts: Boolean(includeThoughts) };
+                };
+
+                if (taskType === 'probe' || taskType === 'background') {
+                    // Tác vụ nền & kiểm tra key: giảm tối đa thinking tokens để tăng tốc & chống cạn quota
+                    srcGen.thinkingConfig = (spec.thinkingMode === 'level')
+                        ? buildLevelConfig(spec.minimalLevel, false)
+                        : buildBudgetConfig(spec.minimalBudget, false);
+                } else if (deepThinking === true) {
+                    const lvl = (thinkingEffort === 'xhigh' && spec.supportedLevels?.includes('xhigh')) ? 'xhigh' : spec.deepLevel;
+                    srcGen.thinkingConfig = (spec.thinkingMode === 'level')
+                        ? buildLevelConfig(lvl, true)
+                        : buildBudgetConfig(spec.deepBudget, true);
+                } else if (deepThinking === false) {
+                    srcGen.thinkingConfig = (spec.thinkingMode === 'level')
+                        ? buildLevelConfig(spec.minimalLevel, false)
+                        : buildBudgetConfig(spec.minimalBudget, false);
+                } else if (srcGen.thinkingConfig) {
+                    const tc = srcGen.thinkingConfig;
+                    const inc = tc.includeThoughts !== undefined ? Boolean(tc.includeThoughts) : false;
+                    if (spec.thinkingMode === 'level') {
+                        let mappedLvl = tc.thinkingLevel;
+                        if (!mappedLvl && tc.thinkingBudget !== undefined) {
+                            const b = Number(tc.thinkingBudget);
+                            mappedLvl = (b === 0) ? spec.minimalLevel : (b > 8192 || b === -1) ? spec.deepLevel : 'medium';
+                        }
+                        srcGen.thinkingConfig = buildLevelConfig(mappedLvl || spec.defaultLevel, inc);
+                    } else {
+                        let mappedBudget = tc.thinkingBudget;
+                        if (mappedBudget === undefined && tc.thinkingLevel) {
+                            const l = String(tc.thinkingLevel).toLowerCase();
+                            mappedBudget = (l === 'minimal') ? spec.minimalBudget
+                                : (l === 'low') ? Math.max(spec.budgetMin || 0, 1024)
+                                : (l === 'medium') ? 8192
+                                : spec.deepBudget;
+                        }
+                        srcGen.thinkingConfig = buildBudgetConfig(mappedBudget, inc);
+                    }
+                } else {
+                    // Mặc định an toàn cho agent/request thông thường nếu caller không truyền thinkingConfig
+                    srcGen.thinkingConfig = (spec.thinkingMode === 'level')
+                        ? buildLevelConfig(spec.defaultLevel, false)
+                        : buildBudgetConfig(spec.minimalBudget, false);
+                }
+
+                // 4. Đảm bảo maxOutputTokens đủ chỗ cho cả thinking + output (tránh MAX_TOKENS rỗng)
+                const cannotZeroOutThinking = (spec.thinkingMode === 'level' && spec.minimalLevel !== 'minimal')
+                    || (spec.thinkingMode === 'budget' && !spec.canDisableThinking);
+
+                if (taskType === 'probe') {
+                    srcGen.maxOutputTokens = cannotZeroOutThinking ? 256 : 32;
+                } else if (taskType === 'background') {
+                    const requestedCap = Number(srcGen.maxOutputTokens) || 1024;
+                    const safeFloor = cannotZeroOutThinking ? 1024 : 256;
+                    srcGen.maxOutputTokens = Math.min(spec.maxOutputTokens, Math.max(safeFloor, requestedCap));
+                } else {
+                    srcGen.maxOutputTokens = Math.min(spec.maxOutputTokens, Number(srcGen.maxOutputTokens) || spec.maxOutputTokens);
+                }
+
+                req.generationConfig = srcGen;
+
+                // 5. Chuẩn hóa contents & chống lỗi model-prefill trên Gemini 3.6+ / 4
+                if (Array.isArray(rawPayload.contents)) {
+                    const cleanTurns = rawPayload.contents
+                        .filter(t => t && (t.role === 'user' || t.role === 'model') && Array.isArray(t.parts) && t.parts.length > 0)
+                        .map(t => ({ role: t.role, parts: t.parts.slice() }));
+
+                    if (spec.prohibitsModelPrefill && cleanTurns.length > 0 && cleanTurns[cleanTurns.length - 1].role === 'model') {
+                        if (cleanTurns.length > 1) cleanTurns.pop();
+                        else cleanTurns.push({ role: 'user', parts: [{ text: 'Hãy tiếp tục phản hồi.' }] });
+                    }
+                    req.contents = cleanTurns.length > 0 ? cleanTurns : [{ role: 'user', parts: [{ text: ' ' }] }];
+                }
+
+                // 6. Xử lý tương thích Tools theo thế hệ & Free Tier
+                if (Array.isArray(rawPayload.tools)) {
+                    let adaptedTools = rawPayload.tools.map(t => (t && typeof t === 'object') ? { ...t } : t);
+                    if (stripGoogleSearch) {
+                        adaptedTools = adaptedTools.filter(t => !t.googleSearch && !t.google_search);
+                    }
+                    if (!spec.supportsToolCombination && adaptedTools.length > 1) {
+                        const hasCodeExec = adaptedTools.some(t => t.codeExecution || t.code_execution);
+                        if (hasCodeExec) {
+                            adaptedTools = adaptedTools.filter(t => t.codeExecution || t.code_execution);
+                        } else {
+                            adaptedTools = [adaptedTools[0]];
+                        }
+                    }
+                    if (adaptedTools.length > 0) req.tools = adaptedTools;
+                    else delete req.tools;
+                }
+
+                if (!req.safetySettings && typeof SAFETY_SETTINGS !== 'undefined') {
+                    req.safetySettings = SAFETY_SETTINGS;
+                }
+
+                return req;
+            },
+
+            classifyApiError(statusCode, errorMsg = '') {
+                const status = Number(statusCode) || 0;
+                const msg = String(errorMsg || '').toLowerCase();
+
+                // 1. Key chết / bị vô hiệu hóa / chưa bật API ở mức project
+                if (
+                    status === 401 ||
+                    (status === 400 && (msg.includes('api key') || msg.includes('api_key_invalid') || msg.includes('key not valid'))) ||
+                    (status === 403 && (msg.includes('api_key_service_blocked') || msg.includes('api has not been used') || msg.includes('is disabled') || msg.includes('api_key_invalid')))
+                ) {
+                    return 'invalid_key';
+                }
+
+                // 2. Free Tier bị khóa hẳn model (limit: 0) -> coi như không hỗ trợ model này trên key hiện tại
+                if ((status === 429 || status === 403) && (/\blimit:\s*0\b/i.test(msg) || /"quota_?value":\s*"?0"?/i.test(msg) || msg.includes('free_tier_requests') && msg.includes('0'))) {
+                    return 'unsupported_model';
+                }
+
+                // 3. Tính năng trả phí bị chặn trên Free Tier (ví dụ Google Search Grounding trên 3.x/4.x)
+                if ((status === 403 || status === 400) && (msg.includes('google_search') || msg.includes('grounding') || msg.includes('search tool') || msg.includes('url_context'))) {
+                    return 'feature_tier_restricted';
+                }
+
+                // 4. Lỗi tham số payload (KHÔNG phải lỗi key -> không phạt key)
+                if (status === 400 && (
+                    msg.includes('thinking') || msg.includes('temperature') || msg.includes('top_p') || msg.includes('top_k') ||
+                    msg.includes('responsemimetype') || msg.includes('response_mime_type') || msg.includes('prefill') ||
+                    msg.includes('role') || msg.includes('tool') || msg.includes('invalid argument') || msg.includes('unknown name')
+                )) {
+                    return 'payload_error';
+                }
+
+                // 5. Model không tồn tại / chưa mở quyền truy cập cho key
+                if (status === 404 || status === 403) {
+                    return 'unsupported_model';
+                }
+
+                // 6. Hết hạn mức ngày (RPD - Reset lúc 00:00 giờ Thái Bình Dương PT) vs Hết hạn mức phút (RPM/TPM)
+                if (status === 429) {
+                    if (msg.includes('perday') || msg.includes('per_day') || msg.includes('per day') || msg.includes('rpd') || msg.includes('daily')) {
+                        return 'quota_rpd';
+                    }
+                    return 'quota_rpm';
+                }
+
+                // 7. Lỗi tạm thời từ máy chủ hoặc mạng
+                return 'server_transient';
+            }
+        });
 
                 // BỘ QUẢN LÝ LƯU TRỮ PHÂN TẦNG CÓ CHỐNG TRÀN QUOTA & LRU EVICTION
         const StorageManager = {
@@ -4677,18 +5136,21 @@ self.onmessage = async function(e) {
                         }
                     };
 
-                    const resolveThinking = (mId) => {
-                        if (!enableDeepThinking) return undefined;
-                        return /gemini-(?:3|4)/i.test(mId)
-                            ? { thinkingLevel: "HIGH", includeThoughts: true }
-                            : { thinkingBudget: 24576, includeThoughts: true };
+                    // Giao việc dựng thinkingConfig, bỏ temperature trên 3.6+/4 và tương thích tools cho GeminiPayloadAdapter
+                    // theo đúng từng model đích khi xoay tua hoặc fallback
+                    const streamAdaptOptions = {
+                        deepThinking: Boolean(enableDeepThinking),
+                        taskType: 'chat'
                     };
 
-                    const performStream = async (payload) => {
+                    const performStream = async (payloadTemplate) => {
                         return await fetchStreamWithFaultTolerance(
-                            payload, targetModelObj.apiEndpointIds || [targetModelObj.id || "gemini-2.5-flash"],
-                            (chunk) => processChunk(chunk), abortController.signal,
-                            (working) => { activeModelId = working; botMsg.usedModel = working; }
+                            payloadTemplate,
+                            targetModelObj.apiEndpointIds || [targetModelObj.id || "gemini-3.6-flash"],
+                            (chunk) => processChunk(chunk),
+                            abortController.signal,
+                            (working) => { activeModelId = working; botMsg.usedModel = working; },
+                            streamAdaptOptions
                         );
                     };
 
@@ -4697,19 +5159,20 @@ self.onmessage = async function(e) {
                     );
                     history = sanitizeHistoryForGemini(history, false);
 
-                    // HỖ TRỢ TÌM KIẾM BẢN ĐỊA & ĐIỆN TOÁN ĐỘC LẬP TỰ ĐỘNG (NGĂN XUNG ĐỘT 400)
+                    // Tự động cấp tools: trên Gemini 3.5+/4 cho phép kết hợp (Paid Tier),
+                    // trên 2.5 hoặc Free Tier không hỗ trợ Search sẽ tự động tinh gọn trong GeminiPayloadAdapter / FaultTolerance
                     const activeTools = [];
                     if (enableCodeExecution) {
                         activeTools.push({ codeExecution: {} });
-                    } else if (enableGoogleSearch && (!serperApiKeys || !serperApiKeys.length)) {
-                        // Gemini API cấm kết hợp đồng thời codeExecution và googleSearch trong cùng request
+                    }
+                    if (enableGoogleSearch && (!serperApiKeys || !serperApiKeys.length)) {
                         activeTools.push({ googleSearch: {} });
                     }
 
                     const initialPayload = {
                         systemInstruction: { parts: [{ text: systemPrompt }] },
                         contents: history,
-                        generationConfig: { temperature: 0.2, maxOutputTokens: 65536, thinkingConfig: resolveThinking(activeModelId) },
+                        generationConfig: { temperature: 0.2, maxOutputTokens: 65536 },
                         safetySettings: SAFETY_SETTINGS
                     };
                     if (activeTools.length > 0) initialPayload.tools = activeTools;
@@ -4729,7 +5192,7 @@ self.onmessage = async function(e) {
 
                     // VÒNG LẶP TIẾP NỐI VÔ HẠN PHẪU THUẬT (SURGICAL CONTINUATION SPLICER)
                     let continueSteps = 0;
-                    while (continueSteps < 100 && (!abortController || !abortController.isUserInitiated)) {
+                    while (continueSteps < 100 && (!abortController || (!abortController.isUserInitiated && !abortController.signal?.aborted))) {
                         const isThinkingInterrupted = (thoughtMsg && thoughtMsg.isThinking);
                         const activeBuf = isThinkingInterrupted ? rawThoughtBuffer : rawMarkdownBuffer;
                         const boundary = analyzeContinuationBoundary(activeBuf);
@@ -4758,7 +5221,7 @@ self.onmessage = async function(e) {
                         const contPayload = {
                             systemInstruction: { parts: [{ text: systemPrompt }] },
                             contents: sanitizeHistoryForGemini(contHistory, true),
-                            generationConfig: { temperature: 0.2, maxOutputTokens: 65536, thinkingConfig: resolveThinking(activeModelId) },
+                            generationConfig: { temperature: 0.2, maxOutputTokens: 65536 },
                             safetySettings: SAFETY_SETTINGS
                         };
                         if (enableCodeExecution) contPayload.tools = [{ codeExecution: {} }];
@@ -8858,11 +9321,106 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     };
 
             // =========================================================================
-            // [BỘ QUẢN LÝ MA TRẬN MODEL - KEY KHẢ DỤNG VĨNH VIỄN (PERSISTENT AFFINITY MATRIX)]
-            // Định dạng lưu trữ: [ [modelId, [key1, key2, ...]], [modelId2, [key3, ...]] ]
-            // =========================================================================
+            // [BỘ QUẢN LÝ MA TRẬN MODEL - KEY KHẢ DỤNG VĨNH VIỄN (PERSISTENT AFFINITY MATRIX v2)]
+            // Lưu trữ vĩnh viễn trên LocalStorage (sống sót sau F5/Reload):
+            // - Cặp (modelId, key) đã xác thực, tốc độ phản hồi EWMA, chuỗi thành công, lịch sử RPM/RPD
+            // - Khóa cách ly vĩnh viễn (unsupported/invalid) để không bao giờ lãng phí request
+            // - Thuật toán xoay tua thông minh: Fair Weighted LRU + Health Banding + RPD Midnight PT
+            // =========================================================================================
             const ModelKeyMatrixManager = {
                 STORAGE_KEY: 'gdeep_verified_model_keys_matrix',
+                AFFINITY_KEY: 'gdeep_key_model_affinity_v2',
+                _memState: null,
+
+                getNextPacificMidnightTs(nowMs = Date.now()) {
+                    try {
+                        const parts = new Intl.DateTimeFormat('en-US', {
+                            timeZone: 'America/Los_Angeles',
+                            hour12: false,
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                        }).formatToParts(new Date(nowMs));
+                        const getNum = (t) => Number(parts.find(p => p.type === t)?.value || 0);
+                        const h = getNum('hour') % 24;
+                        const m = getNum('minute');
+                        const s = getNum('second');
+                        const elapsedTodayMs = ((h * 3600) + (m * 60) + s) * 1000;
+                        // Cộng thêm 5 phút dự phòng sau 00:00 giờ Thái Bình Dương (PT)
+                        return nowMs + Math.max(60000, 86400000 - elapsedTodayMs) + 300000;
+                    } catch (_) {
+                        return nowMs + 8 * 3600000;
+                    }
+                },
+
+                _ensureState() {
+                    if (this._memState) return this._memState;
+                    let loaded = null;
+                    try {
+                        const raw = localStorage.getItem(this.AFFINITY_KEY);
+                        if (raw) {
+                            const parsed = JSON.parse(raw);
+                            if (parsed && typeof parsed === 'object' && parsed.pairs && parsed.global) {
+                                loaded = parsed;
+                            }
+                        }
+                    } catch (_) {}
+
+                    if (!loaded) {
+                        loaded = { version: 2, global: {}, pairs: {} };
+                    }
+
+                    // Hợp nhất dữ liệu từ ma trận legacy (nếu người dùng đã có từ phiên bản trước)
+                    try {
+                        const legacy = this.loadMatrix();
+                        legacy.forEach(item => {
+                            if (Array.isArray(item) && typeof item[0] === 'string' && Array.isArray(item[1])) {
+                                const mId = item[0];
+                                if (!loaded.pairs[mId]) loaded.pairs[mId] = {};
+                                item[1].forEach((kStr, idx) => {
+                                    if (!kStr) return;
+                                    if (!loaded.pairs[mId][kStr]) {
+                                        loaded.pairs[mId][kStr] = {
+                                            status: 'supported',
+                                            wasVerified: true,
+                                            verifiedAt: Date.now(),
+                                            lastUsed: idx + 1,
+                                            cooldownUntil: 0,
+                                            failCount: 0,
+                                            successCount: 1,
+                                            streak: 1,
+                                            avgLatencyMs: 0,
+                                            quotaExhaustedType: null
+                                        };
+                                    }
+                                });
+                            }
+                        });
+                    } catch (_) {}
+
+                    this._memState = loaded;
+                    return this._memState;
+                },
+
+                _persistState() {
+                    const state = this._ensureState();
+                    try {
+                        localStorage.setItem(this.AFFINITY_KEY, JSON.stringify(state));
+                    } catch (_) {}
+
+                    // Đồng bộ song song sang định dạng mảng legacy để tương thích 100% mọi nơi
+                    const legacyArr = [];
+                    for (const [modelId, keyMap] of Object.entries(state.pairs)) {
+                        const verifiedEntries = Object.entries(keyMap)
+                            .filter(([, info]) => info && info.status !== 'unsupported' && (info.status === 'supported' || info.wasVerified))
+                            .sort((a, b) => (a[1].lastUsed || 0) - (b[1].lastUsed || 0))
+                            .map(([kStr]) => kStr);
+                        if (verifiedEntries.length > 0) {
+                            legacyArr.push([modelId, verifiedEntries]);
+                        }
+                    }
+                    this.saveMatrix(legacyArr);
+                },
 
                 loadMatrix() {
                     try {
@@ -8881,50 +9439,358 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                 },
 
                 getVerifiedKeys(modelId) {
+                    if (!modelId) return [];
+                    const state = this._ensureState();
+                    const keyMap = state.pairs?.[modelId];
+                    if (keyMap) {
+                        const now = Date.now();
+                        return Object.entries(keyMap)
+                            .filter(([kStr, info]) => {
+                                const g = state.global?.[kStr];
+                                if (g && g.status === 'invalid' && (!g.cooldownUntil || g.cooldownUntil > now)) return false;
+                                return info && info.status !== 'unsupported' && (info.status === 'supported' || info.wasVerified);
+                            })
+                            .sort((a, b) => (a[1].lastUsed || 0) - (b[1].lastUsed || 0))
+                            .map(([kStr]) => kStr);
+                    }
                     const matrix = this.loadMatrix();
                     const entry = matrix.find(item => Array.isArray(item) && item[0] === modelId);
                     return (entry && Array.isArray(entry[1])) ? entry[1] : [];
                 },
 
-                recordSuccess(modelId, keyString) {
-                    if (!modelId || !keyString) return;
-                    const matrix = this.loadMatrix();
-                    let entry = matrix.find(item => Array.isArray(item) && item[0] === modelId);
-                    if (entry) {
-                        // Xoay tua hàng đợi LRU: đưa key vừa dùng thành công xuống cuối danh sách
-                        entry[1] = entry[1].filter(k => k !== keyString);
-                        entry[1].push(keyString);
-                    } else {
-                        matrix.push([modelId, [keyString]]);
+                // Phục hồi toàn bộ cặp Model-Key & điểm sức khỏe khi tải lại trang (F5)
+                hydratePool(poolArray) {
+                    if (!Array.isArray(poolArray)) return poolArray;
+                    const state = this._ensureState();
+                    const now = Date.now();
+
+                    for (const k of poolArray) {
+                        if (!k || !k.key) continue;
+                        if (!k.models) k.models = {};
+
+                        const gState = state.global[k.key];
+                        if (gState) {
+                            if (gState.status === 'invalid' && gState.cooldownUntil > now) {
+                                k.status = 'invalid';
+                                k.cooldownUntil = gState.cooldownUntil;
+                            } else if (gState.status === 'cooldown' && gState.cooldownUntil > now) {
+                                k.status = 'cooldown';
+                                k.cooldownUntil = gState.cooldownUntil;
+                            } else if (k.status !== 'invalid' || (k.cooldownUntil && k.cooldownUntil <= now)) {
+                                k.status = 'active';
+                                k.cooldownUntil = 0;
+                            }
+                            k.successCount = Math.max(k.successCount || 0, gState.successCount || 0);
+                            k.failCount = gState.failCount ?? k.failCount ?? 0;
+                            k.lastUsed = Math.max(k.lastUsed || 0, gState.lastUsed || 0);
+                            if (gState.avgLatencyMs > 0) k.avgLatencyMs = gState.avgLatencyMs;
+                        } else {
+                            // Nếu pool cũ đã có thông tin nhưng state v2 chưa có -> đồng bộ ngược vào state v2
+                            state.global[k.key] = {
+                                status: k.status || 'active',
+                                cooldownUntil: k.cooldownUntil || 0,
+                                failCount: k.failCount || 0,
+                                successCount: k.successCount || 0,
+                                lastUsed: k.lastUsed || 0,
+                                avgLatencyMs: k.avgLatencyMs || 0
+                            };
+                        }
+
+                        // Nạp tất cả các cặp model đã học được cho key này
+                        for (const [mId, keyMap] of Object.entries(state.pairs)) {
+                            const pInfo = keyMap[k.key];
+                            if (!pInfo) continue;
+
+                            if (pInfo.status === 'unsupported') {
+                                k.models[mId] = {
+                                    status: 'unsupported',
+                                    wasVerified: false,
+                                    reason: pInfo.reason || 404,
+                                    lockedAt: pInfo.lockedAt || now
+                                };
+                            } else if (pInfo.status === 'cooldown' && pInfo.cooldownUntil > now) {
+                                k.models[mId] = {
+                                    status: 'cooldown',
+                                    wasVerified: Boolean(pInfo.wasVerified),
+                                    verifiedAt: pInfo.verifiedAt || 0,
+                                    failCount: pInfo.failCount || 1,
+                                    successCount: pInfo.successCount || 0,
+                                    streak: 0,
+                                    cooldownUntil: pInfo.cooldownUntil,
+                                    quotaExhaustedType: pInfo.quotaExhaustedType || 'rpm',
+                                    avgLatencyMs: pInfo.avgLatencyMs || 0,
+                                    lastUsed: pInfo.lastUsed || 0
+                                };
+                            } else if (pInfo.status === 'supported' || pInfo.wasVerified) {
+                                // Tự động giải phóng cooldown khi đã hết thời gian chờ mà vẫn giữ nguyên cặp đã xác thực
+                                k.models[mId] = {
+                                    status: 'supported',
+                                    wasVerified: true,
+                                    verifiedAt: pInfo.verifiedAt || now,
+                                    failCount: (pInfo.cooldownUntil && pInfo.cooldownUntil <= now) ? 0 : (pInfo.failCount || 0),
+                                    successCount: pInfo.successCount || 1,
+                                    streak: pInfo.streak || 0,
+                                    cooldownUntil: 0,
+                                    quotaExhaustedType: null,
+                                    avgLatencyMs: pInfo.avgLatencyMs || 0,
+                                    lastUsed: pInfo.lastUsed || 0
+                                };
+                            }
+                        }
                     }
-                    this.saveMatrix(matrix);
+
+                    this._persistState();
+                    return poolArray;
                 },
 
-                recordFailure(modelId, keyString) {
+                recordSuccess(modelId, keyString, meta = {}) {
                     if (!modelId || !keyString) return;
-                    const matrix = this.loadMatrix();
-                    const entry = matrix.find(item => Array.isArray(item) && item[0] === modelId);
-                    if (entry && Array.isArray(entry[1])) {
-                        entry[1] = entry[1].filter(k => k !== keyString);
-                        this.saveMatrix(matrix);
+                    const state = this._ensureState();
+                    const now = Date.now();
+                    const latencyMs = Number(meta?.latencyMs) || 0;
+
+                    const g = state.global[keyString] || { status: 'active', failCount: 0, successCount: 0, lastUsed: 0, cooldownUntil: 0, avgLatencyMs: 0 };
+                    g.status = 'active';
+                    g.cooldownUntil = 0;
+                    g.failCount = Math.max(0, (g.failCount || 0) - 1);
+                    g.successCount = (g.successCount || 0) + 1;
+                    g.lastUsed = now;
+                    if (latencyMs > 0) {
+                        g.avgLatencyMs = g.avgLatencyMs > 0 ? Math.round(g.avgLatencyMs * 0.7 + latencyMs * 0.3) : Math.round(latencyMs);
                     }
+                    state.global[keyString] = g;
+
+                    if (modelId !== 'global') {
+                        if (!state.pairs[modelId]) state.pairs[modelId] = {};
+                        const prev = state.pairs[modelId][keyString] || {};
+                        const prevLat = prev.avgLatencyMs || 0;
+                        state.pairs[modelId][keyString] = {
+                            status: 'supported',
+                            wasVerified: true,
+                            verifiedAt: prev.verifiedAt || now,
+                            lastUsed: now,
+                            cooldownUntil: 0,
+                            failCount: Math.max(0, (prev.failCount || 0) - 1),
+                            successCount: (prev.successCount || 0) + 1,
+                            streak: (prev.streak || 0) + 1,
+                            avgLatencyMs: latencyMs > 0
+                                ? (prevLat > 0 ? Math.round(prevLat * 0.7 + latencyMs * 0.3) : Math.round(latencyMs))
+                                : prevLat,
+                            quotaExhaustedType: null,
+                            reason: null
+                        };
+                    }
+
+                    this._persistState();
+                },
+
+                recordCooldown(modelId, keyString, opts = {}) {
+                    if (!modelId || !keyString || modelId === 'global') return;
+                    const state = this._ensureState();
+                    const now = Date.now();
+                    if (!state.pairs[modelId]) state.pairs[modelId] = {};
+                    const prev = state.pairs[modelId][keyString] || {};
+                    const mFail = (prev.failCount || 0) + 1;
+
+                    const isRpd = opts.type === 'rpd';
+                    const cooldownUntil = opts.cooldownUntil || (
+                        isRpd
+                            ? this.getNextPacificMidnightTs(now)
+                            : now + Math.min(15000 * Math.pow(2, mFail - 1), 180000) + Math.floor(Math.random() * 1200)
+                    );
+
+                    state.pairs[modelId][keyString] = {
+                        ...prev,
+                        status: 'cooldown',
+                        wasVerified: Boolean(prev.wasVerified || prev.status === 'supported'),
+                        verifiedAt: prev.verifiedAt || 0,
+                        failCount: mFail,
+                        streak: 0,
+                        cooldownUntil,
+                        quotaExhaustedType: isRpd ? 'rpd' : (opts.type || 'rpm'),
+                        lastUsed: prev.lastUsed || now,
+                        reason: opts.reason || (isRpd ? 'RPD' : 'RPM')
+                    };
+                    this._persistState();
+                },
+
+                recordUnsupported(modelId, keyString, reason = 404) {
+                    if (!modelId || !keyString || modelId === 'global') return;
+                    const state = this._ensureState();
+                    if (!state.pairs[modelId]) state.pairs[modelId] = {};
+                    state.pairs[modelId][keyString] = {
+                        status: 'unsupported',
+                        wasVerified: false,
+                        verifiedAt: 0,
+                        cooldownUntil: 0,
+                        failCount: (state.pairs[modelId][keyString]?.failCount || 0) + 1,
+                        streak: 0,
+                        reason,
+                        lockedAt: Date.now()
+                    };
+                    this._persistState();
+                },
+
+                recordInvalidGlobal(keyString, reason = 401) {
+                    if (!keyString) return;
+                    const state = this._ensureState();
+                    const now = Date.now();
+                    const g = state.global[keyString] || {};
+                    state.global[keyString] = {
+                        ...g,
+                        status: 'invalid',
+                        cooldownUntil: now + 86400000,
+                        reason
+                    };
+                    for (const keyMap of Object.values(state.pairs)) {
+                        if (keyMap[keyString] && keyMap[keyString].status !== 'unsupported') {
+                            keyMap[keyString].wasVerified = false;
+                        }
+                    }
+                    this._persistState();
+                },
+
+                // Giữ tương thích với các caller truyền 2 tham số (khi lỗi 401/404) hoặc truyền kèm statusCode
+                recordFailure(modelId, keyString, statusCode = 404, errorMsg = '') {
+                    if (!modelId || !keyString) return;
+                    const kind = (typeof GeminiPayloadAdapter !== 'undefined')
+                        ? GeminiPayloadAdapter.classifyApiError(statusCode, errorMsg)
+                        : (statusCode === 401 ? 'invalid_key' : statusCode === 429 ? 'quota_rpm' : 'unsupported_model');
+
+                    if (kind === 'invalid_key') {
+                        this.recordInvalidGlobal(keyString, statusCode || 401);
+                    } else if (kind === 'unsupported_model') {
+                        this.recordUnsupported(modelId, keyString, statusCode || 404);
+                    } else if (kind === 'quota_rpd') {
+                        this.recordCooldown(modelId, keyString, { type: 'rpd', reason: errorMsg });
+                    } else if (kind === 'quota_rpm') {
+                        this.recordCooldown(modelId, keyString, { type: 'rpm', reason: errorMsg });
+                    }
+                },
+
+                clearTransientLocksForDiagnostics() {
+                    const state = this._ensureState();
+                    for (const g of Object.values(state.global)) {
+                        if (g) { g.status = 'active'; g.cooldownUntil = 0; g.failCount = 0; }
+                    }
+                    for (const keyMap of Object.values(state.pairs)) {
+                        for (const [kStr, info] of Object.entries(keyMap)) {
+                            if (info?.status === 'unsupported' || info?.status === 'cooldown') {
+                                delete keyMap[kStr];
+                            }
+                        }
+                    }
+                    this._persistState();
+                },
+
+                computeHealthScore(keyObj, pairInfo) {
+                    const succ = (pairInfo?.successCount ?? keyObj?.successCount ?? 0);
+                    const fail = (pairInfo?.failCount ?? keyObj?.failCount ?? 0);
+                    const reliability = (succ + 2) / (succ + (fail * 2) + 3);
+                    const lat = pairInfo?.avgLatencyMs || keyObj?.avgLatencyMs || 0;
+                    const latencyFactor = lat > 0 ? Math.max(0.45, Math.min(1.12, 1200 / (lat + 600))) : 0.92;
+                    const streakBonus = Math.min(0.15, (pairInfo?.streak || 0) * 0.025);
+                    return (reliability * latencyFactor) + streakBonus;
+                },
+
+                // Xếp hạng Key thông minh nhất cho modelId:
+                // Tier 1: Đã xác thực & ổn định (Xoay tua Weighted Fair LRU tránh quá tải 1 key)
+                // Tier 2: Key mới chưa thử nghiệm trên modelId
+                // Tier 3: Key đã xác thực nhưng vừa phục hồi lỗi tạm thời
+                rankKeysForModel(modelId, poolArray, options = {}) {
+                    if (!Array.isArray(poolArray) || !poolArray.length) return [];
+                    const now = Date.now();
+                    const state = this._ensureState();
+                    const allowCoolingFallback = Boolean(options.allowCoolingFallback);
+
+                    const readyTier1 = [];
+                    const readyTier2 = [];
+                    const readyTier3 = [];
+                    const coolingFallback = [];
+
+                    for (const k of poolArray) {
+                        if (!k || !k.key) continue;
+                        if (!k.models) k.models = {};
+
+                        const gState = state.global[k.key];
+                        const isInvalid = (k.status === 'invalid' || gState?.status === 'invalid')
+                            && ((k.cooldownUntil || gState?.cooldownUntil || 0) > now);
+                        if (isInvalid) continue;
+
+                        if ((k.status === 'cooldown' || gState?.status === 'cooldown') && ((k.cooldownUntil || gState?.cooldownUntil || 0) > now)) {
+                            continue;
+                        }
+
+                        const mInfo = k.models[modelId] || state.pairs?.[modelId]?.[k.key] || null;
+                        if (mInfo) {
+                            if (mInfo.status === 'unsupported') continue;
+
+                            if (mInfo.status === 'cooldown' && (mInfo.cooldownUntil || 0) > now) {
+                                if (allowCoolingFallback && mInfo.quotaExhaustedType !== 'rpd') {
+                                    coolingFallback.push({ k, cooldownUntil: mInfo.cooldownUntil, health: this.computeHealthScore(k, mInfo) });
+                                }
+                                continue;
+                            }
+                        }
+
+                        const lastUsed = mInfo?.lastUsed || k.lastUsed || 0;
+                        const health = this.computeHealthScore(k, mInfo);
+                        const isVerified = Boolean(mInfo && (mInfo.status === 'supported' || mInfo.wasVerified));
+                        const recentFails = mInfo?.failCount || 0;
+
+                        if (isVerified && recentFails < 2) {
+                            readyTier1.push({ k, lastUsed, health });
+                        } else if (!mInfo) {
+                            readyTier2.push({ k, lastUsed: k.lastUsed || 0, health });
+                        } else {
+                            readyTier3.push({ k, lastUsed, health, recentFails });
+                        }
+                    }
+
+                    // Tier 1: Đảo đều tải qua Weighted Fair LRU (cũ nhất chưa dùng đi trước; chênh <400ms ưu tiên key nhanh/bền hơn)
+                    readyTier1.sort((a, b) => {
+                        if (Math.abs(a.lastUsed - b.lastUsed) > 400) return a.lastUsed - b.lastUsed;
+                        return b.health - a.health;
+                    });
+
+                    // Tier 2: Thử nghiệm key chưa dùng lâu nhất, ưu tiên key có độ tin cậy tổng thể cao
+                    readyTier2.sort((a, b) => {
+                        if (Math.abs(b.health - a.health) > 0.15) return b.health - a.health;
+                        return a.lastUsed - b.lastUsed;
+                    });
+
+                    // Tier 3: Ít lỗi gần nhất, chờ lâu nhất
+                    readyTier3.sort((a, b) => (a.recentFails - b.recentFails) || (a.lastUsed - b.lastUsed));
+
+                    const ordered = [
+                        ...readyTier1.map(x => x.k),
+                        ...readyTier2.map(x => x.k),
+                        ...readyTier3.map(x => x.k)
+                    ];
+
+                    if (ordered.length === 0 && allowCoolingFallback && coolingFallback.length > 0) {
+                        coolingFallback.sort((a, b) => (a.cooldownUntil - b.cooldownUntil) || (b.health - a.health));
+                        return coolingFallback.map(x => x.k);
+                    }
+
+                    return ordered;
                 },
 
                 syncWithPool(validKeyStrings) {
                     const validSet = new Set(validKeyStrings || []);
-                    const matrix = this.loadMatrix();
-                    const cleanedMatrix = [];
+                    const state = this._ensureState();
 
-                    matrix.forEach(item => {
-                        if (Array.isArray(item) && typeof item[0] === 'string' && Array.isArray(item[1])) {
-                            const filteredKeys = item[1].filter(k => validSet.has(k));
-                            if (filteredKeys.length > 0) {
-                                cleanedMatrix.push([item[0], filteredKeys]);
-                            }
+                    for (const kStr of Object.keys(state.global)) {
+                        if (!validSet.has(kStr)) delete state.global[kStr];
+                    }
+                    for (const [mId, keyMap] of Object.entries(state.pairs)) {
+                        for (const kStr of Object.keys(keyMap)) {
+                            if (!validSet.has(kStr)) delete keyMap[kStr];
                         }
-                    });
+                        if (Object.keys(keyMap).length === 0) delete state.pairs[mId];
+                    }
 
-                    this.saveMatrix(cleanedMatrix);
+                    this._persistState();
                 }
             };
 
@@ -8932,8 +9798,16 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
             // [COMPOSABLE 1: HỆ THỐNG CẤU HÌNH, CHÌA KHÓA & THEME GIAO DIỆN]
             // =========================================================================
             function useSystemSettings({ notify, triggerHaptic }) {
-                // 1. Quản lý Pool chìa khóa Gemini
-                const apiKeyPool = ref(StorageManager.get(GDeepSystemConfig.StorageKeys.API_KEYS_POOL, [], true));
+                // 1. Quản lý Pool chìa khóa Gemini & Phục hồi vĩnh viễn Ma trận Model-Key ngay khi khởi động
+                const initialPool = StorageManager.get(GDeepSystemConfig.StorageKeys.API_KEYS_POOL, [], true);
+                const apiKeyPool = ref(Array.isArray(initialPool) ? initialPool : []);
+                ModelKeyMatrixManager.hydratePool(apiKeyPool.value);
+
+                const persistApiKeyPool = () => {
+                    StorageManager.set(GDeepSystemConfig.StorageKeys.API_KEYS_POOL, toRaw(apiKeyPool.value), true);
+                };
+                if (apiKeyPool.value.length > 0) persistApiKeyPool();
+
                 const rawApiKeysInput = ref(apiKeyPool.value.map(k => k.key).join('\n'));
                 const apiKeyCount = computed(() => apiKeyPool.value.length);
 
@@ -8946,145 +9820,154 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     const parsed = parseKeysFromText(rawApiKeysInput.value);
                     const map = new Map(apiKeyPool.value.map(k => [k.key, k]));
                     const pool = parsed.map(k => map.get(k) || { 
-                        key: k, status: 'active', failCount: 0, successCount: 0, lastUsed: 0, cooldownUntil: 0,
+                        key: k, status: 'active', failCount: 0, successCount: 0, lastUsed: 0, cooldownUntil: 0, avgLatencyMs: 0,
                         models: {}
                     });
-                    apiKeyPool.value = pool;
-                    try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(toRaw(apiKeyPool.value))); } catch (_) {}
-                    
-                    // TỰ ĐỘNG ĐỒNG BỘ MA TRẬN: XÓA CÁC KEY ĐÃ BỊ LOẠI BỎ KHỎI TẤT CẢ MODEL
                     ModelKeyMatrixManager.syncWithPool(parsed);
+                    ModelKeyMatrixManager.hydratePool(pool);
+                    apiKeyPool.value = pool;
+                    persistApiKeyPool();
                     
-                    notify(pool.length ? `Đã lưu ${pool.length} chìa khóa & đồng bộ ma trận.` : "Danh sách chìa khóa trống.", !pool.length);
+                    notify(pool.length ? `Đã lưu ${pool.length} chìa khóa & đồng bộ ma trận vĩnh viễn.` : "Danh sách chìa khóa trống.", !pool.length);
                 };
 
-                // MA TRẬN TỰ LỌC, ĐIỀU PHỐI VÀ GHI NHỚ KEY KHẢ DỤNG THEO MODEL (KEY-MODEL AFFINITY MATRIX - OMEGA LEVEL)
-                const getKeysForModel = (modelId) => {
-                    const now = Date.now(), pool = apiKeyPool.value;
-                    if (!pool.length) return [];
-
-                    const candidates = [];
-                    for (const k of pool) {
-                        // 1. Tầng cách ly toàn cục (Global Quarantine)
-                        if (k.status === 'invalid' || (k.status === 'cooldown' && k.cooldownUntil > now)) continue;
-                        
-                        if (!k.models) k.models = {};
-                        const mInfo = k.models[modelId];
-
-                        if (mInfo) {
-                            // 2. KHÓA CHẾT VĨNH VIỄN (ABSOLUTE LOCK-IN): Nếu Key không có quyền với Model này, cấm vĩnh viễn không bao giờ thử lại.
-                            if (mInfo.status === 'unsupported') continue;
-                            
-                            // 3. Khóa bị 429 cục bộ trên model này (Chỉ cấm tạm thời theo Exponential Backoff)
-                            if (mInfo.status === 'cooldown' && mInfo.cooldownUntil > now) continue;
-                        }
-
-                        // Tính toán "Chỉ số tin cậy" (Health Score) của Key
-                        const kSuccess = k.successCount || 0;
-                        const kFail = k.failCount || 0;
-                        k._tempScore = (kSuccess + 1) / (kFail + 1); // Tránh chia cho 0
-                        
-                        candidates.push(k);
-                    }
-
-                    // 4. LOAD BALANCING THỰC THỤ ĐA CHIỀU (MULTI-DIMENSIONAL ROUND ROBIN):
-                    candidates.sort((a, b) => {
-                        const aInfo = a.models?.[modelId], bInfo = b.models?.[modelId];
-                        
-                        // Chiều 1: Ưu tiên Key đã chứng minh tương thích (Supported) > Key mới tinh > Key từng lỗi phục hồi
-                        const getTier = (info) => info?.status === 'supported' ? 1 : (!info ? 2 : 3);
-                        const aTier = getTier(aInfo), bTier = getTier(bInfo);
-                        if (aTier !== bTier) return aTier - bTier;
-
-                        // Chiều 2: Ưu tiên Key có "Chỉ số tin cậy" cao hơn (Gánh tải nặng tốt hơn)
-                        if (Math.abs(b._tempScore - a._tempScore) > 0.5) return b._tempScore - a._tempScore;
-
-                        // Chiều 3: Round-Robin thuần túy (Key nào lâu nhất chưa gọi thì ưu tiên)
-                        const aLast = aInfo?.lastUsed || a.lastUsed || 0;
-                        const bLast = bInfo?.lastUsed || b.lastUsed || 0;
-                        return aLast - bLast;
-                    });
-
-                    return candidates;
+                // MA TRẬN XOAY TUA THÔNG MINH ĐA CHIỀU THEO MODEL (WEIGHTED FAIR LRU + HEALTH BANDING)
+                const getKeysForModel = (modelId, options = {}) => {
+                    return ModelKeyMatrixManager.rankKeysForModel(modelId, apiKeyPool.value, options);
                 };
 
-                // GHI NHỚ VÀO MA TRẬN KHI KẾT NỐI MODEL THÀNH CÔNG (NEURAL REINFORCEMENT)
-                const markKeyModelSuccess = (k, modelId) => {
+                // GHI NHỚ VÀO MA TRẬN KHI KẾT NỐI MODEL THÀNH CÔNG (LƯU VĨNH VIỄN QUA RELOAD)
+                const markKeyModelSuccess = (k, modelId, meta = {}) => {
                     if (!k) return;
                     const now = Date.now();
+                    const latencyMs = Number(meta?.latencyMs) || 0;
+
                     k.successCount = (k.successCount || 0) + 1;
                     k.status = 'active';
                     k.cooldownUntil = 0;
-                    
-                    // Cơ chế quên lãng lỗi (Decay failure) khi thành công
-                    k.failCount = Math.max(0, (k.failCount || 0) - 1); 
+                    k.failCount = Math.max(0, (k.failCount || 0) - 1);
                     k.lastUsed = now;
+                    if (latencyMs > 0) {
+                        k.avgLatencyMs = k.avgLatencyMs > 0 ? Math.round(k.avgLatencyMs * 0.7 + latencyMs * 0.3) : Math.round(latencyMs);
+                    }
 
                     if (!k.models) k.models = {};
-                    k.models[modelId] = {
-                        status: 'supported',
-                        failCount: 0,
-                        cooldownUntil: 0,
-                        lastUsed: now
-                    };
-                    try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(JSON.parse(JSON.stringify(apiKeyPool.value)))); } catch (_) {}
-                    if (modelId && modelId !== 'global' && k.key && typeof ModelKeyMatrixManager !== 'undefined') {
-                        ModelKeyMatrixManager.recordSuccess(modelId, k.key);
+                    if (modelId && modelId !== 'global') {
+                        const prev = k.models[modelId] || {};
+                        const prevLat = prev.avgLatencyMs || 0;
+                        k.models[modelId] = {
+                            status: 'supported',
+                            wasVerified: true,
+                            verifiedAt: prev.verifiedAt || now,
+                            failCount: Math.max(0, (prev.failCount || 0) - 1),
+                            successCount: (prev.successCount || 0) + 1,
+                            streak: (prev.streak || 0) + 1,
+                            cooldownUntil: 0,
+                            quotaExhaustedType: null,
+                            avgLatencyMs: latencyMs > 0 ? (prevLat > 0 ? Math.round(prevLat * 0.7 + latencyMs * 0.3) : Math.round(latencyMs)) : prevLat,
+                            lastUsed: now
+                        };
                     }
+
+                    if (k.key) ModelKeyMatrixManager.recordSuccess(modelId || 'global', k.key, meta);
+                    persistApiKeyPool();
                 };
 
-                // GHI NHỚ VÀO MA TRẬN KHI MODEL GẶP LỖI (SMART PENALTY ENGINE)
-                const markKeyModelFailure = (k, modelId, statusCode = null, errorMsg = '') => {
+                // PHÂN LOẠI & XỬ PHẠT THÔNG MINH (KHÔNG PHẠT OAN KEY KHI LỖI PAYLOAD HOẶC FEATURE FREE TIER)
+                const markKeyModelFailure = (k, modelId, statusCode = null, errorMsg = '', retryAfterSec = null) => {
                     if (!k) return;
                     const now = Date.now();
                     if (!k.models) k.models = {};
 
-                    if (statusCode === 401) {
+                    const errKind = GeminiPayloadAdapter.classifyApiError(statusCode, errorMsg);
+
+                    if (errKind === 'payload_error' || errKind === 'feature_tier_restricted') {
+                        // Lỗi do tham số hoặc tính năng trả phí trên Free Tier -> bảo toàn nguyên vẹn sức khỏe Key
+                        return;
+                    }
+
+                    if (errKind === 'invalid_key') {
                         k.status = 'invalid';
-                        k.cooldownUntil = now + 86400000; // Khóa 24h
-                        if (modelId && k.key && typeof ModelKeyMatrixManager !== 'undefined') {
-                            ModelKeyMatrixManager.recordFailure(modelId, k.key);
+                        k.cooldownUntil = now + 86400000;
+                        if (k.key) ModelKeyMatrixManager.recordInvalidGlobal(k.key, statusCode || 401);
+                        console.warn(`[G-Deep Matrix] Key [${k.key.slice(-6)}] không hợp lệ (${statusCode}). Khóa toàn cục 24h.`);
+                    } else if (errKind === 'unsupported_model') {
+                        if (modelId && modelId !== 'global') {
+                            k.models[modelId] = {
+                                status: 'unsupported',
+                                wasVerified: false,
+                                reason: statusCode || 404,
+                                lockedAt: now
+                            };
+                            if (k.key) ModelKeyMatrixManager.recordUnsupported(modelId, k.key, statusCode || 404);
                         }
-                        console.warn(`[G-Deep Matrix] Key [${k.key.slice(-6)}] dính 401 (Invalid). Khóa toàn cục 24h.`);
-                    } 
-                    else if (statusCode === 404 || statusCode === 403) {
-                        // VẬN MỆNH VĨNH CỬU: Lỗi 403/404 đồng nghĩa Key này vĩnh viễn không phục vụ được Model này.
-                        k.models[modelId] = { status: 'unsupported', reason: statusCode, lockedAt: now };
-                        if (modelId && k.key && typeof ModelKeyMatrixManager !== 'undefined') {
-                            ModelKeyMatrixManager.recordFailure(modelId, k.key);
-                        }
-                        console.warn(`[G-Deep Matrix] Đã khóa vĩnh viễn Key [${k.key.slice(-6)}] đối với Model [${modelId}].`);
-                    } 
-                    else if (statusCode === 429) {
-                        const mFail = (k.models[modelId]?.failCount || 0) + 1;
-                        // EXPONENTIAL BACKOFF: 15s, 30s, 60s, 120s... tối đa 5 phút
-                        const backoffSeconds = Math.min(15 * Math.pow(2, mFail - 1), 300);
-                        k.models[modelId] = {
-                            status: 'cooldown',
-                            failCount: mFail,
-                            cooldownUntil: now + (backoffSeconds * 1000),
-                            lastUpdated: now
-                        };
-                        console.warn(`[G-Deep Matrix] Key [${k.key.slice(-6)}] cạn Quota (429) trên [${modelId}]. Backoff ${backoffSeconds}s.`);
-                    } 
-                    else {
-                        k.failCount = (k.failCount || 0) + 1;
-                        if (k.failCount > 10) {
+                        console.warn(`[G-Deep Matrix] Đã khóa vĩnh viễn Key [${k.key.slice(-6)}] cho Model [${modelId}].`);
+                    } else if (errKind === 'quota_rpd') {
+                        const resetTs = ModelKeyMatrixManager.getNextPacificMidnightTs(now);
+                        if (modelId && modelId !== 'global') {
+                            const prev = k.models[modelId] || {};
+                            k.models[modelId] = {
+                                ...prev,
+                                status: 'cooldown',
+                                wasVerified: Boolean(prev.wasVerified || prev.status === 'supported'),
+                                failCount: (prev.failCount || 0) + 1,
+                                streak: 0,
+                                cooldownUntil: resetTs,
+                                quotaExhaustedType: 'rpd',
+                                lastUpdated: now
+                            };
+                            if (k.key) ModelKeyMatrixManager.recordCooldown(modelId, k.key, { type: 'rpd', cooldownUntil: resetTs, reason: errorMsg });
+                        } else {
                             k.status = 'cooldown';
-                            k.cooldownUntil = now + 30000;
+                            k.cooldownUntil = resetTs;
+                        }
+                        console.warn(`[G-Deep Matrix] Key [${k.key.slice(-6)}] chạm hạn mức ngày (RPD) trên [${modelId}]. Mở lại sau 00:05 PT.`);
+                    } else if (errKind === 'quota_rpm') {
+                        if (modelId && modelId !== 'global') {
+                            const prev = k.models[modelId] || {};
+                            const mFail = (prev.failCount || 0) + 1;
+                            const waitMs = (retryAfterSec && retryAfterSec > 0)
+                                ? Math.min(retryAfterSec * 1000, 180000)
+                                : Math.min(15000 * Math.pow(2, mFail - 1), 180000) + Math.floor(Math.random() * 1200);
+                            const cdUntil = now + waitMs;
+                            k.models[modelId] = {
+                                ...prev,
+                                status: 'cooldown',
+                                wasVerified: Boolean(prev.wasVerified || prev.status === 'supported'),
+                                failCount: mFail,
+                                streak: 0,
+                                cooldownUntil: cdUntil,
+                                quotaExhaustedType: 'rpm',
+                                lastUpdated: now
+                            };
+                            if (k.key) ModelKeyMatrixManager.recordCooldown(modelId, k.key, { type: 'rpm', cooldownUntil: cdUntil, reason: errorMsg });
+                        } else {
+                            k.failCount = (k.failCount || 0) + 1;
+                            k.status = 'cooldown';
+                            k.cooldownUntil = now + Math.min(15000 * Math.pow(2, k.failCount - 1), 120000);
+                        }
+                    } else {
+                        // Lỗi mạng/5xx tạm thời: không xóa cặp đã xác thực, chỉ hạ ưu tiên nhẹ
+                        k.failCount = (k.failCount || 0) + 1;
+                        if (modelId && modelId !== 'global' && k.models[modelId]) {
+                            k.models[modelId].failCount = (k.models[modelId].failCount || 0) + 1;
+                            k.models[modelId].streak = 0;
+                        }
+                        if (k.failCount >= 5) {
+                            k.status = 'cooldown';
+                            k.cooldownUntil = now + 15000;
                         }
                     }
 
-                    try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(JSON.parse(JSON.stringify(apiKeyPool.value)))); } catch (_) {}
+                    persistApiKeyPool();
                 };
                 
                 const getNextHealthyApiKey = (modelId = null) => {
                     if (modelId) {
-                        const validKeys = getKeysForModel(modelId);
-                        if (validKeys.length > 0) {
-                            // Trả về Key tốt nhất (được xếp hạng #1 bởi Multi-Dimensional Round Robin)
-                            return validKeys[0];
-                        }
+                        const ready = getKeysForModel(modelId, { allowCoolingFallback: false });
+                        if (ready.length > 0) return ready[0];
+                        const cooling = getKeysForModel(modelId, { allowCoolingFallback: true });
+                        if (cooling.length > 0) return cooling[0];
                     }
                     const now = Date.now(), all = apiKeyPool.value;
                     if (!all.length) return null;
@@ -9096,72 +9979,94 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                     return all[0];
                 };
 
-                const markApiKeyFailure = (k, statusCode = null) => {
-                    markKeyModelFailure(k, 'global', statusCode);
+                const markApiKeyFailure = (k, statusCode = null, errorMsg = '') => {
+                    markKeyModelFailure(k, 'global', statusCode, errorMsg);
                 };
 
-                const markApiKeySuccess = (k) => {
-                    markKeyModelSuccess(k, 'global');
+                const markApiKeySuccess = (k, meta = {}) => {
+                    markKeyModelSuccess(k, 'global', meta);
                 };
 
                 const testAllApiKeys = async () => {
                     if (!apiKeyPool.value.length) return;
-                    notify("Đang quét toàn diện và phân bổ Ma trận Key-Model...");
-                    
-                    // BẢO CHỨNG QUÉT TOÀN DIỆN: Gom toàn bộ Model từ Ultra, Pro, Lite và Background
+                    notify("Đang quét thông minh (payload chuẩn từng thế hệ) & ghép cặp vĩnh viễn...");
+
+                    // Cho phép kiểm tra lại các key/model từng lỗi khi người dùng bấm Kiểm Tra thủ công
+                    ModelKeyMatrixManager.clearTransientLocksForDiagnostics();
+
                     const allModels = new Set();
                     GDeepSystemConfig.Models.AVAILABLE.forEach(tier => {
                         tier.apiEndpointIds.forEach(id => allModels.add(id));
                     });
                     Object.values(GDeepSystemConfig.Models.BACKGROUND).forEach(id => allModels.add(id));
                     const targetModels = Array.from(allModels);
-                    
+
                     let totalActiveKeys = 0;
+                    let totalVerifiedPairs = 0;
 
                     for (const k of apiKeyPool.value) {
-                        if (!k.models) k.models = {};
-                        if (k.status === 'invalid') continue;
+                        k.status = 'active';
+                        k.cooldownUntil = 0;
+                        k.failCount = 0;
+                        k.models = {};
 
                         let isGloballyDead = false;
                         let supportedCount = 0;
 
-                        // Quét song song tất cả các Models để đẩy tốc độ tối đa
-                        await Promise.all(targetModels.map(async (testModel) => {
-                            if (isGloballyDead) return;
+                        // Quét từng nhóm 2 model có giãn nhịp 120ms để tránh tự kích hoạt 429 trên Free Tier
+                        for (let i = 0; i < targetModels.length && !isGloballyDead; i += 2) {
+                            const batch = targetModels.slice(i, i + 2);
+                            await Promise.all(batch.map(async (testModel) => {
+                                if (isGloballyDead) return;
+                                const probeCtrl = new AbortController();
+                                const probeTimer = setTimeout(() => probeCtrl.abort(), 12000);
+                                const startTs = performance.now();
 
-                            try {
-                                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${k.key}`, {
-                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'ping' }] }] })
-                                });
-                                
-                                if (res.ok) { 
-                                    k.models[testModel] = { status: 'supported', lastUsed: Date.now() };
-                                    if (typeof ModelKeyMatrixManager !== 'undefined') {
-                                        ModelKeyMatrixManager.recordSuccess(testModel, k.key);
-                                    }
-                                    supportedCount++;
-                                } else {
-                                    const errData = await res.json().catch(() => ({}));
-                                    const errMsg = String(errData?.error?.message || '').toLowerCase();
-                                    
-                                    if (res.status === 401 || (res.status === 400 && errMsg.includes('api key'))) { 
-                                        isGloballyDead = true;
-                                        if (typeof ModelKeyMatrixManager !== 'undefined') {
-                                            ModelKeyMatrixManager.recordFailure(testModel, k.key);
-                                        }
-                                    } else if (res.status === 404 || res.status === 403) {
-                                        k.models[testModel] = { status: 'unsupported', reason: res.status, lockedAt: Date.now() };
-                                        if (typeof ModelKeyMatrixManager !== 'undefined') {
-                                            ModelKeyMatrixManager.recordFailure(testModel, k.key);
-                                        }
-                                    } else if (res.status === 429) {
-                                        k.models[testModel] = { status: 'cooldown', failCount: 1, cooldownUntil: Date.now() + 15000, lastUpdated: Date.now() };
+                                try {
+                                    const probePayload = GeminiPayloadAdapter.buildPayload(
+                                        testModel,
+                                        { contents: [{ role: 'user', parts: [{ text: 'Reply OK' }] }] },
+                                        { taskType: 'probe' }
+                                    );
+                                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${k.key}`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(probePayload),
+                                        signal: probeCtrl.signal
+                                    });
+
+                                    if (res.ok) {
+                                        const lat = Math.round(performance.now() - startTs);
+                                        markKeyModelSuccess(k, testModel, { latencyMs: lat });
                                         supportedCount++;
+                                        totalVerifiedPairs++;
+                                    } else {
+                                        const errData = await res.json().catch(() => ({}));
+                                        const errMsg = String(errData?.error?.message || '');
+                                        const kind = GeminiPayloadAdapter.classifyApiError(res.status, errMsg);
+
+                                        if (kind === 'invalid_key') {
+                                            isGloballyDead = true;
+                                            markKeyModelFailure(k, testModel, res.status, errMsg);
+                                        } else if (kind === 'unsupported_model') {
+                                            markKeyModelFailure(k, testModel, res.status, errMsg);
+                                        } else if (kind === 'quota_rpm' || kind === 'quota_rpd') {
+                                            // Đã vượt 404/403 (tức model tồn tại với key), ghi nhận cooldown đúng loại RPM/RPD
+                                            markKeyModelFailure(k, testModel, res.status, errMsg);
+                                            if (kind === 'quota_rpm') supportedCount++;
+                                        }
                                     }
+                                } catch (_) {
+                                    // Bỏ qua lỗi mạng đơn lẻ trong lúc probe
+                                } finally {
+                                    clearTimeout(probeTimer);
                                 }
-                            } catch (_) {}
-                        }));
+                            }));
+
+                            if (i + 2 < targetModels.length && !isGloballyDead) {
+                                await new Promise(r => setTimeout(r, 120));
+                            }
+                        }
 
                         if (isGloballyDead) {
                             k.status = 'invalid';
@@ -9172,9 +10077,9 @@ function renderMarkdownCore(rawText, isFinal, markedInst, katexInst, hljsInst) {
                             totalActiveKeys++;
                         }
                     }
-                    
-                    try { localStorage.setItem('gdeep_api_keys_pool', JSON.stringify(toRaw(apiKeyPool.value))); } catch (_) {}
-                    notify(`Hoàn tất ma trận: ${totalActiveKeys}/${apiKeyPool.value.length} chìa khóa hoạt động.`);
+
+                    persistApiKeyPool();
+                    notify(`Hoàn tất ma trận: ${totalActiveKeys}/${apiKeyPool.value.length} khóa hoạt động (${totalVerifiedPairs} cặp Model-Key đã lưu vĩnh viễn).`);
                 };
 
                 // 2. Quản lý Pool khóa tìm kiếm Serper
@@ -10056,11 +10961,26 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                 notify(`Đã nạp ${files.length} tệp`);
             };
 
-            // HÀM GỌI MODEL AI ĐA PHƯƠNG THỨC VỚI MA TRẬN ĐIỀU PHỐI CHÌA KHÓA
+            // HÀM GỌI MODEL AI ĐA PHƯƠNG THỨC VỚI MA TRẬN ĐIỀU PHỐI VĨNH VIỄN & PAYLOAD CHUẨN GOOGLE 11/2026
             const runAgentWithSystemKeyRotation = async (agent, promptText, signal, attachments = []) => {
-                const requestedModel = agent.modelId || 'gemini-3.6-flash';
+                // Tự động ánh xạ model cũ bị khai tử (3.7 -> 3.8, 3.5-flash -> 3.6-flash)
+                const legacyAliasMap = {
+                    'gemini-3.7-flash': 'gemini-3.8-flash',
+                    'gemini-3.5-flash': 'gemini-3.6-flash'
+                };
+                const rawModel = agent.modelId || 'gemini-3.6-flash';
+                const requestedModel = legacyAliasMap[rawModel] || rawModel;
+
                 const modelCascade = Array.from(new Set([
-                    requestedModel, 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'
+                    requestedModel,
+                    'gemini-4-hydrogen',
+                    'gemini-3.8-flash',
+                    'gemini-3.6-flash',
+                    'gemini-3-flash-preview',
+                    'gemini-3.5-flash-lite',
+                    'gemini-3.1-flash-lite',
+                    'gemini-2.5-flash',
+                    'gemini-2.5-flash-lite'
                 ]));
 
                 const parts = [{ text: promptText }];
@@ -10070,13 +10990,21 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                     }
                 }
 
+                const useDeepReasoning = (agent.role === 'coordinator' || agent.role === 'critic');
+                const baseAgentPayload = {
+                    contents: [{ role: 'user', parts }],
+                    generationConfig: { temperature: 0.2, maxOutputTokens: 65536 }
+                };
+
                 let lastError = null;
 
                 for (const modelId of modelCascade) {
                     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
-                    let candidateKeys = (typeof getKeysForModel === 'function' ? getKeysForModel(modelId) : []) || [];
-                    if (!candidateKeys.length) candidateKeys = (apiKeyPool?.value || []).filter(k => k.status !== 'invalid');
+                    let candidateKeys = (typeof getKeysForModel === 'function' ? getKeysForModel(modelId, { allowCoolingFallback: false }) : []) || [];
+                    if (!candidateKeys.length && typeof getKeysForModel === 'function') {
+                        candidateKeys = getKeysForModel(modelId, { allowCoolingFallback: true }) || [];
+                    }
                     if (!candidateKeys.length) continue;
 
                     for (let attempt = 0; attempt < candidateKeys.length; attempt++) {
@@ -10084,36 +11012,49 @@ TRẢ VỀ DUY NHẤT ĐỊNH DẠNG JSON HOÀN CHỈNH:
                         const keyObj = candidateKeys[attempt];
                         if (!keyObj || !keyObj.key) continue;
 
+                        const startTs = performance.now();
                         try {
+                            const compliantPayload = GeminiPayloadAdapter.buildPayload(modelId, baseAgentPayload, {
+                                deepThinking: useDeepReasoning,
+                                taskType: 'agent'
+                            });
+
                             const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${keyObj.key}`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    contents: [{ role: 'user', parts }],
-                                    generationConfig: { temperature: 0.2, maxOutputTokens: 8192 }
-                                }),
+                                body: JSON.stringify(compliantPayload),
                                 signal
                             });
 
                             if (res.ok) {
+                                const latencyMs = Math.round(performance.now() - startTs);
                                 const data = await res.json();
-                                if (typeof markKeyModelSuccess === 'function') markKeyModelSuccess(keyObj, modelId);
-                                if (typeof ModelKeyMatrixManager !== 'undefined') ModelKeyMatrixManager.recordSuccess(modelId, keyObj.key);
-                                return { text: data?.candidates?.[0]?.content?.parts?.[0]?.text || '', modelId, key: keyObj.key };
+                                if (typeof markKeyModelSuccess === 'function') markKeyModelSuccess(keyObj, modelId, { latencyMs });
+
+                                // Chỉ trích xuất các phần văn bản trả lời chính thức (lọc bỏ thought: true để không lẫn suy luận nội bộ)
+                                const resParts = data?.candidates?.[0]?.content?.parts || [];
+                                const cleanAnswerText = resParts
+                                    .filter(p => p && !p.thought && typeof p.text === 'string')
+                                    .map(p => p.text)
+                                    .join('');
+
+                                return { text: cleanAnswerText, modelId, key: keyObj.key };
                             } else {
                                 const errData = await res.json().catch(() => ({}));
-                                if (typeof markKeyModelFailure === 'function') markKeyModelFailure(keyObj, modelId, res.status, errData?.error?.message || '');
-                                if (res.status === 401 || res.status === 404) {
-                                    if (typeof ModelKeyMatrixManager !== 'undefined') ModelKeyMatrixManager.recordFailure(modelId, keyObj.key);
+                                const errMsg = String(errData?.error?.message || res.statusText || '');
+                                const retryAfterSec = Number(res.headers.get('Retry-After')) || null;
+
+                                if (typeof markKeyModelFailure === 'function') {
+                                    markKeyModelFailure(keyObj, modelId, res.status, errMsg, retryAfterSec);
                                 }
-                                lastError = new Error(`[${modelId}] HTTP ${res.status}: ${errData?.error?.message || res.statusText}`);
-                                if (res.status === 429) await new Promise(r => setTimeout(r, 500));
+                                lastError = new Error(`[${modelId}] HTTP ${res.status}: ${errMsg}`);
+                                if (res.status === 429) await new Promise(r => setTimeout(r, 400));
                             }
                         } catch (netErr) {
                             if (netErr.name === 'AbortError') throw netErr;
                             if (typeof markKeyModelFailure === 'function') markKeyModelFailure(keyObj, modelId, null, netErr.message);
                             lastError = netErr;
-                            await new Promise(r => setTimeout(r, 350));
+                            await new Promise(r => setTimeout(r, 300));
                         }
                     }
                 }
@@ -13413,58 +14354,83 @@ QUY TẮC PHẢN HỒI:
                     // (Cấp nguồn cho Tìm kiếm Web, Gợi ý câu hỏi, Tóm tắt TL;DR)
                     // =========================================================================
                     async function dispatchBackgroundTaskWithFallback(requestPayload) {
-                        const bgCandidates = [
+                        const bgCandidates = Array.from(new Set([
                             GDeepSystemConfig.Models.BACKGROUND.FAST,
-                            GDeepSystemConfig.Models.BACKGROUND.LITE
-                        ].filter(Boolean);
-                        
+                            GDeepSystemConfig.Models.BACKGROUND.LITE,
+                            'gemini-2.5-flash-lite',
+                            'gemini-3.6-flash'
+                        ].filter(Boolean)));
+
                         const pool = (apiKeyPool.value && apiKeyPool.value.length > 0) ? apiKeyPool.value : [];
                         if (!pool.length) return null;
 
-                        // Độc tôn v1beta cho toàn bộ các tác vụ ẩn (Auto-Title, Follow-up, Summary)
-                        const apiGateways = ['v1beta'];
+                        const gateway = 'v1beta';
+                        const isLongTask = Number(requestPayload?.generationConfig?.maxOutputTokens) > 8192;
+                        const timeoutMs = isLongTask ? 60000 : 25000;
 
-                        for (const gateway of apiGateways) {
-                            for (const modelId of bgCandidates) {
-                                // BƯỚC NHẢY VỌT: Lấy đúng Key tương thích với model nền này
-                                const candidateKeys = getKeysForModel(modelId) || [];
-                                if (!candidateKeys.length) continue;
+                        for (const modelId of bgCandidates) {
+                            const candidateKeys = getKeysForModel(modelId, { allowCoolingFallback: false }) || [];
+                            if (!candidateKeys.length) continue;
 
-                                let currentReqPayload = JSON.parse(JSON.stringify(requestPayload));
-                                
-                                for (let attempt = 0; attempt < Math.min(2, candidateKeys.length); attempt++) {
-                                    const healthyKeyObj = candidateKeys[attempt];
-                                    if (!healthyKeyObj) continue;
+                            const maxAttempts = Math.min(4, candidateKeys.length);
+                            let stripJsonMime = false;
+                            let stripGoogleSearch = false;
 
-                                    try {
-                                        const res = await fetch(`https://generativelanguage.googleapis.com/${gateway}/models/${modelId}:generateContent?key=${healthyKeyObj.key}`, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json' },
-                                            body: JSON.stringify(currentReqPayload)
-                                        });
+                            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                                const healthyKeyObj = candidateKeys[attempt];
+                                if (!healthyKeyObj) continue;
 
-                                        if (res.ok) {
-                                            markKeyModelSuccess(healthyKeyObj, modelId);
-                                            return await res.json();
-                                        } else {
-                                            const errData = await res.json().catch(() => ({}));
-                                            markKeyModelFailure(healthyKeyObj, modelId, res.status, errData?.error?.message || '');
-                                            
-                                            // Tự chữa lành lỗi 400 (Xung đột schema / mimetype) trên tác vụ nền
-                                            if (res.status === 400 && currentReqPayload.generationConfig?.responseMimeType) {
-                                                delete currentReqPayload.generationConfig.responseMimeType;
-                                                attempt--; // Thử lại ngay lập tức
-                                                continue;
-                                            }
-                                            
-                                            if (res.status === 429 || res.status === 403 || res.status === 503) {
-                                                await new Promise(r => setTimeout(r, 600));
-                                            }
-                                        }
-                                    } catch (_) {
-                                        markApiKeyFailure(healthyKeyObj);
-                                        await new Promise(r => setTimeout(r, 600));
+                                const reqCtrl = new AbortController();
+                                const reqTimer = setTimeout(() => reqCtrl.abort(), timeoutMs);
+                                const startTs = performance.now();
+
+                                try {
+                                    const compliantPayload = GeminiPayloadAdapter.buildPayload(modelId, requestPayload, {
+                                        taskType: isLongTask ? 'agent' : 'background',
+                                        stripJsonMime,
+                                        stripGoogleSearch
+                                    });
+
+                                    const res = await fetch(`https://generativelanguage.googleapis.com/${gateway}/models/${modelId}:generateContent?key=${healthyKeyObj.key}`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify(compliantPayload),
+                                        signal: reqCtrl.signal
+                                    });
+
+                                    if (res.ok) {
+                                        const latencyMs = Math.round(performance.now() - startTs);
+                                        markKeyModelSuccess(healthyKeyObj, modelId, { latencyMs });
+                                        return await res.json();
                                     }
+
+                                    const errData = await res.json().catch(() => ({}));
+                                    const errMsg = String(errData?.error?.message || '');
+                                    const errKind = GeminiPayloadAdapter.classifyApiError(res.status, errMsg);
+                                    const retryAfterSec = Number(res.headers.get('Retry-After')) || null;
+
+                                    // Tự phục hồi ngay trên cùng key nếu lỗi do tính năng Free Tier hoặc JSON mimetype (không phạt key)
+                                    if (errKind === 'feature_tier_restricted' && !stripGoogleSearch) {
+                                        stripGoogleSearch = true;
+                                        attempt--;
+                                        continue;
+                                    }
+                                    if (errKind === 'payload_error' && !stripJsonMime && compliantPayload.generationConfig?.responseMimeType) {
+                                        stripJsonMime = true;
+                                        attempt--;
+                                        continue;
+                                    }
+
+                                    markKeyModelFailure(healthyKeyObj, modelId, res.status, errMsg, retryAfterSec);
+
+                                    if (res.status === 429 || res.status >= 500) {
+                                        await new Promise(r => setTimeout(r, 350));
+                                    }
+                                } catch (netErr) {
+                                    markKeyModelFailure(healthyKeyObj, modelId, null, netErr?.message || 'network');
+                                    await new Promise(r => setTimeout(r, 350));
+                                } finally {
+                                    clearTimeout(reqTimer);
                                 }
                             }
                         }
@@ -13662,67 +14628,55 @@ QUY TẮC PHẢN HỒI:
 // =========================================================================
                     // [MODULE 4: HIGH-RESILIENCE SSE ENGINE & ATOMIC MESSAGE ORCHESTRATOR]
                     // =========================================================================
-                    const fetchStreamWithFaultTolerance = async (payloadTemplate, modelCandidates, onChunk, signal, onModelChange = null) => {
+                    const fetchStreamWithFaultTolerance = async (payloadTemplate, modelCandidates, onChunk, signal, onModelChange = null, adaptOptions = {}) => {
                         const gateway = 'v1beta';
                         const pool = apiKeyPool.value || [];
                         if (!pool.length) return { success: false, errorMessage: "Chưa cấu hình chìa khóa API." };
 
                         const rawList = Array.isArray(modelCandidates) ? modelCandidates : [modelCandidates];
                         const modelsToTry = Array.from(new Set(rawList.filter(Boolean)));
-                        const now = Date.now();
+                        const isThinkingOn = (adaptOptions.deepThinking !== undefined)
+                            ? Boolean(adaptOptions.deepThinking)
+                            : Boolean(enableDeepThinking && (enableDeepThinking.value === true || enableDeepThinking === true));
 
-                        const preparePayload = (modelId) => {
-                            const req = JSON.parse(JSON.stringify(payloadTemplate));
-                            if (!req.generationConfig) req.generationConfig = {};
-                            req.generationConfig.maxOutputTokens = 65536;
-
-                            const isThinkingOn = enableDeepThinking && (enableDeepThinking.value === true || enableDeepThinking === true);
-                            // CHỈ GỬI THINKING CONFIG CHO CÁC MODEL THỰC SỰ HỖ TRỢ (GEMINI 2.5, 3.X, 4.X HOẶC CÓ ĐUÔI THINKING)
-                            const supportsThinking = /thinking|gemini-(?:2\.5|[3-9])/i.test(modelId);
-
-                            if (isThinkingOn && supportsThinking) {
-                                req.generationConfig.thinkingConfig = /gemini-(?:3|[4-9])/i.test(modelId)
-                                    ? { thinkingLevel: "HIGH", includeThoughts: true }
-                                    : { thinkingBudget: 24576, includeThoughts: true };
-                            } else {
-                                delete req.generationConfig.thinkingConfig;
-                            }
-                            return req;
+                        const preparePayload = (modelId, overrides = {}) => {
+                            return GeminiPayloadAdapter.buildPayload(modelId, payloadTemplate, {
+                                deepThinking: isThinkingOn,
+                                taskType: adaptOptions.taskType || 'chat',
+                                stripGoogleSearch: Boolean(overrides.stripGoogleSearch),
+                                stripJsonMime: Boolean(overrides.stripJsonMime)
+                            });
                         };
 
-                        // 1. FAST-PATH: Ưu tiên xoay tua các chìa khóa đã kiểm chứng với Model (Round-Robin)
+                        const triedPairs = new Set();
+                        let lastErrorMsg = '';
+
+                        // 1. FAST-PATH: Xoay tua thông minh qua các cặp Key-Model đã được bắt cặp vĩnh viễn
+                        // (Thứ tự đã được ModelKeyMatrixManager xếp sẵn theo Weighted Fair LRU + Tốc độ + Độ ổn định)
                         for (let mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
                             const modelId = modelsToTry[mIdx];
-                            const verifiedKeyStrings = new Set(ModelKeyMatrixManager.getVerifiedKeys(modelId));
-                            
-                            // Tập hợp tất cả các key từ pool đã được kiểm chứng (qua Matrix hoặc qua testAllApiKeys)
-                            const candidateKeys = pool.filter(k => {
-                                if (k.status === 'invalid') return false;
-                                if (k.cooldownUntil && k.cooldownUntil > now) return false;
+                            const verifiedSet = new Set(ModelKeyMatrixManager.getVerifiedKeys(modelId));
+                            const rankedKeys = getKeysForModel(modelId, { allowCoolingFallback: false });
+
+                            const verifiedCandidates = rankedKeys.filter(k => {
                                 const mInfo = k.models?.[modelId];
-                                if (mInfo) {
-                                    if (mInfo.status === 'unsupported') return false;
-                                    if (mInfo.status === 'cooldown' && mInfo.cooldownUntil > now) return false;
-                                    if (mInfo.status === 'supported') return true;
-                                }
-                                return verifiedKeyStrings.has(k.key);
+                                return (mInfo && (mInfo.status === 'supported' || mInfo.wasVerified)) || verifiedSet.has(k.key);
                             });
 
-                            if (candidateKeys.length > 0) {
-                                // SẮP XẾP ROUND-ROBIN THỰC THỤ: Key có lastUsed nhỏ nhất (lâu nhất chưa gọi) đứng đầu
-                                candidateKeys.sort((a, b) => {
-                                    const aLast = a.models?.[modelId]?.lastUsed || a.lastUsed || 0;
-                                    const bLast = b.models?.[modelId]?.lastUsed || b.lastUsed || 0;
-                                    return aLast - bLast;
-                                });
+                            for (let kIdx = 0; kIdx < verifiedCandidates.length; kIdx++) {
+                                if (signal?.aborted) return { success: false, isMidStreamDrop: false };
+                                const keyObj = verifiedCandidates[kIdx];
+                                const chosenKey = keyObj.key;
+                                triedPairs.add(`${modelId}::${chosenKey}`);
 
-                                // DUYỆT LẦN LƯỢT TỪNG KEY ĐÃ KIỂM CHỨNG: Nếu key trước dính 429/lỗi mạng, tự động xoay sang key tiếp theo
-                                for (let kIdx = 0; kIdx < candidateKeys.length; kIdx++) {
+                                const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${modelId}:streamGenerateContent?alt=sse&key=${chosenKey}`;
+                                let stripGoogleSearch = false;
+                                let stripJsonMime = false;
+
+                                for (let healTry = 0; healTry < 2; healTry++) {
                                     if (signal?.aborted) return { success: false, isMidStreamDrop: false };
-                                    const keyObj = candidateKeys[kIdx];
-                                    const chosenKey = keyObj.key;
-                                    const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${modelId}:streamGenerateContent?alt=sse&key=${chosenKey}`;
-                                    const reqPayload = preparePayload(modelId);
+                                    const reqPayload = preparePayload(modelId, { stripGoogleSearch, stripJsonMime });
+                                    const startTs = performance.now();
 
                                     try {
                                         const res = await fetch(endpoint, {
@@ -13733,8 +14687,8 @@ QUY TẮC PHẢN HỒI:
                                         });
 
                                         if (res.ok) {
-                                            markKeyModelSuccess(keyObj, modelId);
-                                            ModelKeyMatrixManager.recordSuccess(modelId, chosenKey);
+                                            const ttfbMs = Math.round(performance.now() - startTs);
+                                            markKeyModelSuccess(keyObj, modelId, { latencyMs: ttfbMs });
                                             if (typeof onModelChange === 'function') onModelChange(modelId, mIdx);
                                             let received = false;
 
@@ -13745,40 +14699,80 @@ QUY TẮC PHẢN HỒI:
                                                     onChunk(chunk);
                                                 });
                                                 if (received) return { success: true, activeModel: modelId, isMidStreamDrop: false };
+                                                break; // Luồng ok nhưng rỗng -> thử key/model kế tiếp
                                             } catch (streamErr) {
                                                 if (signal?.aborted || streamErr?.name === 'AbortError') {
                                                     return { success: false, isMidStreamDrop: false };
                                                 }
                                                 if (received) {
-                                                    // Đã nhận được dữ liệu dở dang -> Bàn giao ngay cho Surgical Continuation Splicer nối tiếp
                                                     return { success: true, activeModel: modelId, isMidStreamDrop: true };
                                                 }
                                                 throw streamErr;
                                             }
-                                        } else {
-                                            if (res.status === 401 || res.status === 404) ModelKeyMatrixManager.recordFailure(modelId, chosenKey);
-                                            markKeyModelFailure(keyObj, modelId, res.status);
                                         }
+
+                                        const errData = await res.json().catch(() => ({}));
+                                        const errMsg = String(errData?.error?.message || res.statusText || '');
+                                        lastErrorMsg = errMsg;
+                                        const errKind = GeminiPayloadAdapter.classifyApiError(res.status, errMsg);
+                                        const retryAfterSec = Number(res.headers.get('Retry-After')) || null;
+
+                                        if (errKind === 'feature_tier_restricted' && !stripGoogleSearch) {
+                                            stripGoogleSearch = true;
+                                            continue;
+                                        }
+                                        if (errKind === 'payload_error' && !stripJsonMime) {
+                                            stripGoogleSearch = true;
+                                            stripJsonMime = true;
+                                            continue;
+                                        }
+
+                                        markKeyModelFailure(keyObj, modelId, res.status, errMsg, retryAfterSec);
+                                        break;
                                     } catch (e) {
                                         if (signal?.aborted || e?.name === 'AbortError') return { success: false, isMidStreamDrop: false };
-                                        markKeyModelFailure(keyObj, modelId, null, e.message);
+                                        lastErrorMsg = e?.message || lastErrorMsg;
+                                        markKeyModelFailure(keyObj, modelId, null, e?.message || '');
+                                        break;
                                     }
                                 }
                             }
                         }
 
-                        // 2. PARALLEL RACE: Đua song song tìm kiếm tuyến kết nối lành lặn nhất
-                        const availablePool = pool.filter(k => k.status !== 'invalid' && (!k.cooldownUntil || k.cooldownUntil <= now));
-                        const candidatePool = availablePool.length > 0 ? availablePool : pool;
-                        const raceContenders = [];
+                        // 2. SMART PARALLEL RACE: Chỉ đua với các cặp Key-Model mới chưa thử (chống bão 429)
+                        // Nếu không còn cặp sẵn sàng nào mới thử tới các cặp cooling RPM ngắn nhất
+                        let raceContenders = [];
                         for (const m of modelsToTry) {
-                            for (const k of candidatePool) {
-                                if (k.models?.[m]?.status === 'unsupported') continue;
-                                raceContenders.push({ modelId: m, keyObj: k, keyStr: k.key });
+                            const readyForModel = getKeysForModel(m, { allowCoolingFallback: false });
+                            for (const k of readyForModel) {
+                                if (!triedPairs.has(`${m}::${k.key}`)) {
+                                    raceContenders.push({ modelId: m, keyObj: k, keyStr: k.key });
+                                }
                             }
                         }
 
-                        if (!raceContenders.length) return { success: false, errorMessage: "Không còn chìa khóa khả dụng." };
+                        if (!raceContenders.length) {
+                            for (const m of modelsToTry) {
+                                const coolingKeys = getKeysForModel(m, { allowCoolingFallback: true });
+                                if (coolingKeys.length > 0 && !triedPairs.has(`${m}::${coolingKeys[0].key}`)) {
+                                    raceContenders.push({ modelId: m, keyObj: coolingKeys[0], keyStr: coolingKeys[0].key });
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Giới hạn tối đa 6 tuyến đua song song để tránh nghẽn RPM cùng lúc trên Free Tier
+                        raceContenders = raceContenders.slice(0, 6);
+
+                        if (!raceContenders.length) {
+                            return {
+                                success: false,
+                                isMidStreamDrop: false,
+                                errorMessage: lastErrorMsg
+                                    ? `*(Tạm hết hạn mức kết nối: ${lastErrorMsg.slice(0, 140)})*`
+                                    : "*(Không còn chìa khóa khả dụng. Vui lòng kiểm tra Cài đặt hoặc chờ hồi hạn mức)*"
+                            };
+                        }
 
                         let raceWon = false;
                         const contenderControllers = [];
@@ -13802,28 +14796,53 @@ QUY TẮC PHẢN HỒI:
                                 const cCtrl = new AbortController();
                                 contenderControllers.push(cCtrl);
 
-                                const candidateSignal = signal && typeof AbortSignal.any === 'function'
-                                    ? AbortSignal.any([signal, cCtrl.signal])
-                                    : cCtrl.signal;
+                                const onParentAbort = () => { try { cCtrl.abort(); } catch (_) {} };
+                                if (signal) signal.addEventListener('abort', onParentAbort, { once: true });
+
                                 const endpoint = `https://generativelanguage.googleapis.com/${gateway}/models/${contender.modelId}:streamGenerateContent?alt=sse&key=${contender.keyStr}`;
-                                const reqPayload = preparePayload(contender.modelId);
 
                                 (async () => {
                                     let isWinner = false;
                                     let receivedChunk = false;
                                     try {
-                                        const res = await fetch(endpoint, {
-                                            method: 'POST',
-                                            headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-                                            body: JSON.stringify(reqPayload),
-                                            signal: candidateSignal
-                                        });
+                                        let stripSearch = false;
+                                        let stripMime = false;
+                                        let res = null;
+                                        const startTs = performance.now();
 
-                                        if (!res.ok) {
-                                            if (res.status === 401 || res.status === 404) ModelKeyMatrixManager.recordFailure(contender.modelId, contender.keyStr);
-                                            markKeyModelFailure(contender.keyObj, contender.modelId, res.status);
+                                        for (let healTry = 0; healTry < 2; healTry++) {
+                                            if (raceWon || signal?.aborted || cCtrl.signal.aborted) return;
+                                            const reqPayload = preparePayload(contender.modelId, { stripGoogleSearch: stripSearch, stripJsonMime: stripMime });
+                                            res = await fetch(endpoint, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                                                body: JSON.stringify(reqPayload),
+                                                signal: cCtrl.signal
+                                            });
+
+                                            if (res.ok) break;
+
+                                            const errData = await res.json().catch(() => ({}));
+                                            const errMsg = String(errData?.error?.message || res.statusText || '');
+                                            const errKind = GeminiPayloadAdapter.classifyApiError(res.status, errMsg);
+                                            const retryAfterSec = Number(res.headers.get('Retry-After')) || null;
+
+                                            if (errKind === 'feature_tier_restricted' && !stripSearch) {
+                                                stripSearch = true;
+                                                continue;
+                                            }
+                                            if (errKind === 'payload_error' && !stripMime) {
+                                                stripSearch = true;
+                                                stripMime = true;
+                                                continue;
+                                            }
+
+                                            lastErrorMsg = errMsg;
+                                            markKeyModelFailure(contender.keyObj, contender.modelId, res.status, errMsg, retryAfterSec);
                                             throw new Error(`HTTP ${res.status}`);
                                         }
+
+                                        if (!res || !res.ok) throw new Error('Request rejected');
 
                                         const reader = res.body.getReader();
                                         const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -13843,15 +14862,14 @@ QUY TẮC PHẢN HỒI:
                                         isWinner = true;
                                         contenderControllers.forEach(ctrl => { if (ctrl !== cCtrl) { try { ctrl.abort(); } catch (_) {} } });
 
-                                        ModelKeyMatrixManager.recordSuccess(contender.modelId, contender.keyStr);
-                                        markKeyModelSuccess(contender.keyObj, contender.modelId);
+                                        const ttfbMs = Math.round(performance.now() - startTs);
+                                        markKeyModelSuccess(contender.keyObj, contender.modelId, { latencyMs: ttfbMs });
                                         if (typeof onModelChange === 'function') onModelChange(contender.modelId);
 
-                                        // Bàn giao nguyên vẹn reader + initialBuffer cho readSSEStream (không mất/gãy JSON)
                                         const initialBuffer = decoder.decode(value, { stream: true });
                                         await readSSEStream(
                                             res,
-                                            candidateSignal,
+                                            cCtrl.signal,
                                             (chunk) => {
                                                 if (chunk.isHeartbeat) return;
                                                 receivedChunk = true;
@@ -13860,9 +14878,13 @@ QUY TẮC PHẢN HỒI:
                                             { reader, initialBuffer, decoder }
                                         );
 
-                                        if (signal) signal.removeEventListener('abort', onUserAbort);
+                                        if (signal) {
+                                            signal.removeEventListener('abort', onUserAbort);
+                                            signal.removeEventListener('abort', onParentAbort);
+                                        }
                                         safeResolve({ success: true, activeModel: contender.modelId, isMidStreamDrop: false });
                                     } catch (_) {
+                                        if (signal) signal.removeEventListener('abort', onParentAbort);
                                         if (isWinner) {
                                             if (signal) signal.removeEventListener('abort', onUserAbort);
                                             if (signal?.aborted) {
@@ -13875,7 +14897,13 @@ QUY TẮC PHẢN HỒI:
                                         failureCount++;
                                         if (failureCount >= total && !raceWon) {
                                             if (signal) signal.removeEventListener('abort', onUserAbort);
-                                            safeResolve({ success: false, isMidStreamDrop: false, errorMessage: "Mọi tuyến kết nối đều bị từ chối." });
+                                            safeResolve({
+                                                success: false,
+                                                isMidStreamDrop: false,
+                                                errorMessage: lastErrorMsg
+                                                    ? `*(Mọi tuyến kết nối đều bị từ chối: ${lastErrorMsg.slice(0, 140)})*`
+                                                    : "Mọi tuyến kết nối đều bị từ chối."
+                                            });
                                         }
                                     }
                                 })();
